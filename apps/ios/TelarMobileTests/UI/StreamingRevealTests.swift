@@ -2,13 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The web's `apps/web/src/lib/streaming-reveal.test.ts`, vector for vector. The
-/// pacer is a PORT, so the tests are the parity check: if one client's pacing
-/// drifts from the other's, one of these fails.
-
-/// A fake clock over RENDERED characters. `state.shown` is fractional and
-/// always "moves"; what a reader experiences is `revealText`, so that is what
-/// counts.
 private struct Frame {
     var at: Double
     var target: Int
@@ -34,7 +27,6 @@ private func runFrames(_ arrivals: [Arrival], until: Double, step: Double = 16.7
     return (frames, state)
 }
 
-/// The oldest character still unshown at each frame, in ms of age.
 private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     var worst: Double = 0
     for frame in frames {
@@ -55,20 +47,14 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     let reveal = RevealConfig.standard
 
     @Test func aBurstIsSpreadAcrossAWindowNotDrainedInAFrame() {
-        // THE REPORTED STUTTER, MEASURED. Unpaced rendering shows [5,5,5,…]:
-        // the whole burst on frame one, then a flat quarter second.
         let arrivals = (0..<8).map { Arrival(at: Double($0) * 250 + 1, grew: 5) }
         let (frames, _) = runFrames(arrivals, until: 2600)
         #expect(frames[2].seen < 5)
         #expect(frames[9].seen < 5)
-        // The opening chunk is fully out by its own bound.
         #expect(frames.first { $0.at >= 1 + reveal.maxLagMs }!.seen >= 5)
     }
 
     @Test func theSustainedPaceTracksASlowStreamInsteadOfBurstingPastIt() {
-        // At a steady 10 chars/s, once the estimate has warmed up, no 100ms
-        // window may reveal more than drainSlack.max × the source rate —
-        // catch-up is capped, never a flash of a whole chunk.
         let arrivals = (0..<20).map { Arrival(at: Double($0) * 600 + 1, grew: 6) }
         let (frames, _) = runFrames(arrivals, until: 12_600)
         let warm = frames.filter { $0.at > 3000 }
@@ -80,8 +66,6 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func theReserveKeepsTextMovingThroughAChunkGap() {
-        // Unpaced, the screen sits dead between arrivals. A warmed-up pacer
-        // holds a reserve and spends it: inside a 600ms gap there is movement.
         let arrivals = (0..<20).map { Arrival(at: Double($0) * 600 + 1, grew: 6) }
         let (frames, _) = runFrames(arrivals, until: 12_000)
         let inGap = frames.filter { $0.at >= 6051 && $0.at <= 6551 }
@@ -89,7 +73,6 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func continuousArrivalNoCharacterWaitsLongerThanMaxLag() {
-        // THE CONTRACT. A later chunk must never postpone an earlier one.
         let arrivals = (0..<60).map { Arrival(at: Double($0) * 100 + 1, grew: 12) }
         let (frames, _) = runFrames(arrivals, until: 6000 + reveal.maxLagMs + 100)
         #expect(worstAge(arrivals, frames) <= reveal.maxLagMs + 17)
@@ -106,8 +89,6 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func aChunkKeepsItsOwnDeadlineWhileNewerTextKeepsArriving() {
-        // 5 characters, then a steady stream. The first five must still be
-        // shown within their own window rather than pushed along by newcomers.
         let arrivals = [Arrival(at: 1, grew: 5)]
             + (0..<30).map { Arrival(at: 20 + Double($0) * 20, grew: 4) }
         let (frames, _) = runFrames(arrivals, until: 1 + reveal.maxLagMs + 400)
@@ -115,16 +96,11 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func idleTimeIsNotChargedToAChunkThatHadNotArrivedYet() {
-        // Caught up, a second of silence, then five characters. That second
-        // belonged to nothing outstanding; spending it on the new chunk shows
-        // the whole thing instantly.
         let state = stepReveal(revealState(5, 0), 10, 1000)
         #expect(state.shown < 10)
     }
 
     @Test func anOverdueChunkFlushesItselfNotTheFreshTextBehindIt() {
-        // Five characters past their deadline, and 800 that arrived this
-        // instant. Flushing to the whole target drags the new 800 out too.
         let late = reveal.maxLagMs + 10
         let state = stepReveal(
             RevealState(shown: 0, target: 5, pending: [Pending(end: 5, at: 0)], last: late - 60),
@@ -135,16 +111,11 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func theFirstChunkIsNotPacedFromOneFramesDelta() {
-        // Measuring 5 characters against 16ms reports 300/s and drains instantly.
         let (frames, _) = runFrames([Arrival(at: 1, grew: 5)], until: 60)
         #expect(frames[0].seen < 5)
     }
 
     @Test func pacingFollowsTheClockNotTheFrameCount() {
-        // A mid-window sample differs slightly between refresh rates because
-        // the same continuous curve is stepped at different resolutions. Drift
-        // would GROW as the step shrinks; discretization shrinks. Both must
-        // also finish together, which is the part a reader sees.
         func at(_ step: Double, _ until: Double) -> Int {
             runFrames([Arrival(at: 1, grew: 100)], until: until, step: step).frames.last!.seen
         }
@@ -186,8 +157,6 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func anEmojiIsNeverCutInHalfAtAnyPosition() {
-        // Swift's `prefix` cuts on grapheme clusters, so this holds by
-        // construction where the web needs an explicit surrogate guard.
         let source = "hi 👋🏽 there"
         for shown in 0...source.count {
             #expect(source.hasPrefix(revealText(source, Double(shown))))
@@ -195,17 +164,11 @@ private func worstAge(_ arrivals: [Arrival], _ frames: [Frame]) -> Double {
     }
 
     @Test func aReplacementIsDetectedByContentNotLength() {
-        // LENGTH CANNOT DETECT ONE: a revised answer of the same or greater
-        // length would render a prefix of the NEW text at the OLD progress.
         #expect(isReplacement("hello world", 5, "goodbye"))
         #expect(!isReplacement("hello world", 5, "hello world and more"))
         #expect(isReplacement("hello world", 11, "hello WORLD"))
     }
 
-    /// THE BUG THIS FIXES, as the journal recorded it. A wake reply of 437
-    /// characters streamed out of the engine over 992ms; the phone tails once a
-    /// second, so the fold handed the view the whole thing in one arrival.
-    /// Unpaced that is one paint. Paced, it is spread over frames.
     @Test func oneSecondsWorthOfDeltasArrivingAtOnceIsSpreadNotPainted() {
         let (frames, state) = runFrames([Arrival(at: 1, grew: 437)], until: 1 + reveal.maxLagMs + 40)
         let visible = frames.filter { $0.seen > 0 && $0.seen < 437 }

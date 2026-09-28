@@ -1,10 +1,5 @@
 import SwiftUI
 
-/// The approval panel, styled after t3code's composer pending-approval
-/// drawer: content stacked above a right-aligned row of GHOST buttons —
-/// no filled destructive button anywhere; "Decline" signals with red text
-/// only, "Approve" with full-strength foreground. The surrounding surface
-/// comes from ComposerDrawer.
 struct RequestCardView: View {
     let request: EngineRequest
     let store: SessionStore
@@ -104,7 +99,6 @@ struct RequestCardView: View {
         }
     }
 
-    /// t3code's command preview: mono 11pt at 85% ink, no box of its own.
     private func commandPreview(_ text: String) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             Text(text)
@@ -122,7 +116,6 @@ struct RequestCardView: View {
                     Task { await store.resolve(request, decision: .cancel) }
                 }
             } label: {
-                // The menu's 28pt square scales with its glyph (#674).
                 Image(systemName: "ellipsis")
                     .foregroundStyle(Theme.textMuted)
                     .scaledGlyphBox(28, glyph: 12)
@@ -141,8 +134,6 @@ struct RequestCardView: View {
     }
 }
 
-/// t3code approval buttons: ghost — text only, a soft fill on press, color
-/// carrying the meaning.
 struct GhostButton: View {
     let label: String
     let tint: Color
@@ -167,11 +158,6 @@ struct GhostButton: View {
     }
 }
 
-/// The 1Password fill card. NO "Always allow": a credential leaving the vault
-/// is approved one fill at a time, in every runtime mode — the engine's
-/// `autoResolution` refuses this kind unconditionally, and the phone is very
-/// often the approval device that rule exists for. The human picks an ITEM;
-/// values never pass through this app.
 struct SecretAccessCardView: View {
     let secret: SecretAccessDetail
     let decide: (RequestDecision, String?) -> Void
@@ -195,8 +181,6 @@ struct SecretAccessCardView: View {
                             .font(Theme.body)
                             .foregroundStyle(Theme.text)
                         Spacer(minLength: 0)
-                        // The matched domain — the human verifies the same
-                        // binding the engine enforced.
                         Text(candidate.domain)
                             .font(Theme.monoSmall)
                             .foregroundStyle(Theme.textMuted)
@@ -226,9 +210,6 @@ struct SecretAccessCardView: View {
     }
 }
 
-/// A real form: the agent is asking, not asking permission. Never
-/// auto-resolved in any runtime mode — it is genuinely waiting on the person
-/// holding this phone. Options render as full-width rows, t3code style.
 struct UserInputFormView: View {
     let prompt: String
     let fields: [UserInputField]
@@ -236,7 +217,6 @@ struct UserInputFormView: View {
 
     @State private var textAnswers: [String: String] = [:]
     @State private var boolAnswers: [String: Bool] = [:]
-    /// Multi-select `choice` fields only — a set, because the rows toggle.
     @State private var listAnswers: [String: Set<String>] = [:]
 
     var body: some View {
@@ -255,9 +235,6 @@ struct UserInputFormView: View {
                             answers[field.key] = .bool(boolAnswers[field.key] ?? false)
                         default:
                             if field.isMultiSelect {
-                                // Choice order, not tap order: the engine reads
-                                // these back as labels, and the question's own
-                                // order is the one the person was reading.
                                 let picked = listAnswers[field.key] ?? []
                                 let ordered = (field.choices ?? []).filter(picked.contains)
                                 if !ordered.isEmpty { answers[field.key] = .list(ordered) }

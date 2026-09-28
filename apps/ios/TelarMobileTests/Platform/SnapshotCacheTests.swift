@@ -13,7 +13,6 @@ import Testing
         let a = HostID(), b = HostID()
         cache.writeSession(host: a, id: "s1", data: Data("A".utf8))
         cache.writeSession(host: b, id: "s1", data: Data("B".utf8))
-        // Two Macs, one session id: two entries.
         #expect(cache.readSession(host: a, id: "s1")?.data == Data("A".utf8))
         #expect(cache.readSession(host: b, id: "s1")?.data == Data("B".utf8))
         #expect(cache.readSession(host: a, id: "missing") == nil)
@@ -44,7 +43,6 @@ import Testing
         let host = HostID()
         for index in 0..<(SnapshotCache.sessionsPerHost + 5) {
             cache.writeSession(host: host, id: "s\(index)", data: Data("\(index)".utf8))
-            // Distinct mtimes so the order is the write order, not a tie.
             usleep(2_000)
         }
         #expect(cache.readSession(host: host, id: "s0") == nil)
@@ -54,8 +52,6 @@ import Testing
     }
 
     @Test func recordedAtLabelIsAClockTime() {
-        // Not asserting a locale-specific string; only that it is short and
-        // carries the hour, which is what the banner needs.
         let label = recordedAtLabel(Timestamp(Date().timeIntervalSince1970 * 1000))
         #expect(!label.isEmpty && label.count < 12)
     }

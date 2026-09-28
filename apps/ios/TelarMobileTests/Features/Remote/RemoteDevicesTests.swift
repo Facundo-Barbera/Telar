@@ -2,8 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// Own stub protocol: sharing StubURLProtocol's static handler across
-/// parallel suites is a data race, so each suite carries its own class.
 final class RemoteStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
 
@@ -65,9 +63,6 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(status.devices[2].platform == nil)
     }
 
-    /// Where a paired phone refreshes its failover list (#832): the Mac's
-    /// endpoints minus loopback, one alien row skipped, and an older cockpit
-    /// that sends none is simply an empty list.
     @Test func statusYieldsTheDialableEndpoints() throws {
         let json = """
         {"requireAuth":true,"devices":[],"endpoints":[
@@ -106,8 +101,6 @@ private func stubAPI() -> HTTPEngineAPI {
     }
 
     @Test func olderCockpitPayloadsDecodeLeniently() throws {
-        // No role (pre-roles cockpit), no callerDeviceId, one garbage row:
-        // the page renders, the alien row is skipped, roles default to full.
         let json = """
         {"requireAuth":true,
          "devices":[

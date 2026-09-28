@@ -2,17 +2,12 @@ import XCTest
 import UIKit
 
 extension NavigationUITests {
-    /// THE SHEET'S PROMPT TAKES A PASTE TOO. It is the same field as the
-    /// session composer's and it has to behave the same: nothing is uploaded
-    /// here (there is no session id until the arrow is pressed), so the bytes
-    /// wait in the draft strip.
     func testPastingAnImageIntoTheNewSessionSheet() {
         UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
             UIColor.systemPink.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 24, height: 24))
         }
         let app = XCUIApplication()
-        // The seeded project jumps past "Choose project" to the draft step.
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-newSessionProject", "telar"]
         app.launch()
         let newConversation = app.buttons["New conversation"]

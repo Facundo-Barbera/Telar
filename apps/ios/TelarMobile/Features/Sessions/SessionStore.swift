@@ -1,18 +1,10 @@
 import Foundation
 import Observation
 
-/// One open session: the sync engine plus the actions the composer takes.
-///
-/// SENDING IS IDEMPOTENT BY PERSISTENCE: the (runId, text) pair is written to
-/// UserDefaults BEFORE the POST and cleared only on a 2xx. A retry — user-
-/// tapped or on next open — resends the SAME runId, and the engine's
-/// idempotency contract returns the original turn rather than a duplicate.
 @MainActor @Observable final class SessionStore {
     struct PendingSend: Codable, Equatable {
         var runId: String
         var text: String
-        /// Stored attachment ids — already on the engine, so a retry re-sends
-        /// the same handles. Optional for decoding pre-attachment drafts.
         var attachments: [EngineID]?
     }
 
@@ -20,24 +12,14 @@ import Observation
     private(set) var pendingSend: PendingSend?
     private(set) var sendError: String?
     private(set) var actionError: String?
-    /// Uploaded-but-not-yet-sent files — thumbnails in the expanded composer.
     private(set) var pendingAttachments: [TurnAttachment] = []
-    /// Image bytes kept only to draw the composer's chips, dropped with them.
     private(set) var attachmentPreviews: [EngineID: Data] = [:]
     private(set) var uploading = false
-    /// Loaded lazily when the Model pill first opens.
     private(set) var catalogue: ModelCatalogue?
 
-    /// READ BY `SessionComposerHost` (#544), which forwards it so the composer
-    /// can ask for a dictation token — the one call the box makes that is not
-    /// about this conversation. Everything else here still goes through a verb
-    /// on this store.
     let api: any EngineAPI
     private let sessionId: EngineID
     private let hostId: HostID?
-    /// HOST-SCOPED: two Macs can mint the same session id, and a pending
-    /// (runId, text) from one must never replay into the other's session.
-    /// nil hostId (previews/tests) keeps the legacy key shape.
     private var pendingKey: String {
         if let hostId { return "telar.pendingSend.\(hostId.uuidString).\(sessionId)" }
         return "telar.pendingSend.\(sessionId)"
@@ -57,27 +39,18 @@ import Observation
         sync.turns.contains { $0.state.isActive }
     }
 
-    /// A turn the model is executing right now (queued doesn't count) — what
-    /// makes "Send now" meaningful and the stop button honest.
     var hasRunningTurn: Bool {
         sync.turns.contains { $0.state == .running || $0.state == .claimed || $0.state == .steering }
     }
 
-    /// The strip above the composer: messages waiting behind the running
-    /// turn, plus a `steering` one mid-flight to the worker — it is not in
-    /// the transcript yet and must not silently vanish for the seconds the
-    /// injection waits for a safe boundary. (The web strip's exact rule.)
     var queuedTurns: [JournalTurn] {
         sync.turns.filter { $0.state == .queued || $0.state == .steering }
     }
 
-    /// Withdraw a queued message — `stop` with its runId, the same call the
-    /// web composer makes.
     func withdraw(_ runId: String) async {
         await perform { try await self.api.stopTurn(self.sessionId, runId: runId) }
     }
 
-    /// SEND NOW — the running turn hears it without stopping.
     func promote(_ runId: String) async {
         await perform { try await self.api.promoteTurn(self.sessionId, runId: runId) }
     }
@@ -85,9 +58,6 @@ import Observation
     func send(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard SessionDraft.canSend(text: trimmed, mediaTypes: pendingAttachments.map(\.mediaType)) else { return }
-        // A still-unsent earlier message keeps its runId; a new message after a
-        // success mints a fresh one. The pictures are part of WHICH message:
-        // two image-only sends both have "" for text.
         let attachments = pendingAttachments.isEmpty ? nil : pendingAttachments.map(\.id)
         let pending = pendingSend.flatMap { $0.text == trimmed && $0.attachments == attachments ? $0 : nil }
             ?? PendingSend(runId: RunID.newRunId(), text: trimmed, attachments: attachments)
@@ -95,17 +65,12 @@ import Observation
         await deliver(pending)
     }
 
-    /// Upload one picked file; it joins the next send. Upload failures land in
-    /// actionError — the draft is untouched.
     func attach(data: Data, name: String, mediaType: String) async {
         uploading = true
         defer { uploading = false }
         do {
             let attachment = try await api.uploadAttachment(sessionId, name: name, mediaType: mediaType, data: data)
             pendingAttachments.append(attachment)
-            // THE PICTURE OF IT. The engine has the file; this is the only
-            // copy the chip can draw from, and a pasted screenshot is exactly
-            // the case where seeing WHICH image landed matters.
             if mediaType.hasPrefix("image/"), data.count <= ComposerIntake.previewCap {
                 attachmentPreviews[attachment.id] = data
             }
@@ -120,16 +85,11 @@ import Observation
         attachmentPreviews[id] = nil
     }
 
-    /// The Model pill's list — fetched once per open session.
     func loadModels() async {
         guard catalogue == nil, let driver = sync.session?.driver else { return }
         catalogue = try? await api.models(driver: driver)
     }
 
-    /// Change what runs the next turn — model, effort, fast mode, service
-    /// tier, ultracode, whole. The
-    /// instance is the session's own when it has one, else the first enabled
-    /// instance for its driver — the engine validates the pair either way.
     func setModelChoice(_ choice: ModelChoice) async {
         await perform {
             var instanceId = self.sync.session?.model?.instanceId ?? self.sync.session?.providerInstanceId

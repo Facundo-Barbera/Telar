@@ -1,7 +1,6 @@
 import ActivityKit
 import Foundation
 
-/// Shared verbatim by the app, widget and APNs payload contract.
 struct SessionActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var title: String

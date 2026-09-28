@@ -3,16 +3,12 @@ import Testing
 import UserNotifications
 @testable import TelarMobile
 
-/// APPROVE AND OPEN. The Mac decides which alerts offer Approve and names the
-/// request; these pin that the phone offers it only under that category,
-/// behind an unlock, and resolves only the request it was told about.
 @Suite struct NotificationActionsTests {
     private let host = UUID(uuidString: "12345678-1234-1234-1234-123456789abc")!
     private var url: String { "telar://session?host=\(host.uuidString)&id=session_1" }
 
     @Test func approveNeedsAnUnlockAndIsOfferedOnlyForARequest() throws {
         let categories = Dictionary(uniqueKeysWithValues: NotificationActions.categories.map { ($0.identifier, $0) })
-        // These ids are the wire contract with apps/web/src/lib/mobile/push.ts.
         #expect(Set(categories.keys) == ["TELAR_REQUEST", "TELAR_SESSION"])
         let request = try #require(categories["TELAR_REQUEST"])
         #expect(request.actions.map(\.identifier) == [NotificationActions.approve, NotificationActions.open])

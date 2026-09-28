@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// Fails every request to `deadHost` the way an unreachable address does, and
-/// answers the rest. Its own class: a static handler shared across parallel
-/// suites is a data race.
 final class FailoverStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var deadHost = ""
     nonisolated(unsafe) static var seen: [String] = []
@@ -34,10 +31,6 @@ private actor Calls {
 }
 
 @Suite(.serialized) struct HostAddressesTests {
-    // MARK: migration
-
-    /// The exact shape a pre-#832 build wrote to "telar.hosts": one address,
-    /// no `addresses` key. It must decode as a one-address host.
     @Test func aBookWrittenBeforeAddressesDecodesAsOneAddressHosts() throws {
         let legacy = """
         [{"id":"11111111-1111-1111-1111-111111111111","name":"Studio Mac",
@@ -71,8 +64,6 @@ private actor Calls {
         #expect(HostMigration.load(defaults: defaults) == book)
     }
 
-    // MARK: merging
-
     @Test func mergeKeepsTheAddressInUseFirstThenTheReportThenTheRest() {
         let merged = HostAddresses.merge(
             preferred: "http://100.70.1.2:3000",
@@ -98,15 +89,11 @@ private actor Calls {
         #expect(merged.first == "http://a:3000")
     }
 
-    // MARK: the book
-
     @Test func repairingAtAnotherKnownAddressKeepsTheHost() {
         var book = HostBook()
         guard case .added(let id) = book.upsert(
             baseURLString: "http://192.168.1.5:3000", addresses: ["http://192.168.1.5:3000", "http://100.70.1.2:3000"]
         ) else { Issue.record("expected added"); return }
-        // Same Mac, paired again from the tailnet: same id, so the same
-        // Keychain account — the token stays per host, not per address.
         #expect(book.upsert(baseURLString: "http://100.70.1.2:3000") == .replaced(id))
         #expect(book.hosts.count == 1)
         #expect(book.host(id)?.baseURLString == "http://100.70.1.2:3000")
@@ -119,7 +106,6 @@ private actor Calls {
         #expect(book.learnAddresses(["http://100.70.1.2:3000"], for: id) == true)
         #expect(book.host(id)?.baseURLString == "http://192.168.1.5:3000")
         #expect(book.host(id)?.addresses == ["http://192.168.1.5:3000", "http://100.70.1.2:3000"])
-        // The same report again changes nothing, so nothing is persisted.
         #expect(book.learnAddresses(["http://100.70.1.2:3000"], for: id) == false)
     }
 
@@ -131,7 +117,6 @@ private actor Calls {
         #expect(book.markReachable("http://evil.test:3000", for: id) == false)
         #expect(book.markReachable("https://mac.tail.ts.net", for: id) == true)
         #expect(book.host(id)?.baseURLString == "https://mac.tail.ts.net")
-        // Tried first next time; the others keep their order.
         #expect(book.host(id)?.addresses == ["https://mac.tail.ts.net", "http://192.168.1.5:3000", "http://100.70.1.2:3000"])
         #expect(book.markReachable("https://mac.tail.ts.net", for: id) == false)
     }
@@ -146,8 +131,6 @@ private actor Calls {
         #expect(book.host(older)?.baseURLString == "http://100.70.1.2:3000")
         #expect(book.host(older)?.addresses == ["http://100.70.1.2:3000", "http://192.168.1.5:3000"])
     }
-
-    // MARK: failover choice
 
     @Test func failoverOrderSkipsTheDeadAddress() {
         let host = Host(name: "m", baseURLString: "http://192.168.1.5:3000", addresses: ["http://100.70.1.2:3000", "https://m.ts.net"])
@@ -168,7 +151,6 @@ private actor Calls {
         let tail = URL(string: "https://m.ts.net/")!
         #expect(HostAddresses.rebase(URL(string: "http://192.168.1.5:3000/api/sessions/live?all=1")!, from: lan, to: tail)
             == URL(string: "https://m.ts.net/api/sessions/live?all=1"))
-        // A longer port is not this origin.
         #expect(HostAddresses.rebase(URL(string: "http://192.168.1.5:30001/api")!, from: lan, to: tail) == nil)
     }
 
@@ -179,8 +161,6 @@ private actor Calls {
         #expect(await HostAddresses.firstReachable([a, b]) { _ in false } == nil)
         #expect(await HostAddresses.firstReachable([]) { _ in true } == nil)
     }
-
-    // MARK: the transport
 
     private func api(failover: @escaping @Sendable (URL) async -> URL?) -> HTTPEngineAPI {
         let config = URLSessionConfiguration.ephemeral
@@ -220,12 +200,8 @@ private actor Calls {
         #expect(FailoverStubURLProtocol.seen == ["GET lan.test/api/ping"])
     }
 
-    // MARK: the settings
-
     @MainActor private func settings(_ book: HostBook) -> AppSettings {
         let defaults = UserDefaults(suiteName: "telar.test.failover.\(UUID().uuidString)")!
-        // A written book means the single-host migration never runs, so no
-        // test ever reaches for the legacy Keychain item.
         HostMigration.persist(book, defaults: defaults)
         let settings = AppSettings(defaults: defaults, vault: MemoryVault())
         settings.snapshots = nil
@@ -246,12 +222,8 @@ private actor Calls {
         #expect(moved == URL(string: "http://tail.test:3000"))
         #expect(settings.host(id)?.baseURLString == "http://tail.test:3000")
         #expect(settings.host(id)?.addresses.first == "http://tail.test:3000")
-        // The rebuild key moved, so every client bound to this Mac is rebuilt
-        // on the address that answers.
         #expect(settings.apiFingerprint(id) != before)
 
-        // A second request that failed on the old address is simply pointed at
-        // the new one: no second probe pass.
         let probed = await calls.count
         #expect(await settings.failover(id, from: URL(string: "http://lan.test:3000")!) == URL(string: "http://tail.test:3000"))
         #expect(await calls.count == probed)

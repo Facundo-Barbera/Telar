@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// Its own stub class: StubURLProtocol's handler is a static, and suites run
-/// in parallel — sharing it with NetworkingTests is a data race dressed as
-/// flaky assertions.
 final class PairingStubURLProtocol: URLProtocol {
     nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
 
@@ -48,15 +45,12 @@ final class PairingStubURLProtocol: URLProtocol {
         #expect(http.base.absoluteString == "http://100.110.136.102:3000")
         #expect(http.token == "tlr_x")
 
-        // The current cockpit's secret is eight digits.
         let code = try #require(Pairing.parsePairingURL("http://100.110.136.102:3000/pair#token=37410745"))
         #expect(code.token == "37410745")
     }
 
     @Test func parseRejectsWhatMustBeRejected() {
-        // A query-string token has been in a server log; refuse it.
         #expect(Pairing.parsePairingURL("http://mac:3000/pair?token=tlr_x") == nil)
-        // Neither a code nor a token, missing token, non-http schemes.
         #expect(Pairing.parsePairingURL("http://mac:3000/pair#token=nope") == nil)
         #expect(Pairing.parsePairingURL("http://mac:3000/pair#token=1234567") == nil)
         #expect(Pairing.parsePairingURL("http://mac:3000/pair#token=12345678a") == nil)
@@ -87,7 +81,6 @@ final class PairingStubURLProtocol: URLProtocol {
 
     @Test func exchangeNeedsOnlyTheTokenFromAnOlderOrNewerCockpit() async throws {
         PairingStubURLProtocol.handler = { _ in
-            // No deviceId/deviceName, plus a field this build doesn't know.
             (200, Data(#"{"deviceToken":"tlr_minimal","futureField":42}"#.utf8))
         }
         let config = URLSessionConfiguration.ephemeral
@@ -141,7 +134,6 @@ final class PairingStubURLProtocol: URLProtocol {
             baseURL: URL(string: "http://stub.test:3000")!,
             session: URLSession(configuration: config)
         )
-        // An old cockpit's bare {ok:true}: proto reads as nil (treat as 1).
         let pong = try await open.ping()
         #expect(pong.ok)
         #expect(pong.proto == nil)
