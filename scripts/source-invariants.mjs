@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, relative, resolve } from "node:path";
 import { engineTestFiles, shardOf } from "./engine-shard.mjs";
 import { commentRatchet } from "./comment-ratchet.mjs";
+import { sizeRatchet } from "./size-ratchet.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFile(join(ROOT, path), "utf8");
@@ -2204,25 +2205,13 @@ const CHECKS = [
         for (const hit of bareDynamicWithoutBoundary(source)) {
           failures.push(
             `${file}:${hit.line}: \`${hit.what}\` is declared with neither \`ssr: false\` nor \`loading\`, and this file renders no \`<Suspense>\`.\n` +
-              "        In that exact configuration Next's Loadable wraps its React.lazy in a Fragment and adds NO boundary " +
-              "(node_modules/next/dist/shared/lib/lazy-dynamic/loadable.js: `hasSuspenseBoundary = !opts.ssr || !!opts.loading`), " +
-              "so the first render of an unfetched chunk suspends up to the nearest one — the ROUTE's loading.tsx. The whole " +
-              "page is replaced by its skeleton and drawn again when the chunk lands, and only ever on the first open, which is " +
-              "why #896 was reported as a reload rather than as a bug.\n" +
-              "        Wrap the render site in `<Suspense fallback={null}>`. Not a `loading:` spinner — the chunk comes off the " +
-              "origin the page came from and a spinner that resolves in the next frame is a flash, not feedback — and not " +
-              "`ssr: false`, which renders permanently nothing under this suite's environment (the header of " +
-              "apps/web/components/right-panel.tsx argues both).",
+              "        Next then adds no boundary, so the first render of an unfetched chunk suspends the whole route to its loading.tsx.\n" +
+              "        Wrap the render site in `<Suspense fallback={null}>`.",
           );
         }
       }
 
-      /**
-       * NON-VACUITY, in both directions. A walk that stopped walking and a
-       * pattern that stopped matching both look exactly like a clean tree —
-       * and this check's whole job is to notice an absence. (Measured when
-       * written: four files under apps/web import next/dynamic.)
-       */
+      // A walk that stopped walking or a pattern that stopped matching would look like a clean tree.
       if (files.length === 0) {
         return ["apps/web: sourceFilesUnder() returned nothing, so this check swept no files and proved nothing. Fix the walk rather than trusting the pass."];
       }
@@ -2238,6 +2227,11 @@ const CHECKS = [
     name: "comment-ratchet",
     protects: "no change raises a workspace's comment-line count over its merge base, and no change adds a comment over 6 lines",
     run: () => commentRatchet(ROOT),
+  },
+  {
+    name: "size-ratchet",
+    protects: "no new file over 800 lines, no oversized file growing past its merge base, and no new or grown function over 150 lines",
+    run: () => sizeRatchet(ROOT),
   },
 ];
 

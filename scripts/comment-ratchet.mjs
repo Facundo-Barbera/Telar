@@ -180,7 +180,7 @@ export function countFailures(current, atBase) {
     });
 }
 
-const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
+export const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
 
 const codeFiles = (list) => list.split("\n").filter((file) => file && languageOf(file));
 
@@ -212,7 +212,7 @@ export function countsAt(root, ref) {
   return counts;
 }
 
-const mergeBaseOf = (root, baseRef) => {
+export const mergeBaseOf = (root, baseRef) => {
   try {
     return git(root, ["merge-base", baseRef, "HEAD"]).trim();
   } catch {
