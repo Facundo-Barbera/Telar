@@ -47,7 +47,7 @@ const START = Date.parse("2026-01-01T00:00:00Z");
 function scene(): { home: string; store: EngineStore } {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-store-copy-"));
   homes.push(home);
-  const store = new EngineStore(home, () => START, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => START);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
@@ -73,7 +73,7 @@ test("the copy opens, and holds the conversation the original holds", () => {
    * `-wal` is not beside it — it opens, and it is wrong. `VACUUM INTO` is what
    * makes this assertion possible, and this assertion is what holds it there.
    */
-  const opened = new EngineStore(destination, () => START, { executionStorage: "sqlite" });
+  const opened = new EngineStore(destination, () => START);
   stores.push(opened);
   expect(opened.getSession("session_one").id).toBe("session_one");
   expect(opened.turns("session_one")[0]?.input).toBe("what is in there");

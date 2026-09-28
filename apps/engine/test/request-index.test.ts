@@ -198,7 +198,9 @@ test("an existence check folds no activity", () => {
 test("a requests document that is not this store's is rejected rather than trusted", () => {
   // "Validate on write, trust on read" only holds while the rows really were
   // this store's. A hand-edited document must still fail loudly.
-  const store = readyStore();
+  // JSON journal only; deleted with the JSON backend.
+  const store = new EngineStore(root(), () => 100, { notifier: () => true, executionStorage: "json" });
+  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   runningSession(store, "session_one", "run_one");
   const file = path.join(store.paths.sessions, "session_one", "requests.json");
   fs.writeFileSync(file, JSON.stringify({ version: 1, requests: [{ id: "req_1", state: "elsewhere" }] }));

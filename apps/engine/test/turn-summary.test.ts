@@ -58,7 +58,7 @@ const root = (): string => {
 };
 
 const open = (home: string): EngineStore => {
-  const store = new EngineStore(home, () => Date.now(), { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => Date.now());
   stores.push(store);
   return store;
 };
@@ -352,7 +352,7 @@ test("outline does not fold the journal: a 60,000-event session costs what a sma
  * three-session fixture cannot falsify one.
  */
 test("every query route answers under its budget on a 300-session engine", async () => {
-  const daemon = await startEngine({ models: stubModels, engineRoot: root(), executionStorage: "sqlite" });
+  const daemon = await startEngine({ models: stubModels, engineRoot: root() });
   daemons.push(daemon);
   const store = daemon.store;
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
@@ -425,7 +425,7 @@ test("every query route answers under its budget on a 300-session engine", async
 test("a wake's outline row is its summary line, not the machine label on `input`", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-summary-notify-"));
   roots.push(home);
-  const store = new EngineStore(home, Date.now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, Date.now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_child"]) store.createSession({ id, projectId: "project_one", title: id });

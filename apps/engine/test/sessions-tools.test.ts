@@ -1555,7 +1555,7 @@ describe("subscribing and answering", () => {
  */
 function queryEngine(): { store: EngineStore; projectId: string } {
   const projectRoot = repo();
-  const store = new EngineStore(tmp("telar-sessions-query-"), () => Date.now(), { executionStorage: "sqlite" });
+  const store = new EngineStore(tmp("telar-sessions-query-"), () => Date.now());
   openStores.push(store);
   const project = store.registerProject({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id };
@@ -1753,8 +1753,9 @@ describe("the six query tools", () => {
    * which is the cost the projection exists to avoid — and "no matches" would
    * be a sentence an agent acts on and reports onward as fact.
    */
+  // JSON journal only; deleted with the JSON backend.
   test("on a store that cannot search, find and grep refuse in words rather than answering empty", async () => {
-    const { store, projectId } = engine();
+    const { store, projectId } = engine({ executionStorage: "json" });
     const session = store.createSession({ projectId });
     conversation(store, session.id, "run_1", "the appearance rework", "done");
     const tools = wall(store);

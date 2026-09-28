@@ -53,7 +53,7 @@ const BACKENDS: Backend[] = ["sqlite", "json"];
 
 function open(directory: string, backend: Backend): EngineStore {
   let clock = 1_000;
-  const store = new EngineStore(directory, () => (clock += 1), backend === "sqlite" ? { executionStorage: "sqlite" } : {});
+  const store = new EngineStore(directory, () => (clock += 1), backend === "sqlite" ? {} : { executionStorage: "json" });
   stores.push(store);
   return store;
 }

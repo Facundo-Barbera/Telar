@@ -27,9 +27,9 @@ afterEach(() => {
 
 const bashDetail = { kind: "command_execution" as const, command: { command: "rm -rf build" } };
 
-function readyStore(directory = root()): EngineStore {
+function readyStore(directory = root(), options: ConstructorParameters<typeof EngineStore>[2] = {}): EngineStore {
   let clock = 100;
-  const store = new EngineStore(directory, () => (clock += 1), { notifier: () => true });
+  const store = new EngineStore(directory, () => (clock += 1), { notifier: () => true, ...options });
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   return store;
 }
@@ -118,7 +118,8 @@ test("an open request is never dropped, however far past the window it sits", ()
 
 test("the boot sweep trims documents written before the window existed", () => {
   const directory = root();
-  const seeded = readyStore(directory);
+  // A JSON home, imported into SQLite by the next open.
+  const seeded = readyStore(directory, { executionStorage: "json" });
   const token = runningSession(seeded);
   churn(seeded, token, 20);
 
@@ -144,10 +145,11 @@ test("the boot sweep trims documents written before the window existed", () => {
   expect(kept).toHaveLength(50);
   expect(kept[0]!.id).toBe("old_0250");
 
-  // Idempotent: a second boot has nothing left to trim and writes nothing.
-  const before = fs.readFileSync(file, "utf8");
-  new EngineStore(directory, () => 9_100, { notifier: () => true }).recover();
-  expect(fs.readFileSync(file, "utf8")).toBe(before);
+  // Idempotent: a second boot has nothing left to trim.
+  booted.closeExecutionStore();
+  const again = new EngineStore(directory, () => 9_100, { notifier: () => true });
+  again.recover();
+  expect(again.requests("session_one")).toEqual(kept);
 });
 
 test("sessions_requests still shows only the open ones", () => {

@@ -65,7 +65,7 @@ function build(plan: (engine: EngineStore, set: (at: number) => void) => void): 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-"));
   homes.push(home);
   let clock = START;
-  const engine = new EngineStore(home, () => clock, { executionStorage: "sqlite" });
+  const engine = new EngineStore(home, () => clock);
   engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   plan(engine, (at) => { clock = at; });
   const events: Record<string, number> = {};
@@ -109,7 +109,7 @@ function reopen(built: Built): ExecutionStore {
 }
 
 function reopenEngine(built: Built, now: number): EngineStore {
-  const engine = new EngineStore(built.home, () => now, { executionStorage: "sqlite" });
+  const engine = new EngineStore(built.home, () => now);
   closers.push(() => engine.closeExecutionStore());
   return engine;
 }
@@ -374,7 +374,7 @@ test("a per-session export pages rather than materialising the whole journal", (
 test("the default is never, and a window with nowhere to export is refused", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-policy-"));
   homes.push(home);
-  const engine = new EngineStore(home, () => START, { executionStorage: "sqlite" });
+  const engine = new EngineStore(home, () => START);
   closers.push(() => engine.closeExecutionStore());
   expect(engine.getRetentionPolicy()).toEqual({ idleAfterDays: null, exportTo: null });
   // A DELETE MUST NOT BE REACHABLE BY ACCIDENT. Enabling a window with no copy
@@ -391,7 +391,7 @@ test("the default is never, and a window with nowhere to export is refused", () 
 test("a hand-edited retention document costs the preference and never the history", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-broken-"));
   homes.push(home);
-  const engine = new EngineStore(home, () => START, { executionStorage: "sqlite" });
+  const engine = new EngineStore(home, () => START);
   closers.push(() => engine.closeExecutionStore());
   for (const document of ["{ not json at all", JSON.stringify({ idleAfterDays: "soon", exportTo: 7 })]) {
     fs.writeFileSync(path.join(home, "retention.json"), document);
@@ -403,7 +403,7 @@ test("with the default in place the sweep reads nothing and takes nothing", () =
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-off-"));
   homes.push(home);
   let clock = START;
-  const engine = new EngineStore(home, () => clock, { executionStorage: "sqlite" });
+  const engine = new EngineStore(home, () => clock);
   closers.push(() => engine.closeExecutionStore());
   engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
@@ -421,7 +421,7 @@ test("the configured window sweeps through the policy, end to end", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-retention-on-"));
   homes.push(home);
   let clock = START;
-  const engine = new EngineStore(home, () => clock, { executionStorage: "sqlite" });
+  const engine = new EngineStore(home, () => clock);
   closers.push(() => engine.closeExecutionStore());
   engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");

@@ -55,7 +55,7 @@ const BACKENDS: Backend[] = ["sqlite", "json"];
 /** A clock that moves, so `activityAt` and `lastTurnEndedAt` are distinguishable. */
 function open(directory: string, backend: Backend, now?: () => number): EngineStore {
   let clock = 1_000;
-  const store = new EngineStore(directory, now ?? (() => (clock += 1)), backend === "sqlite" ? { executionStorage: "sqlite" } : {});
+  const store = new EngineStore(directory, now ?? (() => (clock += 1)), backend === "sqlite" ? {} : { executionStorage: "json" });
   stores.push(store);
   return store;
 }

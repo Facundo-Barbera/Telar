@@ -26,13 +26,13 @@ function setup() {
   homes.push(home);
   let now = 1_000_000;
   const clock = { advance: (ms: number) => (now += ms) };
-  const store = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
   for (const id of ["session_host", "session_a", "session_b", "session_c"]) store.createSession({ id, projectId: "project_one", title: id.replace("session_", "worker ") });
   /** Telar restarting: the same home, a new engine, and its boot sweep. */
   const restart = () => {
-    const next = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+    const next = new EngineStore(home, () => now);
     stores.push(next);
     next.recover();
     return next;

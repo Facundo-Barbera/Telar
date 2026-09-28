@@ -47,7 +47,7 @@ function harness(runtimeMode: "approval-required" | "auto" = "approval-required"
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-deadline-"));
   homes.push(home);
   let now = OPENED_AT;
-  const store = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one", title: "A worker" });
@@ -280,7 +280,7 @@ test("a deadline survives a restart, and the reopened store sweeps it", () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-deadline-restart-"));
   homes.push(home);
   let now = OPENED_AT;
-  const store = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+  const store = new EngineStore(home, () => now);
   stores.push(store);
   store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
   store.createSession({ id: "session_one", projectId: "project_one" });
@@ -297,7 +297,7 @@ test("a deadline survives a restart, and the reopened store sweeps it", () => {
   store.closeExecutionStore();
 
   now = OPENED_AT + 120_000;
-  const reopened = new EngineStore(home, () => now, { executionStorage: "sqlite" });
+  const reopened = new EngineStore(home, () => now);
   stores.push(reopened);
   const carried = reopened.requests("session_one")[0]!;
   expect(carried.deadlineMs).toBe(60_000);

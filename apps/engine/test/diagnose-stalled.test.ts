@@ -52,7 +52,7 @@ const START = 1_000_000;
 function fixture() {
   let now = START;
   const root = tmp("telar-diagnose-");
-  const store = new EngineStore(root, () => now, { executionStorage: "sqlite" });
+  const store = new EngineStore(root, () => now);
   stores.push(store);
   const project = store.registerProject({ name: "aurora", root: tmp("telar-diagnose-project-") });
   const session = (title: string) => store.createSession({ projectId: project.id, envMode: "local", title }).id;
