@@ -48,7 +48,7 @@ import {
   UNKNOWN_PATH,
 } from "@telar/engine-client";
 import { requireCli } from "./cli-resolution";
-import { claudeEffortFor, claudeFixedWindowOf, claudeWindowTokensOf } from "./model-manifest";
+import { claudeEffortFor, claudeFixedWindowOf, claudeWindowTokensOf } from "./domains/providers";
 import { telarWall, toSdkTools } from "./telar-socket";
 import { pluginBriefings } from "./plugins/bundled";
 import type { RunCapability } from "./run/capability";

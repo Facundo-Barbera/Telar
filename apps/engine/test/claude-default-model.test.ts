@@ -13,7 +13,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ModelCatalogue, ProviderModel } from "@telar/engine-client";
 import { EngineStore } from "../src/state";
-import { BUNDLED_MANIFEST, type ModelManifest } from "../src/model-manifest";
+import { BUNDLED_MANIFEST, type ModelManifest } from "../src/domains/providers";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { allowCliInThisFile } from "./allow-cli";
 import { EngineClient } from "@telar/engine-client";

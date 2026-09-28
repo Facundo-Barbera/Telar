@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CLI_TEST_REFUSAL, cliSpawnAllowed, requireCli } from "../src/cli-resolution";
-import { loadClaudeModelSdk, readClaudeModels } from "../src/models";
+import { loadClaudeModelSdk, readClaudeModels } from "../src/domains/providers";
 import { loadClaudeCommandSdk, readClaudeSupportedCommands } from "../src/provider-skills";
 import { EngineStore } from "../src/state";
 import { generateSessionTitle, maybeRetitleSession, textGenDisabledByEnv, type RetitleStore } from "../src/textgen";
