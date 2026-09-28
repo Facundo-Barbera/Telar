@@ -32,11 +32,11 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore, EngineStateError } from "../src/state";
-import { assertProjectRoot } from "../src/worker";
-import { createClaudeDriver } from "../src/drivers/claude";
-import { createCodexDriver } from "../src/drivers/codex";
-import type { DriverRun } from "../src/drivers";
+import { EngineStore, EngineStateError } from "../state";
+import { assertProjectRoot } from ".";
+import { createClaudeDriver } from "../drivers/claude";
+import { createCodexDriver } from "../drivers/codex";
+import type { DriverRun } from "../drivers";
 
 const roots: string[] = [];
 const root = (): string => {

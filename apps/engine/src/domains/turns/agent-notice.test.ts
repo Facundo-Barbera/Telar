@@ -2,7 +2,7 @@
  * A PEER'S MESSAGE REACHES THE MODEL AS A NOTICE, AND ONLY AS A NOTICE.
  *
  * The delivery POLICY — who wakes, what stays passive, what a human Stop
- * refuses — is `session-delivery-policy.test.ts` and is untouched by any of
+ * refuses — is `domains/sessions/delivery-policy.test.ts` and is untouched by any of
  * this. What is under test here is the SHAPE of what arrives: that the body is
  * stored whole and readable, that the model is handed a short line instead,
  * that it is the SAME line whether the recipient was idle or mid-turn, and that
@@ -14,11 +14,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { NotificationDetail } from "@telar/engine-client";
-import { EngineStore } from "../src/state";
-import { agentNotice, INLINE_CHARS, inlineExcerpt, reportBack } from "../src/domains/turns/agent-notice";
-import { frameAgentMessage, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "../src/domains/turns/attribution";
-import { claudeNotificationContent } from "../src/drivers/claude";
-import { codexNotificationInstruction } from "../src/drivers/codex";
+import { EngineStore } from "../../state";
+import { agentNotice, INLINE_CHARS, inlineExcerpt, reportBack } from "./agent-notice";
+import { frameAgentMessage, framedSteerText, framedTurnInput, frameWakeMessage, RELAY_RULE } from "./attribution";
+import { claudeNotificationContent } from "../../drivers/claude";
+import { codexNotificationInstruction } from "../../drivers/codex";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];

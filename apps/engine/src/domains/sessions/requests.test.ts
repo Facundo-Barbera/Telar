@@ -10,11 +10,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { EngineStateError, EngineStore } from "../src/state";
-import { EngineWorker } from "../src/worker";
-import { normalizeOutcome, type TurnDriver } from "../src/drivers";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { EngineStateError, EngineStore } from "../../state";
+import { EngineWorker } from "../../worker";
+import { normalizeOutcome, type TurnDriver } from "../../drivers";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];

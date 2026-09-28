@@ -24,10 +24,10 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
+import { EngineStore } from "../../state";
 import type { Turn } from "@telar/engine-client";
-import { worktreeReady } from "./worktree-ready";
-import { until } from "./wait";
+import { worktreeReady } from "../../../test/worktree-ready";
+import { until } from "../../../test/wait";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {

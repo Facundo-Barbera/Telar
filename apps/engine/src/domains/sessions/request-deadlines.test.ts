@@ -24,7 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { deadlineResolution } from "@telar/engine-client";
-import { EngineStateError, EngineStore } from "../src/state";
+import { EngineStateError, EngineStore } from "../../state";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];

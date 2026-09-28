@@ -29,9 +29,9 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { ExecutionStore } from "../src/platform/db/execution-store";
-import { toLegacyHome } from "./store-internals";
+import { EngineStore } from "../../state";
+import { ExecutionStore } from "../../platform/db/execution-store";
+import { toLegacyHome } from "../../../test/store-internals";
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];

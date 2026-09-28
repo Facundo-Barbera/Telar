@@ -14,7 +14,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
+import { EngineStore } from "../../state";
 
 const HOUR = 60 * 60 * 1000;
 const START = 1_000 * HOUR;

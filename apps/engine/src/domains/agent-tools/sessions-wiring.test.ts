@@ -24,13 +24,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, type RuntimeMode, type Session } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { createClaudeDriver } from "../src/drivers/claude";
-import { type SessionsCapability, type TurnDriver } from "../src/drivers";
-import { TelarToolSocket } from "../src/domains/agent-tools";
-import { reportBack } from "../src/domains/turns/agent-notice";
-import { EngineWorker } from "../src/worker";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { createClaudeDriver } from "../../drivers/claude";
+import { type SessionsCapability, type TurnDriver } from "../../drivers";
+import { TelarToolSocket } from ".";
+import { reportBack } from "../turns/agent-notice";
+import { EngineWorker } from "../../worker";
+import { stubModels } from "../../../test/stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
@@ -246,7 +246,7 @@ async function turnWith(
   await worker.tick();
   // `tick` CLAIMS; it does not await the execution — `void this.execute(claim)`
   // is deliberate there, so the turn settling is what this waits on. The house
-  // idiom (see `worker.test.ts`). The poll overlaps the driver body — nothing
+  // idiom (see `worker/worker.test.ts`). The poll overlaps the driver body — nothing
   // orders them — so it reads through a client of its own.
   const poller = new EngineClient(daemon.discovery);
   harnessPollers.add(poller);
@@ -300,7 +300,7 @@ test("a running turn is handed the toolkit, and what it creates is stamped as an
  *
  * The owner's decision: a session created by an agent must never have more
  * permissions than its creator. The STORE's own rule is held in
- * `runtime-ceiling.test.ts`; this is the WIRING, which is the half that was
+ * `domains/sessions/runtime-ceiling.test.ts`; this is the WIRING, which is the half that was
  * actually broken — `sessions_create` could not pass a mode, so every session
  * an agent made landed in `auto` however narrow its creator was.
  *

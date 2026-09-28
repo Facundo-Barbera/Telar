@@ -28,7 +28,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
+import { EngineStore } from "../../state";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];

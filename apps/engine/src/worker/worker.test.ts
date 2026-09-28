@@ -3,12 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { BrowserToolSocket } from "../src/domains/browser";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { ProviderUnavailableError, type TurnDriver } from "../src/drivers";
-import { defaultWorkerConcurrency, EngineWorker } from "../src/worker";
-import { stubModels } from "./stub-models";
-import { eventually, until } from "./wait";
+import { BrowserToolSocket } from "../domains/browser";
+import { startEngine, type EngineDaemon } from "../daemon";
+import { ProviderUnavailableError, type TurnDriver } from "../drivers";
+import { defaultWorkerConcurrency, EngineWorker } from ".";
+import { stubModels } from "../../test/stub-models";
+import { eventually, until } from "../../test/wait";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -764,7 +764,7 @@ test("a heartbeat WITHOUT a steer key still parses — the forward-compat defaul
 });
 
 test("a project folder that no longer exists fails the turn with the folder named — never a spawn", async () => {
-  const { assertProjectRoot } = await import("../src/worker");
+  const { assertProjectRoot } = await import(".");
   expect(() => assertProjectRoot("/definitely/not/here/telar-integration")).toThrow(/does not exist.*moved or deleted.*re-register/i);
   const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "telar-root-")), "file.txt");
   fs.writeFileSync(file, "x");

@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClientError } from "@telar/engine-client";
-import type { TurnDriver } from "../src/drivers";
-import { EngineWorker } from "../src/worker";
-import { createWorkerDiagnostics, sanitizeDiagnostic } from "../src/worker-diagnostics";
+import type { TurnDriver } from "../drivers";
+import { EngineWorker } from ".";
+import { createWorkerDiagnostics, sanitizeDiagnostic } from "../worker-diagnostics";
 
 /**
  * #208 follow-up — THE WORKER MUST NOT EXPIRE ITSELF ON A CLOCK THE ENGINE DOES

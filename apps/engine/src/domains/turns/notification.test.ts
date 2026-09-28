@@ -2,7 +2,7 @@
  * WHEN A NOTIFICATION LANDS, AND HOW MANY OF THEM LAND AT ONCE — issue #550
  * clause 3.
  *
- * The SHAPE of a notification is `agent-notice.test.ts`; the drivers' channels
+ * The SHAPE of a notification is `domains/turns/agent-notice.test.ts`; the drivers' channels
  * are the per-driver files. What is under test here is the POLICY:
  *
  *   - `settled_only` is the default, so a wake arriving while the subscriber
@@ -21,8 +21,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { MAX_DELIVERIES } from "../src/domains/turns/notification";
+import { EngineStore } from "../../state";
+import { MAX_DELIVERIES } from "./notification";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];

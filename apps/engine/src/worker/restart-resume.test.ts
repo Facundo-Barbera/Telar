@@ -3,10 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { connectEngine } from "@telar/engine-client/node";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { TurnDriver } from "../src/drivers";
-import { EngineStateError, EngineStore } from "../src/state";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../daemon";
+import type { TurnDriver } from "../drivers";
+import { EngineStateError, EngineStore } from "../state";
+import { stubModels } from "../../test/stub-models";
 
 /**
  * CONTINUING WHAT A PLANNED RESTART CUT OFF — `resumeAfterPlannedRestart`.

@@ -10,11 +10,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { TurnDriver } from "../src/drivers";
-import { EngineStore } from "../src/state";
-import { stubModels } from "./stub-models";
-import { forgetOpenPrefixes } from "./store-internals";
+import { startEngine, type EngineDaemon } from "../daemon";
+import type { TurnDriver } from "../drivers";
+import { EngineStore } from "../state";
+import { stubModels } from "../../test/stub-models";
+import { forgetOpenPrefixes } from "../../test/store-internals";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld

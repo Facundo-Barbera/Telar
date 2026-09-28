@@ -719,7 +719,7 @@ describe("a session whose checkout failed", () => {
 /**
  * THE ADVISORY ON THE AGENT SURFACE — #813 step 5's other half.
  *
- * The store decides it (`test/turn-liveness.test.ts` owns that, including the
+ * The store decides it (`src/domains/turns/liveness.test.ts` owns that, including the
  * heartbeat case a heartbeat-based implementation fails). What this asserts is
  * that the decision REACHES a caller, and that the words it arrives in do not
  * recommend the action that was the mistake: #813's healthy 80-minute turn was

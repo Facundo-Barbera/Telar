@@ -14,8 +14,8 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
-import { toLegacyHome } from "./store-internals";
+import { EngineStore } from "../../state";
+import { toLegacyHome } from "../../../test/store-internals";
 
 const roots: string[] = [];
 

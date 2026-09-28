@@ -11,12 +11,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Database } from "bun:sqlite";
-import { EngineStore } from "../src/state";
-import { ExecutionStore } from "../src/platform/db/execution-store";
-import { ITEM_ROWS_FOR_RUNS_SQL } from "../src/platform/db/tables";
-import { sessionSnapshot } from "../src/domains/sessions";
-import { arrayElementRanges, parseSpan } from "../src/platform/db/document-window";
-import { toLegacyHome } from "./store-internals";
+import { EngineStore } from "../../state";
+import { ExecutionStore } from "./execution-store";
+import { ITEM_ROWS_FOR_RUNS_SQL } from "./tables";
+import { sessionSnapshot } from "../../domains/sessions";
+import { arrayElementRanges, parseSpan } from "./document-window";
+import { toLegacyHome } from "../../../test/store-internals";
 
 const roots: string[] = [];
 const root = (): string => {

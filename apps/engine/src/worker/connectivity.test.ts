@@ -3,11 +3,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient, EngineClientError, sanitizeTransportCause } from "@telar/engine-client";
-import { startEngine } from "../src/daemon";
-import type { TurnDriver } from "../src/drivers";
-import { EngineWorker } from "../src/worker";
-import { WorkerReconnectController, type SupervisedWorker } from "../src/worker-supervisor";
-import { stubModels } from "./stub-models";
+import { startEngine } from "../daemon";
+import type { TurnDriver } from "../drivers";
+import { EngineWorker } from ".";
+import { WorkerReconnectController, type SupervisedWorker } from "../worker-supervisor";
+import { stubModels } from "../../test/stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld

@@ -5,7 +5,7 @@
  * NO TEST HERE STARTS A TIMER. Every one calls `sweepSchedules()` directly on a
  * clock it winds by hand, which is what the three existing sweep suites do and
  * is the only way "a three-day gap" is a test rather than a three-day wait.
- * `snooze-wake.test.ts` is the template, including its `reopen()` helper.
+ * `domains/sessions/snooze-wake.test.ts` is the template, including its `reopen()` helper.
  *
  * COUNTS, NEVER THE PRESENCE OF A STRING. "A turn was submitted" and
  * "72 turns were submitted" emit the same events; only the count tells them
@@ -16,7 +16,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EngineStore } from "../src/state";
+import { EngineStore } from "../../state";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];

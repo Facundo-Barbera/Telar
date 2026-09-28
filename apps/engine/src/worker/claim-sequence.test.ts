@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { EngineWorker } from "../src/worker";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../daemon";
+import { EngineWorker } from ".";
+import { stubModels } from "../../test/stub-models";
 
 /**
  * A Claude default this temp home already knows, so a claim is not withheld
