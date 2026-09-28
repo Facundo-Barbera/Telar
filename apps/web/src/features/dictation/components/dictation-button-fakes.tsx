@@ -17,12 +17,35 @@ export let sent: unknown[] = [];
 export let tracks: FakeTrack[] = [];
 export let tokenCalls = 0;
 
+export const audio = { amplitude: 0, contexts: [] as FakeAudioContext[] };
+
+class FakeAudioContext {
+  closed = false;
+  constructor() {
+    audio.contexts.push(this);
+  }
+  createMediaStreamSource() {
+    return { connect: () => {}, disconnect: () => {} };
+  }
+  createAnalyser() {
+    return { fftSize: 1024, smoothingTimeConstant: 0, disconnect: () => {}, getFloatTimeDomainData: (samples: Float32Array) => samples.fill(audio.amplitude) };
+  }
+  resume() {
+    return Promise.resolve();
+  }
+  close() {
+    this.closed = true;
+    return Promise.resolve();
+  }
+}
+
 export const knobs = {
   provider: "deepgram" as "off" | "deepgram",
   language: "multi",
   keyterms: ["Telar", "Zarigüeya"] as string[] | undefined,
   caretAt: { x: 120, y: 400 },
   secure: true,
+  reducedMotion: false,
 };
 
 class FakeSocket {
@@ -75,12 +98,16 @@ export const results = (transcript: string, isFinal: boolean) => ({
   channel: { alternatives: [{ transcript }] },
 });
 
+let matchMediaOf: typeof window.matchMedia | undefined;
+
 function installBrowserFakes(): void {
+  const realMatchMedia = (matchMediaOf ??= window.matchMedia.bind(window));
   live = undefined;
   sent = [];
   tracks = [];
   tokenCalls = 0;
-  Object.assign(knobs, { provider: "deepgram", language: "multi", keyterms: ["Telar", "Zarigüeya"], caretAt: { x: 120, y: 400 }, secure: true });
+  Object.assign(knobs, { provider: "deepgram", language: "multi", keyterms: ["Telar", "Zarigüeya"], caretAt: { x: 120, y: 400 }, secure: true, reducedMotion: false });
+  Object.assign(audio, { amplitude: 0, contexts: [] });
   // happy-dom has no `isSecureContext` at all, which reads as insecure.
   Object.defineProperty(window, "isSecureContext", { configurable: true, get: () => knobs.secure });
   restoreDefaultKeymap();
@@ -94,6 +121,11 @@ function installBrowserFakes(): void {
   };
   const media = globalThis as unknown as Record<string, unknown>;
   media.MediaRecorder = FakeRecorder;
+  media.AudioContext = FakeAudioContext;
+  window.matchMedia = (query: string) => {
+    if (!query.includes("prefers-reduced-motion")) return realMatchMedia(query);
+    return { matches: knobs.reducedMotion, media: query, addEventListener: () => {}, removeEventListener: () => {} } as unknown as MediaQueryList;
+  };
   const open = function (url: string, protocols?: string | string[]) {
     live = new FakeSocket(url, protocols);
     return live;

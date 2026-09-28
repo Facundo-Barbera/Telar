@@ -47,7 +47,8 @@ describe("the mic button on a composer", () => {
     live!.say(results("in the box", false));
 
     expect(draftOf(host)).toBe("in the box ");
-    expect(button.parentElement!.textContent).toBe("Listening");
+    expect(button.parentElement!.textContent).toBe("");
+    expect(button.getAttribute("aria-pressed")).toBe("true");
   });
 
   test("a person typing mid-guess keeps their keystrokes and the dictation carries on", async () => {

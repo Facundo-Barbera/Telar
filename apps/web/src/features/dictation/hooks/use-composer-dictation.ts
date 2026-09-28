@@ -24,12 +24,14 @@ export type ComposerDictation = DictationState & {
    * `MediaRecorder`); `undefined` otherwise. Unlike `off`, this case is explained, not hidden.
    */
   unavailable?: string;
+  stream?: MediaStream;
 };
 
 export function useComposerDictation(token: string): ComposerDictation {
   // Resolved at the press, since the active composer changes with focus.
   const box = useCallback((): DictationBox | undefined => activeComposer(), []);
-  const dictation = useDictation({ box });
+  const [stream, setStream] = useState<MediaStream>();
+  const dictation = useDictation({ box, onStream: setStream });
   const { provider } = useDictationSettings();
   const available = provider !== "off" && dictation.supported;
   /** `undefined` on the server and on any page that can record. */
@@ -68,6 +70,7 @@ export function useComposerDictation(token: string): ComposerDictation {
     ...dictation,
     available,
     ...(unavailable === undefined ? {} : { unavailable }),
+    ...(stream === undefined ? {} : { stream }),
     toggle,
     // Only when the page is the blocker; otherwise `useDictation`'s own error is the live one.
     ...(unavailable !== undefined && refusal !== undefined ? { error: refusal } : {}),

@@ -6,7 +6,7 @@ import { useCallback, useId, useRef, useState } from "react";
 import { turnHasContent, type ProjectAvailability } from "@telar/engine-client";
 import { choiceOf } from "@/features/providers";
 import { useCommandHandlers } from "@/features/commands";
-import { useComposerDictation } from "@/features/dictation";
+import { DictationButton, DictationGlow, useComposerDictation } from "@/features/dictation";
 import { cn } from "@/ui/utils";
 import { compactBlockedReason, isResumeDraft, type Completion } from "../completions";
 import { markComposerActive, type ComposerSubmit } from "../registry";
@@ -164,49 +164,56 @@ export function Composer(props: ComposerProps) {
             trySubmit();
           }}
         >
-          <ComposerCard
-            editor={editor}
-            editorId={EDITOR_ID}
-            kind={kind}
-            text={question.boxText}
-            placeholder={question.active ? "Type your own answer, or leave blank…" : placeholderFor(ready, busy)}
-            ready={ready}
-            compact={compactNow}
-            draft={draft}
-            attachments={attachments}
-            onAttach={onAttach}
-            addFiles={addFiles}
-            onDraftChange={onDraftChange}
-            onEdit={onEdit}
-            onSelectionChange={() => !question.active && menu.retrigger(draft)}
-            onKeyDown={onKeyDown}
-            onFocusChange={(focused) => {
-              if (focused) markComposerActive(token);
-              setEditorFocused(focused);
-            }}
-            stash={stash}
-            menu={menu}
-            pick={pick}
-            drop={drop}
-            dictation={dictation}
-            pills={pills}
-            trailing={
-              compactNow ? send : (
-                <>
-                  <ContextPill
-                    {...(props.usage ? { usage: props.usage } : {})}
-                    {...(session ? { driver: session.driver } : {})}
-                    {...(props.onCompact ? { onCompact: props.onCompact } : {})}
-                    compactDisabled={busy || sending || Boolean(props.compacting)}
-                    compactReason={compactBlockedReason({ busy, ...(props.compacting ? { compacting: props.compacting } : {}) }) ?? "Sending…"}
-                  />
-                  {send}
-                </>
-              )
-            }
-          />
+          <DictationGlow phase={dictation.phase} stream={dictation.stream}>
+            <ComposerCard
+              editor={editor}
+              editorId={EDITOR_ID}
+              kind={kind}
+              text={question.boxText}
+              placeholder={question.active ? "Type your own answer, or leave blank…" : placeholderFor(ready, busy)}
+              ready={ready}
+              compact={compactNow}
+              draft={draft}
+              attachments={attachments}
+              onAttach={onAttach}
+              addFiles={addFiles}
+              onDraftChange={onDraftChange}
+              onEdit={onEdit}
+              onSelectionChange={() => !question.active && menu.retrigger(draft)}
+              onKeyDown={onKeyDown}
+              onFocusChange={(focused) => {
+                if (focused) markComposerActive(token);
+                setEditorFocused(focused);
+              }}
+              stash={stash}
+              menu={menu}
+              pick={pick}
+              drop={drop}
+              pills={pills}
+              trailing={
+                compactNow ? (
+                  <>
+                    <DictationButton dictation={dictation} />
+                    {send}
+                  </>
+                ) : (
+                  <>
+                    <ContextPill
+                      {...(props.usage ? { usage: props.usage } : {})}
+                      {...(session ? { driver: session.driver } : {})}
+                      {...(props.onCompact ? { onCompact: props.onCompact } : {})}
+                      compactDisabled={busy || sending || Boolean(props.compacting)}
+                      compactReason={compactBlockedReason({ busy, ...(props.compacting ? { compacting: props.compacting } : {}) }) ?? "Sending…"}
+                    />
+                    <DictationButton dictation={dictation} />
+                    {send}
+                  </>
+                )
+              }
+            />
+          </DictationGlow>
         </form>
-        <ComposerFoot props={props} compact={compactNow} pills={pills} onAvailability={setDriveAway} />
+        <ComposerFoot props={props} compact={compactNow} pills={pills} hidden={dictation.phase !== "idle"} onAvailability={setDriveAway} />
       </div>
     </div>
   );

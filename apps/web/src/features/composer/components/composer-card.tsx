@@ -3,7 +3,6 @@
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { InputGroup, InputGroupAddon } from "@/ui/input-group";
 import { cn } from "@/ui/utils";
-import { DictationButton, DictationGlow, type ComposerDictation } from "@/features/dictation";
 import type { ComposerCompletions } from "../hooks/use-composer-completions";
 import type { ComposerStash } from "../hooks/use-composer-stash";
 import type { useDropTarget } from "../hooks/use-drop-target";
@@ -46,7 +45,6 @@ export function ComposerCard({
   menu,
   pick,
   drop,
-  dictation,
   pills,
   trailing,
 }: {
@@ -70,9 +68,8 @@ export function ComposerCard({
   menu: ComposerCompletions;
   pick: (completion: Completion) => void;
   drop: ReturnType<typeof useDropTarget>;
-  dictation: ComposerDictation;
   pills: ReactNode;
-  /** The context ring and send button; while compact, just the send button. */
+  /** The context ring, dictation and send; while compact, dictation and send. */
   trailing: ReactNode;
 }) {
   const chrome = { draft, attachments, stashing: stash.stashing, onClear: () => onDraftChange(""), onStash: () => void stash.stash() };
@@ -100,7 +97,6 @@ export function ComposerCard({
           onPick={pick}
         />
       ) : null}
-      <DictationGlow phase={dictation.phase} layer="halo" />
       <ComposerChromeMenu {...chrome}>
         <InputGroup
           {...drop.handlers}
@@ -149,14 +145,12 @@ export function ComposerCard({
           {compact ? (
             <InputGroupAddon align="inline-end" className="gap-1 self-end py-1.5 pr-1.5">
               <AddContextMenu onPick={addFiles} />
-              <DictationButton dictation={dictation} />
               {trailing}
             </InputGroupAddon>
           ) : (
             <InputGroupAddon align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
               <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <AddContextMenu onPick={addFiles} />
-                <DictationButton dictation={dictation} />
                 <StashBadge stash={stash} />
                 {pills}
               </div>
@@ -165,7 +159,6 @@ export function ComposerCard({
           )}
         </InputGroup>
       </ComposerChromeMenu>
-      <DictationGlow phase={dictation.phase} layer="ring" />
     </div>
   );
 }

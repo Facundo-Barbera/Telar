@@ -39,13 +39,25 @@ export function hearing(level: number): boolean {
   return level >= meterLevel(10 ** (HEARING_DB / 20));
 }
 
+const GLOW_FLOOR = 0.25;
+const GLOW_SPAN = 0.5;
+const GLOW_ATTACK = 0.35;
+const GLOW_RELEASE = 0.08;
+
+export function glowLevel(previous: number, meter: number): number {
+  const clamp = (value: number) => (Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0);
+  const from = clamp(previous);
+  const target = clamp((meter - GLOW_FLOOR) / GLOW_SPAN);
+  return clamp(from + (target - from) * (target > from ? GLOW_ATTACK : GLOW_RELEASE));
+}
+
 export type LevelMeter = {
   /** Does not stop the stream. Safe to call twice. */
   stop: () => void;
 };
 
-/** `onLevel` fires only when the quantised value moves, and once with 0 at the start. */
-export function createLevelMeter(stream: MediaStream, onLevel: (level: number) => void): LevelMeter {
+/** `onLevel` fires when the quantised value moves (once with 0 at the start), or with the raw level `everyFrame`. */
+export function createLevelMeter(stream: MediaStream, onLevel: (level: number) => void, { everyFrame = false } = {}): LevelMeter {
   const context = new AudioContext();
   const source = context.createMediaStreamSource(stream);
   const analyser = context.createAnalyser();
@@ -65,8 +77,9 @@ export function createLevelMeter(stream: MediaStream, onLevel: (level: number) =
   const read = (): void => {
     if (stopped) return;
     analyser.getFloatTimeDomainData(samples);
-    const level = quantise(meterLevel(rms(samples)));
-    if (level !== last) {
+    const raw = meterLevel(rms(samples));
+    const level = everyFrame ? raw : quantise(raw);
+    if (everyFrame || level !== last) {
       last = level;
       onLevel(level);
     }

@@ -42,21 +42,27 @@ export function ComposerHead({
   );
 }
 
-/** Below the card: the pills' tray while compact, and where the message lands. A project-less chat has no foot. */
+/** Below the card: the pills' tray while compact, and where the message lands. `hidden` slides it behind the card, keeping its height. */
 export function ComposerFoot({
   props,
   compact,
   pills,
+  hidden,
   onAvailability,
 }: {
   props: ComposerProps;
   compact: boolean;
   pills: ReactNode;
+  hidden: boolean;
   onAvailability: (availability: Exclude<ProjectAvailability, "available"> | undefined) => void;
 }) {
   const { projectId, projectName, session, envMode, onEnvMode, pendingBase, onBase, onOpenChanges } = props;
   return (
-    <>
+    <div
+      data-slot="composer-foot"
+      inert={hidden}
+      className={cn("relative z-0 transition-[translate,opacity] duration-300 ease-out motion-reduce:transition-none", hidden && "-translate-y-full opacity-0")}
+    >
       {compact && pills && (
         <div className="mx-3 -mt-px">
           <div className="flex items-center gap-1 rounded-b-2xl border border-t-0 border-border/80 bg-card/95 px-2 py-0.5 shadow-1 backdrop-blur-xl">{pills}</div>
@@ -78,6 +84,6 @@ export function ComposerFoot({
           />
         </div>
       )}
-    </>
+    </div>
   );
 }
