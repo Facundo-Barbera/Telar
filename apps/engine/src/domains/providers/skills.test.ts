@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
+import { startEngine, type EngineDaemon } from "../../daemon";
 import {
   clearProviderSkillsCache,
   fallbackDescription,
@@ -15,8 +15,8 @@ import {
   readProviderSkills,
   readProviderSkillsCached,
   readSkillDirectory,
-} from "../src/provider-skills";
-import { stubModels } from "./stub-models";
+} from "./skills";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -32,26 +32,17 @@ const write = (file: string, text: string): void => {
   fs.writeFileSync(file, text);
 };
 
-/**
- * THE FIXTURE THE ISSUE ASKS FOR: a checkout holding two skills and one
- * command. Written as a real `.claude` directory rather than mocked, because
- * the thing under test IS the reading of that layout — a mock of `fs` would
- * assert that this module calls the functions it calls.
- */
 const fixtureCheckout = (): string => {
   const checkout = temp("telar-skills-checkout-");
   write(
     path.join(checkout, ".claude", "skills", "release-notes", "SKILL.md"),
     "---\nname: release-notes\ndescription: Draft the notes for a release.\n---\n\nBody.\n",
   );
-  // No front matter at all, which is how half the skills on a real machine are
-  // written — the first heading has to carry the description.
   write(path.join(checkout, ".claude", "skills", "seed-data", "SKILL.md"), "# Seed the development database\n\nSteps follow.\n");
   write(path.join(checkout, ".claude", "commands", "ship.md"), "---\ndescription: Tag and publish.\n---\n\nDo the thing.\n");
   return checkout;
 };
 
-/** A `~/.claude` of its own, so no test reads the machine's. */
 const fixtureHome = (): string => temp("telar-skills-home-");
 
 afterEach(async () => {
@@ -77,8 +68,6 @@ describe("reading a checkout's skills and commands", () => {
   });
 
   test("a skill installed as a symlink is an ordinary skill", async () => {
-    // `~/.claude/skills/find-skills -> ../../.agents/skills/find-skills` is a
-    // real entry on a real machine; `lstat` would silently drop it.
     const checkout = temp("telar-skills-link-");
     const elsewhere = temp("telar-skills-target-");
     write(path.join(elsewhere, "SKILL.md"), "---\nname: linked\ndescription: Reached through a link.\n---\n");
@@ -121,8 +110,6 @@ describe("reading a checkout's skills and commands", () => {
       env: { CLAUDE_CONFIG_DIR: home },
       loadProviderCommands: async () => [],
     });
-    // One `review`, and it is the checkout's — the precedence Claude Code
-    // itself resolves by, so the menu says what will actually run.
     expect(answer.skills.filter((skill) => skill.name === "review")).toEqual([
       { name: "review", description: "The project's own.", source: "project" },
     ]);
@@ -135,8 +122,6 @@ describe("reading a checkout's skills and commands", () => {
       driver: "claude",
       checkout,
       env: { CLAUDE_CONFIG_DIR: fixtureHome() },
-      // Claude reports skills through `supportedCommands()` too; `release-notes`
-      // is already a skill and must not appear again under commands.
       loadProviderCommands: async () => [
         { name: "release-notes", description: "duplicate", source: "provider" },
         { name: "clear", description: "Clear the conversation.", source: "provider" },
@@ -151,7 +136,6 @@ describe("reading a checkout's skills and commands", () => {
   test("a provider with no inventory lists its own skills directory and no commands", async () => {
     const home = fixtureHome();
     const env = { CLAUDE_CONFIG_DIR: path.join(home, "claude"), CODEX_HOME: path.join(home, "codex"), XDG_CONFIG_HOME: path.join(home, "cfg") };
-    // Nothing installed yet: two empty lists, never the checkout's `.claude`.
     for (const driver of ["codex", "opencode"] as const) {
       expect(await readProviderSkills({ driver, checkout: fixtureCheckout(), env })).toEqual({ skills: [], commands: [] });
     }
@@ -234,8 +218,6 @@ describe("the cache in front of the read", () => {
     expect((await readProviderSkillsCached(input)).skills).toHaveLength(2);
     expect(asked).toBe(1);
 
-    // Adding a skill moves `skills/`'s own mtime, which is exactly the change
-    // the stamp exists to notice.
     write(path.join(checkout, ".claude", "skills", "third", "SKILL.md"), "---\nname: third\ndescription: New.\n---\n");
     expect((await readProviderSkillsCached(input)).skills).toHaveLength(3);
     expect(asked).toBe(2);
@@ -256,7 +238,6 @@ describe("the cache in front of the read", () => {
       path.join(checkout, ".claude", "skills", "release-notes", "SKILL.md"),
       "---\nname: release-notes\ndescription: Reworded.\n---\n",
     );
-    // Still the cached answer inside the window…
     expect((await readProviderSkillsCached({ ...input, now: () => clock + 1_000 })).skills[0]?.description).toBe("Draft the notes for a release.");
     clock += 61_000;
     expect((await readProviderSkillsCached({ ...input, now: () => clock })).skills[0]?.description).toBe("Reworded.");
@@ -279,8 +260,6 @@ describe("GET /v2/sessions/:id/skills", () => {
     daemons.push(daemon);
     const client = new EngineClient(daemon.discovery);
     await client.registerProject({ id: "project_skills", name: "Skills", root: checkout });
-    // `local` so the session's checkout IS the fixture — a worktree would be a
-    // fresh clone with no `.claude` in it, which is a different test.
     const session = await client.createSession({ id: "session_skills", projectId: "project_skills", envMode: "local" });
 
     const answer = await client.sessionSkills(session.session.id);
@@ -302,18 +281,6 @@ describe("GET /v2/sessions/:id/skills", () => {
   });
 });
 
-/* ------------------------------------------------------------------ *
- * #500 — the directory-scoped skills, and the canvas that has no session.
- * ------------------------------------------------------------------ */
-
-/**
- * THE THREE PLACES A SKILL CAN BE, in one checkout: the project root, a
- * subdirectory that scopes its own, and the machine.
- *
- * The middle one is what #500 is about. It is written as a real nested
- * `.claude` rather than mocked for the same reason the fixture above is: the
- * thing under test IS whether the walk reaches that directory.
- */
 const fixtureThreePlaces = (): { checkout: string; home: string } => {
   const checkout = temp("telar-skills-scoped-");
   const home = fixtureHome();
@@ -333,14 +300,10 @@ describe("directory-scoped skills (#500)", () => {
       driver: "claude",
       checkout,
       env: { CLAUDE_CONFIG_DIR: home },
-      // Empty ON PURPOSE: the CLI cannot supply the nested row. Asked in a
-      // checkout root it does not list a directory-scoped skill at all — only
-      // a cwd inside `apps/web` produces it — so the walk is the only route.
       loadProviderCommands: async () => [],
     });
     expect(answer.skills).toEqual([
       { name: "root-skill", description: "At the project root.", source: "project" },
-      // NAMESPACED BY ITS DIRECTORY, which is how Claude Code addresses one.
       { name: "apps/web:nested-skill", description: "Scoped to apps/web.", source: "project" },
       { name: "global-skill", description: "This machine's own.", source: "user" },
     ]);
@@ -380,8 +343,6 @@ describe("directory-scoped skills (#500)", () => {
       loadProviderCommands: async () => [],
     };
     expect((await readProviderSkillsCached(input)).skills).toHaveLength(3);
-    // Served from memory — the stamp is over the same directories, which is the
-    // thing that broke when the stamp was taken before the roots were known.
     expect((await readProviderSkillsCached(input)).skills).toHaveLength(3);
     write(
       path.join(checkout, "apps", "web", ".claude", "skills", "another", "SKILL.md"),
@@ -413,8 +374,6 @@ describe("GET /v2/projects/:id/skills (#500)", () => {
     const client = new EngineClient(daemon.discovery);
     await client.registerProject({ id: "project_canvas", name: "Canvas", root: checkout });
 
-    // NO SESSION IS CREATED. That is the whole point of #500: `$` on a canvas
-    // had nothing to ask, and now it asks the project.
     const answer = await client.projectSkills("project_canvas");
     expect(answer.skills.map((skill) => skill.name)).toEqual(["root-skill", "apps/web:nested-skill", "global-skill"]);
     expect(answer.commands).toEqual([{ name: "compact", description: "Squeeze the context.", source: "provider" }]);

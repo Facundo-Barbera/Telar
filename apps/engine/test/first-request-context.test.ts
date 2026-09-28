@@ -28,7 +28,7 @@ import { BROWSER_TOOLS } from "../src/domains/browser";
 import { RUN_BRIEFING } from "../src/run/briefing";
 import { toolInputSchema } from "../src/mcp-socket";
 import { TELAR_ORIENTATION, TELAR_SKILL } from "../src/orientation";
-import { parseFrontMatter } from "../src/provider-skills";
+import { parseFrontMatter } from "../src/domains/providers";
 import type { DriverRun } from "../src/provider-contract";
 
 const tokens = (chars: number) => Math.ceil(chars / 4);

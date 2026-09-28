@@ -51,8 +51,7 @@ import {
 import { runCliUpdate, type CliUpdateRun } from "./domains/providers";
 import { createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./http-auth";
-import { createProviderProber, type VersionProbe } from "./provider-instances";
-import { readProviderSkillsCached, type LoadProviderCommands } from "./provider-skills";
+import { createProviderProber, readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS } from "./orchestrate-skill";
 import { syncTelarSkill, TELAR_ORIENTATION } from "./orientation";
 import { createLoginGrantStore } from "./domains/browser";
@@ -78,7 +77,7 @@ import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type Plugin
 import { setPluginReadTools } from "./driver";
 import { createRunMount } from "./run/mount";
 import { RunError } from "./run/types";
-import { maybeRetitleSession, runStructuredForPolicy } from "./textgen";
+import { maybeRetitleSession, runStructuredForPolicy } from "./domains/providers";
 import {
   isAppearanceId,
   listImages,

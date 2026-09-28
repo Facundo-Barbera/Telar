@@ -4,9 +4,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
-import { derivedBranchFor, EngineStateError, EngineStore } from "../src/state";
-import { buildTitlePrompt, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "../src/textgen";
-import { worktreeReady } from "./worktree-ready";
+import { derivedBranchFor, EngineStateError, EngineStore } from "../../state";
+import { buildTitlePrompt, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
+import { worktreeReady } from "../../../test/worktree-ready";
 
 const roots: string[] = [];
 const tmp = (prefix: string): string => {
@@ -19,7 +19,6 @@ afterEach(() => {
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
-/** A throwaway repository with one commit, so `HEAD` resolves. */
 function repo(): string {
   const root = tmp("telar-tg-repo-");
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
@@ -85,9 +84,7 @@ describe("text generation policy", () => {
     const store = new EngineStore(tmp("telar-tg-state-"), () => 100);
     expect(store.getTextGenPolicy()).toEqual(DEFAULT_TEXT_GEN_POLICY);
     expect(store.setTextGenPolicy({ titles: false, model: "sonnet" })).toEqual({ ...DEFAULT_TEXT_GEN_POLICY, titles: false, model: "sonnet" });
-    // Same driver: the model survives an unrelated patch.
     expect(store.setTextGenPolicy({ renameBranches: false }).model).toBe("sonnet");
-    // New driver: the model is meaningless there and is dropped, not carried.
     const swapped = store.setTextGenPolicy({ driver: "codex" });
     expect(swapped.driver).toBe("codex");
     expect(swapped.model).toBeUndefined();
@@ -110,8 +107,6 @@ describe("text generation policy", () => {
 });
 
 describe("refreshWorktreeBranchFromTitle", () => {
-  /** The cut runs behind the create now (#496), and a branch rename needs the
-   *  checkout it renames in. */
   async function worktreeSession(title: string): Promise<{ store: EngineStore; id: string }> {
     const store = new EngineStore(tmp("telar-tg-state-"), () => 100);
     store.registerProject({ id: "project_one", name: "One", root: repo() });
@@ -138,17 +133,6 @@ describe("refreshWorktreeBranchFromTitle", () => {
 });
 
 describe("maybeRetitleSession", () => {
-  /**
-   * THE KILL SWITCH IS OFF FOR THIS BLOCK, and only this block — issue #532.
-   *
-   * The suite's preload sets `TELAR_TEXTGEN=off` so that no test anywhere
-   * spends a real model call on a title. These tests spend nothing: the
-   * generator is injected and returns a string. But the switch is honoured
-   * before the policy is read, so leaving it on here would make every one of
-   * them pass for the wrong reason — a flow that never ran looks identical to
-   * a flow that ran and declined. `no-providers.test.ts` holds the switch
-   * itself; this block holds what it switches.
-   */
   let previous: string | undefined;
   beforeAll(() => {
     previous = process.env.TELAR_TEXTGEN;
@@ -185,8 +169,6 @@ describe("maybeRetitleSession", () => {
     };
     const generate = (input: unknown) => {
       calls.generate.push(input);
-      // The moment the harness "answers" is when a mid-flight rename would
-      // have landed — so the override applies here, between the two checks.
       if (overrides.titleAfter !== undefined) title = overrides.titleAfter;
       return Promise.resolve("generated" in overrides ? overrides.generated : "A Real Title");
     };
