@@ -41,12 +41,12 @@ import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "@/lib/file-tree";
 import { directoryReference, fileReference, startReferenceDrag, type TelarReference } from "@/lib/drag-reference";
 import type { OpenIntent } from "@/lib/editor-workspace";
-import { REVIEW_STATUS_LETTER } from "@/lib/session-review";
+import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/lib/session-review";
 import { useWorkspaceFileMenu, workspaceFilePath, type WorkspaceFileMenu } from "@/lib/workspace-open";
 import { EDITOR_HEADER_ROW } from "@/components/session/editor-chrome";
 import { FileKindIcon } from "@/components/session/file-icon";
 import { OpenerIcon } from "@/components/session/opener-icon";
-import { PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
+import { PanelEmpty, PanelRow } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import {
   ContextMenu,
@@ -58,16 +58,6 @@ import {
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();
-
-/** The same five-colour vocabulary the Diff surface uses, so a modified file
- *  looks the same in both tabs. */
-const STATUS_TONE: Record<GitChangeStatus, PanelTone> = {
-  added: "done",
-  untracked: "attention",
-  modified: "none",
-  deleted: "danger",
-  renamed: "none",
-};
 
 /** One nesting level, in pixels. Small on purpose: a 320px panel showing a
  *  six-deep path cannot afford 16px a level, and the collapse rule means most
@@ -232,7 +222,7 @@ function FileTreeRow({
           drag that starts one element up — the rule board.tsx's card states. */}
       <ContextMenu>
         <ContextMenuTrigger>
-          <PanelRow tone={status ? STATUS_TONE[status] : "none"} className="p-0 pl-0">
+          <PanelRow className="p-0 pl-0">
             <button
               type="button"
               role="treeitem"
@@ -284,7 +274,11 @@ function FileTreeRow({
                 {row.node.name}
               </span>
               {/* Git's own letter, same as the Diff rows — no legend needed. */}
-              {status && <span className="shrink-0 font-mono text-3xs text-muted-foreground">{REVIEW_STATUS_LETTER[status]}</span>}
+              {status && (
+                <span className="shrink-0 font-mono text-3xs text-muted-foreground" title={REVIEW_STATUS_WORD[status]}>
+                  {REVIEW_STATUS_LETTER[status]}
+                </span>
+              )}
               {/* A collapsed directory says something inside it moved. Without this
                   the tint is invisible until you have already found the file. */}
               {!status && dirtyInside && !expanded && <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-warning/70" />}

@@ -6,8 +6,8 @@
  * A gallery of names is not a gallery of looks. This paints what the Look
  * actually does: each state's LAYERS over each state's derived canvas, light on
  * the left and dark on the right because a composition is two states, with a
- * MINIATURE PANEL floating on top — a card-coloured rectangle wearing the 3px
- * accent rail from components/ui/panel.tsx. So the tile says three things
+ * MINIATURE PANEL floating on top — a card-coloured rectangle with one line of
+ * text in the look's accent. So the tile says three things
  * without a word of copy: the scene, the two canvases, and the accent.
  *
  * IT COMPILES, RATHER THAN READING A STORED PICTURE (#471). A Look used to
@@ -78,10 +78,12 @@ export function LookThumb({ look, className }: { look: Look; className?: string 
         and Iris genuinely paint near-identical canvases; what tells them apart
         is moss against violet.
 
-        SO THE RAIL IS READ IN THE HALF IT IS PAINTED ON. `data-accent` already
-        resolved the look's own accent rather than the window's — globals.css
-        carries `[data-accent=…]` and `.dark [data-accent=…]` for all eight, and
-        a rule matching the rail beats one inherited from <html>. What it could
+        SO THE ACCENT IS READ IN THE HALF IT IS PAINTED ON. It rides the panel's
+        line of text, not a left rail: the cockpit's rows draw no rails, and a
+        preview that kept one would show an app that no longer exists.
+        `data-accent` resolves the look's own accent rather than the window's —
+        globals.css carries `[data-accent=…]` and `.dark [data-accent=…]` for
+        all eight, and a rule matching the line beats one inherited from <html>. What it could
         not do is pick the right VALUE: the panel is the dark card, and in a
         light window the bare attribute resolves the light accent (L 0.488) onto
         it. Scoping the panel `.dark` settles that — the same tile in either
@@ -93,8 +95,7 @@ export function LookThumb({ look, className }: { look: Look; className?: string 
         className="dark absolute inset-x-[24%] top-[34%] flex h-[32%] items-center overflow-hidden rounded-[3px] shadow-1"
         style={{ background: dark.card, border: `1px solid ${dark.border}` }}
       >
-        <span data-rail className="h-full w-[3px] shrink-0" data-accent={look.accent} style={{ background: "var(--primary)" }} />
-        <span className="ml-1 h-[3px] w-[45%] rounded-full" style={{ background: dark.foreground, opacity: 0.55 }} />
+        <span data-accent-line className="ml-1.5 h-[3px] w-[45%] rounded-full" data-accent={look.accent} style={{ background: "var(--primary)" }} />
       </span>
     </span>
   );

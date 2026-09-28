@@ -96,7 +96,7 @@ import type {
 import { createEngineApi, EngineApiError } from "@/lib/engine/client";
 import { PULL_CREATE_REFUSAL, PUSH_REFUSAL } from "@/lib/github-forge";
 import { fmtAgo } from "@/lib/format";
-import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, unreportedFiles, type SessionReview } from "@/lib/session-review";
+import { describeReview, reconcileReview, reviewFraming, REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD, unreportedFiles, type SessionReview } from "@/lib/session-review";
 import { useDiffView, type DiffView } from "@/lib/diff-view";
 import { diffBaseFor, scopesFor, type DiffScopeKind, type DiffTab } from "@/lib/diff-scope";
 import { turnFor, turnLabel, type DiffTurn } from "@/lib/diff-turns";
@@ -116,7 +116,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { PanelDivider, PanelEmpty, PanelRow, type PanelTone } from "@/components/ui/panel";
+import { PanelDivider, PanelEmpty, PanelRow } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
@@ -141,14 +141,6 @@ const REFRESH_MS = 15_000;
  */
 const MAX_BASE_REFS = 12;
 const MAX_TURN_OPTIONS = 12;
-
-const STATUS_TONE: Record<GitFileChange["status"], PanelTone> = {
-  added: "done",
-  untracked: "attention",
-  modified: "none",
-  deleted: "danger",
-  renamed: "none",
-};
 
 /**
  * WHAT A FILTER MEANS: a folder or one file, and nothing cleverer (#335).
@@ -480,7 +472,7 @@ export function ReviewFileRow({
           they would sneak back in as "just three more rows". */}
       <ContextMenu>
         <ContextMenuTrigger>
-      <PanelRow tone={STATUS_TONE[file.status]} className="p-0 pl-0">
+      <PanelRow className="p-0 pl-0">
         <button
           type="button"
           className="flex w-full min-w-0 items-center gap-1.5 py-2 pr-3 pl-4 text-left text-xs hover:bg-muted/60"
@@ -490,7 +482,9 @@ export function ReviewFileRow({
         >
           {/* Git's own letter, so anyone who has run `git status` needs no
               legend. */}
-          <span className="w-3 shrink-0 font-mono text-3xs text-muted-foreground">{REVIEW_STATUS_LETTER[file.status]}</span>
+          <span className="w-3 shrink-0 font-mono text-3xs text-muted-foreground" title={REVIEW_STATUS_WORD[file.status]}>
+            {REVIEW_STATUS_LETTER[file.status]}
+          </span>
           <span className="min-w-0 flex-1 truncate font-mono text-2xs">
             {cut > -1 && <span className="text-muted-foreground">{file.path.slice(0, cut + 1)}</span>}
             <span className="text-foreground">{file.path.slice(cut + 1)}</span>
