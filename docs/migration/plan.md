@@ -51,8 +51,8 @@ We are not adopting Effect-TS or event sourcing.
 - #1084 (iOS: `InboxView` deleted, −334) and #1085 (desktop: `jsonPrefs`, −45; `shadcn` moved to devDependencies).
 - #1089 (web dead code: 6 modules, unused shadcn sidebar parts, `/api/sessions/stream`, dead CSS tokens, knip exports; −1347) and #1091 (fixtures + bench, report-cadence renamed to held-reports, Agent-era comments; −3700). Phase 1 web ✅.
 - Phase 3 web started (client migrations, redirects).
-- #1090 (engine leftovers: `report_window` cadence, subscribe knobs, one ETag, `stopTimers()` fixing leaked cohort/snooze/schedule timers; −544 net) is being rebased.
-- Decision: GET /report-window stays, answering only `{held}`, because the right panel polls it. The `run_*` aliases and `runId` are removed on or after 2026-10-09 (deprecated 2026-09-25).
+- #1090 (engine leftovers: `report_window` cadence, subscribe knobs, one ETag, `stopTimers()` fixing leaked cohort/snooze/schedule timers; −531 net). Phase 1 engine ✅.
+- Decision: GET /report-window became /held-reports, answering only `{held}`, because the right panel polls it. No iOS or desktop callers. The `run_*` aliases and `runId` are removed on or after 2026-10-09 (deprecated 2026-09-25).
 - Phase 3 engine: the JSON journal backend is removed (SQLite only, legacy import kept).
 - Desktop decomposition started (`browser-manager.js` → `browser/*`, `main.js` → `main/*`). Added to phase 4 so desktop also meets "no file over ~1.5k".
 - Decision: the orchestrator follows each builder with its own subscription, so each PR merges as soon as it is green. This plan is updated through small PRs at the end of each phase.
