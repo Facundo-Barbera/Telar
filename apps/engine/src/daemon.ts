@@ -16,6 +16,7 @@ import {
   GitHubReactionContent,
   GitHubSubjectId,
   parseForgeQuery,
+  PluginInstallInput,
   registerPluginToolPrefixes,
   RequestOpenInput,
   AgentTurnInput,
@@ -46,6 +47,7 @@ import {
   machineAllows,
   parseDiffBaseQuery,
   parseFilePatchQuery,
+  pluginSettings,
   readProjectPlugins,
   workspacePath,
 } from "@telar/engine-client";
@@ -73,8 +75,9 @@ import {
   type StoppedClaim,
 } from "./state";
 import { bundledPlugins, pluginToolModules, setPluginToolModules } from "./plugins/bundled";
-import { externalPluginsDir, loadInstalledPlugins } from "./plugins/external/manifest";
-import { externalPlugin, externalToolModule } from "./plugins/external/module";
+import { installPluginFolder, isSymlink, PluginInstallError, removePluginFolder } from "./plugins/external/installer";
+import { BUNDLED_RESERVATIONS, externalPluginsDir, loadInstalledPlugins, type LoadedExternalPlugin } from "./plugins/external/manifest";
+import { externalPlugin, externalToolModule, isExternalToolModule } from "./plugins/external/module";
 import { PluginHost } from "./plugins/host";
 import { matchPluginRoute, PluginInputError, type PluginRouteMethod, type PluginScopedRoute } from "./plugins/routes";
 import { setPluginReadTools } from "./driver";
@@ -1271,35 +1274,53 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     },
   });
   /**
-   * EXTERNAL PLUGINS, from `<TELAR_HOME>/plugins/<id>/plugin.json`. Loaded once
-   * at start; a manifest that does not validate is listed as failed with its
+   * EXTERNAL PLUGINS, from `<TELAR_HOME>/plugins/<id>/plugin.json`. Loaded at
+   * start, then installed and removed from Settings through the routes under
+   * `/v2/plugins/installed`; a manifest that does not validate is listed as failed with its
    * reason and never runs (plugins/external/manifest.ts). The bundled ids and
    * prefixes are reserved, so an installed folder cannot shadow a shipped
    * feature.
    */
-  const external = loadInstalledPlugins(options.pluginsDir ?? externalPluginsDir(root));
-  const externalModules = external.loaded.map((loaded) =>
+  const pluginsDir = options.pluginsDir ?? externalPluginsDir(root);
+  const external = loadInstalledPlugins(pluginsDir);
+  const externalModule = (loaded: LoadedExternalPlugin) =>
     externalPlugin(loaded, {
       resolve: (sessionId) => resolvePluginProject(loaded.manifest.id, sessionId),
       enabledAnywhere: () => store.listProjects().some((project) => store.pluginRuns(project, loaded.manifest.id)),
-    }),
-  );
-  // The embedded worker registers tools from this list; the out-of-process
-  // worker loads the same manifests itself (worker-main.ts).
-  // …and its tool rows are typed like a bundled plugin's (`parseToolName`).
-  registerPluginToolPrefixes(external.loaded.flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : [])));
-  const externalIds = new Set(external.loaded.map((loaded) => loaded.manifest.id));
-  setPluginToolModules([
-    ...pluginToolModules().filter((module) => !externalIds.has(module.meta.id)),
-    ...external.loaded.map(externalToolModule),
-  ]);
+      settings: (projectId) => {
+        const machine = pluginSettings(store.machinePlugins(), loaded.manifest.id);
+        if (projectId === undefined) return machine;
+        try {
+          return { ...machine, ...pluginSettings(readProjectPlugins(store.getProject(projectId)).plugins, loaded.manifest.id) };
+        } catch {
+          return machine;
+        }
+      },
+    });
+  /** What is installed now: loaded by id, and refused folders by listed id. Settings changes both. */
+  const installedPlugins = new Map(external.loaded.map((loaded) => [loaded.manifest.id, loaded]));
+  const refusedFolders = new Map(external.refused.map((refused) => [refused.meta.id, refused.dir]));
+  const installedPrefixes = () => [...installedPlugins.values()].flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : []));
+  // The walls this process had that are not an installed plugin's — the
+  // bundled ones, or a test's own.
+  const baseToolModules = pluginToolModules().filter((module) => !isExternalToolModule(module));
+  /**
+   * The embedded worker registers tools from this list; the out-of-process
+   * worker loads the same folder itself (worker-main.ts). And installed tool
+   * rows are typed like a bundled plugin's (`parseToolName`).
+   */
+  const syncInstalledTools = () => {
+    registerPluginToolPrefixes(installedPrefixes());
+    setPluginToolModules([...baseToolModules, ...[...installedPlugins.values()].map(externalToolModule)]);
+  };
+  syncInstalledTools();
   const pluginHost = new PluginHost(
-    [...bundledModules, ...externalModules],
+    [...bundledModules, ...external.loaded.map(externalModule)],
     {
       daemonId,
       stateDir: store.paths.root,
-      declaredPrefixes: [...BUNDLED_PLUGIN_TOOL_PREFIXES, ...external.loaded.flatMap((loaded) => (loaded.manifest.toolPrefix ? [loaded.manifest.toolPrefix] : []))],
-      refused: external.refused.map(({ meta, error }) => ({ meta, error })),
+      declaredPrefixes: [...BUNDLED_PLUGIN_TOOL_PREFIXES, ...installedPrefixes()],
+      refused: external.refused.map(({ dir, meta, error }) => ({ meta, error, installed: { linked: isSymlink(dir) } })),
       log: (message, detail) => console.warn(`[telar] ${message}${detail ? ` ${JSON.stringify(detail)}` : ""}`),
     },
   );
@@ -3547,6 +3568,44 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       const projectRestore = /^\/v2\/projects\/([^/]+)\/restore$/.exec(url.pathname);
       if (request.method === "POST" && projectRestore) {
         writeJson(response, 200, { project: store.restoreProject(decodeURIComponent(projectRestore[1])) });
+        return;
+      }
+      /**
+       * INSTALL AND REMOVE A PLUGIN FOLDER (plugins/external/installer.ts).
+       * Before the machine door below, whose pattern `/v2/plugins/<id>/<verb>`
+       * would otherwise read `installed` as a plugin id — which is why no
+       * plugin may take that id.
+       */
+      if (request.method === "POST" && url.pathname === "/v2/plugins/installed") {
+        const parsed = PluginInstallInput.safeParse(await body(request));
+        if (!parsed.success) throw new HttpError(400, "invalid_request", "path must be a folder and mode copy or link");
+        let loaded: LoadedExternalPlugin;
+        try {
+          loaded = installPluginFolder(pluginsDir, parsed.data.path, parsed.data.mode, {
+            ids: new Set([...BUNDLED_RESERVATIONS.ids, ...installedPlugins.keys()]),
+            prefixes: new Set([...BUNDLED_RESERVATIONS.prefixes, ...installedPrefixes()]),
+          });
+        } catch (error) {
+          if (error instanceof PluginInstallError) throw new HttpError(400, "invalid_request", error.message);
+          throw error;
+        }
+        installedPlugins.set(loaded.manifest.id, loaded);
+        syncInstalledTools();
+        writeJson(response, 200, { plugin: await pluginHost.add(externalModule(loaded)) });
+        return;
+      }
+      const uninstallPath = /^\/v2\/plugins\/installed\/([a-z][a-z0-9-]*)$/.exec(url.pathname);
+      if (request.method === "DELETE" && uninstallPath) {
+        const id = uninstallPath[1]!;
+        const folder = installedPlugins.get(id)?.dir ?? refusedFolders.get(id);
+        if (!folder) throw new HttpError(404, "not_found", `no installed plugin ${id}`);
+        // Stopped first, so its process is gone before its folder is.
+        await pluginHost.remove(id);
+        installedPlugins.delete(id);
+        refusedFolders.delete(id);
+        syncInstalledTools();
+        removePluginFolder(pluginsDir, path.basename(folder));
+        writeJson(response, 200, { removed: true });
         return;
       }
       /**

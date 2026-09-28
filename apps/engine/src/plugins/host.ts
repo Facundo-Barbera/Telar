@@ -86,7 +86,7 @@ export class PluginHost {
        * validate. Listed as failed with the reason, so Settings ▸ Plugins can
        * say why; never initialised, never serving anything.
        */
-      refused?: readonly { meta: PluginMeta; error: string }[];
+      refused?: readonly { meta: PluginMeta; error: string; installed?: { linked: boolean } }[];
     },
   ) {
     const declared = options.declaredPrefixes ?? BUNDLED_PLUGIN_TOOL_PREFIXES;
@@ -110,11 +110,14 @@ export class PluginHost {
       }
       this.records.set(id, { module, state: "ready", cleanups: [] });
     }
-    for (const { meta, error } of options.refused ?? []) {
-      if (this.records.has(meta.id)) continue;
-      this.records.set(meta.id, { module: { meta }, state: "failed", error, cleanups: [] });
-    }
+    for (const { meta, error, installed } of options.refused ?? []) this.refuse(meta, error, installed);
     this.work = new PluginWorkLog(path.join(options.stateDir, "plugins", "work"), options.daemonId);
+  }
+
+  /** List a plugin that was found but refused, with the reason. Never started. */
+  refuse(meta: PluginMeta, error: string, installed?: { linked: boolean }): void {
+    if (this.records.has(meta.id)) return;
+    this.records.set(meta.id, { module: { meta, ...(installed ? { installed } : {}) }, state: "failed", error, cleanups: [] });
   }
 
   private log(message: string, detail?: Record<string, unknown>): void {
@@ -158,6 +161,7 @@ export class PluginHost {
         ...(record.initMs === undefined ? {} : { initMs: record.initMs }),
         ...(project ? { settingsSchema: project } : {}),
         ...(machine ? { machineSettingsSchema: machine } : {}),
+        ...(record.module.installed ? { installed: record.module.installed } : {}),
       };
     });
   }
@@ -165,6 +169,46 @@ export class PluginHost {
   /** The read classifications the host honours. See `policy.ts`. */
   ratifiedReadTools(): Set<string> {
     return ratifiedReadToolSet(this.metas());
+  }
+
+  /**
+   * A PLUGIN INSTALLED WHILE THE ENGINE RUNS — an external folder. Registered
+   * and started exactly as one found at startup; a refused listing under the
+   * same id (its broken folder, now replaced) gives way. Its prefix was
+   * checked for collisions by the installer, and is declared by being here.
+   */
+  async add(module: PluginEngineModule): Promise<PluginStatus> {
+    const { id, toolPrefixes } = module.meta;
+    const existing = this.records.get(id);
+    if (existing && existing.state !== "failed") throw new Error(`duplicate plugin id: ${id}`);
+    for (const prefix of toolPrefixes) {
+      const owner = this.prefixOwners.get(prefix);
+      if (owner && owner !== id) throw new Error(`tool prefix "${prefix}" is claimed by both ${owner} and ${id}`);
+    }
+    if (existing) await this.remove(id);
+    for (const prefix of toolPrefixes) this.prefixOwners.set(prefix, id);
+    this.records.set(id, { module, state: "ready", cleanups: [] });
+    await this.start(id);
+    return this.statuses().find((status) => status.meta.id === id)!;
+  }
+
+  /**
+   * Unregister a plugin and give back everything it acquired — for an
+   * installed plugin being removed. Running work is not waited for: removing
+   * a plugin is the owner saying it should stop.
+   */
+  async remove(id: string): Promise<void> {
+    const record = this.records.get(id);
+    if (!record) return;
+    this.records.delete(id);
+    for (const [prefix, owner] of [...this.prefixOwners]) if (owner === id) this.prefixOwners.delete(prefix);
+    for (const [key, timer] of [...this.drains]) {
+      if (key.startsWith(`${id}:`)) {
+        clearTimeout(timer);
+        this.drains.delete(key);
+      }
+    }
+    await this.unwind(record, "disabled");
   }
 
   /**

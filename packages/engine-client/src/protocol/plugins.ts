@@ -320,8 +320,20 @@ export const PluginStatus = z.object({
    */
   settingsSchema: z.record(z.string(), z.unknown()).optional(),
   machineSettingsSchema: z.record(z.string(), z.unknown()).optional(),
+  /**
+   * Present for a plugin installed from a folder, which Settings may remove.
+   * `linked` when the folder is a link to the owner's own copy.
+   */
+  installed: z.object({ linked: z.boolean() }).optional(),
 });
 export type PluginStatus = z.infer<typeof PluginStatus>;
+
+/** Install a plugin from a folder on this Mac: copied in, or linked to where it is. */
+export const PluginInstallInput = z.strictObject({
+  path: z.string().min(1),
+  mode: z.enum(["copy", "link"]).default("copy"),
+});
+export type PluginInstallInput = z.input<typeof PluginInstallInput>;
 
 // ── per-project configuration ───────────────────────────────────────────────
 

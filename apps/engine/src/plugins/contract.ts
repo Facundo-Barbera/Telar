@@ -144,6 +144,8 @@ export type PluginEngineModule<Settings = unknown> = {
    */
   publishedSettingsSchema?: Record<string, unknown>;
   publishedMachineSettingsSchema?: Record<string, unknown>;
+  /** Set for a plugin installed from a folder: it may be removed from Settings. */
+  installed?: { linked: boolean };
   /**
    * Acquire whatever the plugin needs, bounded by `PLUGIN_INIT_TIMEOUT_MS`, and
    * register a cleanup for each acquisition. Omit it entirely when there is

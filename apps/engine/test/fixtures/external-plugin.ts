@@ -15,7 +15,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const { id, method, params } = JSON.parse(line);
   if (id === undefined) return;
   if (method === "initialize") return send({ id, result: { protocolVersion: params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "echo", version: "1" } } });
-  if (method === "tools/call") return send({ id, result: { content: [{ type: "text", text: "echo: " + params.arguments.text }] } });
+  if (method === "tools/call") return send({ id, result: { content: [{ type: "text", text: (params._meta?.telar?.settings?.greeting ?? "echo") + ": " + params.arguments.text }] } });
   if (method === "telar/route") return send({ id, result: { scope: params.scope, verb: params.verb, sessionId: params.sessionId, projectId: params.projectId } });
   send({ id, error: { code: -32601, message: "no method " + method } });
 });

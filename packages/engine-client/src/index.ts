@@ -167,6 +167,7 @@ import {
   type RunOpenInput,
   type RunStatusAnswer,
   type SessionAssignment,
+  type PluginInstallInput,
   type PluginStatus,
   type ProjectPlugins,
   type ReportCadence,
@@ -2168,6 +2169,16 @@ export class EngineClient {
    */
   machinePlugins(): Promise<{ plugins: PluginStatus[]; machine: ProjectPlugins }> {
     return this.request("GET", "/v2/plugins");
+  }
+
+  /** Install a plugin from a folder. Refused with the manifest's problem when it would not load. */
+  installPlugin(input: PluginInstallInput): Promise<{ plugin: PluginStatus }> {
+    return this.request("POST", "/v2/plugins/installed", input);
+  }
+
+  /** Stop an installed plugin and remove its folder (a linked one is only unlinked). */
+  uninstallPlugin(id: string): Promise<{ removed: true }> {
+    return this.request("DELETE", `/v2/plugins/installed/${encodeURIComponent(id)}`);
   }
 
   /** Turn a plugin on or off for this Mac, or change its machine settings. */
