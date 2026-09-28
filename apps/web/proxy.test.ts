@@ -7,7 +7,7 @@ import { NextRequest } from "next/server";
 // Named for the deprecated convention; it is the matcher-testing util Next 16 ships.
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { config, proxy } from "./proxy";
-import { addDevice, mintDeviceToken, setDeviceRole, setRequireAuth } from "@/lib/remote/store";
+import { addDevice, mintDeviceToken, setDeviceRole, setRequireAuth } from "@/lib/testing/remote";
 
 const savedTelarHome = process.env.TELAR_HOME;
 const savedTelarCockpit = process.env.TELAR_COCKPIT;

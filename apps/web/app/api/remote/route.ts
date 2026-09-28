@@ -1,28 +1,19 @@
 import { cockpitPort, listEndpoints } from "@/lib/remote/endpoints";
 import { deviceCookieHeader, readDeviceCookie } from "@/lib/remote/cookie";
 import { identifyCaller, isHostCaller } from "@/lib/remote/gate";
-import { remoteErrorResponse } from "@/lib/remote/http";
-import { addDevice, mintDeviceToken, readRemote, setRequireAuth, setExposure, setTailscaleServe } from "@/lib/remote/store";
+import { readRemote } from "@/lib/remote/store";
 import { describeDevice, type DeviceIdentity } from "@/lib/remote/identity";
 import { machineName, observeIdentity } from "@/lib/remote/observe";
 import { HOST_TOKEN_ENV, readHostHeader } from "@/lib/remote/host-token";
 import { readServeError } from "@/lib/remote/tailscale-serve";
+import { engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineCall } from "@/lib/engine/forward";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const OS_NAMES: Record<string, string> = { darwin: "macOS", win32: "Windows", linux: "Linux" };
 
-/**
- * THE PROCESS THAT RUNS THE SERVER, AS A ROW.
- *
- * It holds a per-launch secret instead of a device record (host-token.ts), and
- * the consequence was that the app doing the hosting — the one thing certain to
- * be connected — appeared nowhere in a panel whose entire job is naming what is
- * connected. So it is reported, not stored: derived fresh from this process
- * every read, absent when nothing launched us (a bare `next dev`), and carrying
- * no id because there is nothing to revoke. Quitting the shell is the revoke.
- */
 function hostRow(): { name: string; identity: DeviceIdentity } | undefined {
   if (!process.env[HOST_TOKEN_ENV]) return undefined;
   const identity: DeviceIdentity = {
@@ -34,128 +25,39 @@ function hostRow(): { name: string; identity: DeviceIdentity } | undefined {
   return { name: describeDevice(identity), identity };
 }
 
-/** The Remote access panel's whole state. Hashes never leave the store.
- *  callerDeviceId lets both surfaces badge "This device" without any client
- *  ever needing to remember its own id. */
-export function GET(request: Request) {
+export async function GET(request: Request) {
   try {
-    const file = readRemote();
-    const cookie = readDeviceCookie(request);
+    const remote = (await engineCall("GET", "/v2/remote")).body as Record<string, unknown>;
     const credentials = {
       authorization: request.headers.get("authorization"),
-      deviceCookie: cookie,
-      // The shell's own window proves itself by header now; a request that
-      // arrived before the listener was attached still proves it by cookie.
+      deviceCookie: readDeviceCookie(request),
       hostHeader: readHostHeader(request),
     };
-    const caller = identifyCaller(credentials, file);
+    const caller = identifyCaller(credentials, readRemote());
     const host = hostRow();
     return Response.json({
-      // Present only when a shell launched this server, and flagged as the
-      // caller when this very request carries the host secret.
+      ...remote,
       host: host ? { ...host, isCaller: isHostCaller(credentials) } : undefined,
-      requireAuth: file.requireAuth,
-      exposure: file.exposure ?? "local-only",
-      tailscaleServe: file.tailscaleServe === true,
-      // Why the ts.net URL is missing, when the launcher tried and failed. A
-      // label the shell classified; the pane owns the wording (#627).
       tailscaleServeError: readServeError(),
-      devices: file.devices.map(({ id, name, createdAt, lastSeenAt, role, platform, identity }) => ({
-        id,
-        name,
-        createdAt,
-        lastSeenAt,
-        role,
-        platform,
-        // The report-back fields. `tokenHash` is the one member that never
-        // leaves the store, which is why this is a pick rather than a spread.
-        identity,
-      })),
       callerDeviceId: caller?.id,
       callerRole: caller?.role,
-      pairing: file.pairing ? { expiresAt: file.pairing.expiresAt } : undefined,
       endpoints: listEndpoints(cockpitPort()),
     });
   } catch (error) {
-    return remoteErrorResponse(error);
+    return engineErrorResponse(error);
   }
 }
 
-/**
- * Flip requireAuth. ENABLING PAIRS THE CALLING BROWSER IN THE SAME RESPONSE
- * — the anti-lockout guarantee. Two calls (enable, then pair) would leave a
- * window where the browser that flipped the switch is itself locked out.
- */
 export async function PATCH(request: Request) {
   try {
-    const body = (await request.json()) as { requireAuth?: unknown; exposure?: unknown; tailscaleServe?: unknown };
-
-    // Same shape as `exposure` below: persisted now, honoured by the
-    // launcher at the next start, and the answer says so.
-    if (body.tailscaleServe !== undefined) {
-      if (typeof body.tailscaleServe !== "boolean") {
-        return Response.json({ error: { code: "invalid_request", message: "tailscaleServe must be a boolean." } }, { status: 400 });
-      }
-      try {
-        const file = setTailscaleServe(body.tailscaleServe);
-        return Response.json({ tailscaleServe: file.tailscaleServe === true, restartRequired: true });
-      } catch (cause) {
-        return Response.json(
-          { error: { code: "invalid_request", message: cause instanceof Error ? cause.message : "that could not be set." } },
-          { status: 400 },
-        );
-      }
-    }
-
-    /**
-     * WHERE THE SOCKET LISTENS is its own decision, taken separately from
-     * whether the gate is on — one PATCH, two fields, because a caller that
-     * meant to widen the bind must not have to restate the auth flag and risk
-     * turning it off by omission.
-     *
-     * The shell only reads this at launch, so the answer says a restart is
-     * needed rather than pretending the change already took.
-     */
-    if (body.exposure !== undefined) {
-      if (body.exposure !== "local-only" && body.exposure !== "network-accessible") {
-        return Response.json({ error: { code: "invalid_request", message: "exposure must be local-only or network-accessible." } }, { status: 400 });
-      }
-      try {
-        const file = setExposure(body.exposure);
-        return Response.json({ exposure: file.exposure, restartRequired: true });
-      } catch (cause) {
-        return Response.json(
-          { error: { code: "invalid_request", message: cause instanceof Error ? cause.message : "that exposure could not be set." } },
-          { status: 400 },
-        );
-      }
-    }
-
-    if (typeof body.requireAuth !== "boolean") {
-      return Response.json(
-        { error: { code: "invalid_request", message: "requireAuth must be a boolean." } },
-        { status: 400 },
-      );
-    }
-    if (!body.requireAuth) {
-      setRequireAuth(false);
-      return Response.json({ requireAuth: false });
-    }
-    /**
-     * NAMED THE SAME WAY A PAIRED DEVICE IS. This row used to be the literal
-     * string "This browser" with no identity at all, which made the one device
-     * guaranteed to be in every list the single least identifiable entry in it
-     * — no client, no machine, no address to tell it from the next tab.
-     */
-    const deviceToken = mintDeviceToken();
-    const identity = observeIdentity(request);
-    const device = addDevice(describeDevice(identity), deviceToken, { identity });
-    setRequireAuth(true);
-    return Response.json(
-      { requireAuth: true, device: { id: device.id, name: device.name } },
-      { headers: { "set-cookie": deviceCookieHeader(deviceToken, request), "cache-control": "no-store" } },
-    );
+    const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const turningOn = body.requireAuth === true && body.exposure === undefined && body.tailscaleServe === undefined;
+    const identity = turningOn ? observeIdentity(request) : undefined;
+    const answer = await engineCall("PATCH", "/v2/remote", identity ? { ...body, device: { name: describeDevice(identity), identity } } : body);
+    const { deviceToken, ...visible } = answer.body as { deviceToken?: string };
+    if (answer.status !== 200 || !deviceToken) return Response.json(visible, { status: answer.status });
+    return Response.json(visible, { headers: { "set-cookie": deviceCookieHeader(deviceToken, request), "cache-control": "no-store" } });
   } catch (error) {
-    return remoteErrorResponse(error);
+    return engineErrorResponse(error);
   }
 }

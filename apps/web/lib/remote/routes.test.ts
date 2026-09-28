@@ -14,19 +14,23 @@ import { HOST_HEADER } from "./host-token";
 import { dialableAddresses, isTailnetIpv4, listEndpoints } from "./endpoints";
 import { machineName } from "./observe";
 import { readRemote } from "./store";
+import { startEngine, type EngineDaemon } from "../../../engine/src/daemon";
 
 const savedTelarHome = process.env.TELAR_HOME;
 const savedTelarCockpit = process.env.TELAR_COCKPIT;
 const roots: string[] = [];
+const daemons: EngineDaemon[] = [];
 
-function freshHome(): void {
+async function freshHome(): Promise<void> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-remote-routes-"));
   roots.push(home);
   process.env.TELAR_HOME = home;
   process.env.TELAR_COCKPIT = "1";
+  daemons.push(await startEngine({ engineRoot: path.join(home, "engine") }));
 }
 
-afterEach(() => {
+afterEach(async () => {
+  for (const daemon of daemons.splice(0)) await daemon.close();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
   if (savedTelarHome === undefined) delete process.env.TELAR_HOME;
   else process.env.TELAR_HOME = savedTelarHome;
@@ -35,7 +39,7 @@ afterEach(() => {
 });
 
 async function mintToken(): Promise<string> {
-  const minted = (await pairingMint().json()) as { code: string };
+  const minted = (await (await pairingMint()).json()) as { code: string };
   return minted.code;
 }
 
@@ -64,17 +68,17 @@ function patchDeviceRequest(deviceId: string, body: Record<string, unknown>) {
 
 describe("pairing routes", () => {
   test("ping answers strangers with the version signature, even while the gate is on", async () => {
-    freshHome();
+    await freshHome();
     const { EXEMPT_API_PATHS } = await import("./gate");
     expect(EXEMPT_API_PATHS.has("/api/ping")).toBe(true);
-    const body = (await pingGet().json()) as { ok: boolean; proto: number; appVersion: string };
+    const body = (await (await pingGet(new Request("http://x/api/ping"))).json()) as { ok: boolean; proto: number; appVersion: string };
     expect(body.ok).toBe(true);
     expect(body.proto).toBe(1);
     expect(typeof body.appVersion).toBe("string");
   });
 
   test("mint → exchange yields a device token and a lax http cookie", async () => {
-    freshHome();
+    await freshHome();
     const response = await pairPost(pairRequest(await mintToken()));
     expect(response.status).toBe(200);
     const body = (await response.json()) as { deviceToken: string; deviceId: string };
@@ -92,14 +96,14 @@ describe("pairing routes", () => {
   });
 
   test("the exchange hands the device every dialable address, never loopback", async () => {
-    freshHome();
+    await freshHome();
     const body = (await (await pairPost(pairRequest(await mintToken()))).json()) as { addresses: string[] };
     expect(body.addresses).toEqual(dialableAddresses());
     expect(body.addresses.some((url) => url.includes("127.0.0.1"))).toBe(false);
   });
 
   test("a refused exchange carries no addresses", async () => {
-    freshHome();
+    await freshHome();
     await mintToken();
     const refused = await pairPost(pairRequest("12345678"));
     expect(refused.status).toBe(401);
@@ -107,13 +111,13 @@ describe("pairing routes", () => {
   });
 
   test("an https-forwarded exchange marks the cookie Secure", async () => {
-    freshHome();
+    await freshHome();
     const response = await pairPost(pairRequest(await mintToken(), { "x-forwarded-proto": "https" }));
     expect(response.headers.get("set-cookie")).toContain("Secure");
   });
 
   test("a replayed pairing token is refused", async () => {
-    freshHome();
+    await freshHome();
     const token = await mintToken();
     expect((await pairPost(pairRequest(token))).status).toBe(200);
     const replay = await pairPost(pairRequest(token));
@@ -122,21 +126,21 @@ describe("pairing routes", () => {
   });
 
   test("the status body never carries token material", async () => {
-    freshHome();
+    await freshHome();
     await mintToken();
     await pairPost(pairRequest(await mintToken()));
-    const serialized = JSON.stringify(await remoteGet(statusRequest()).json());
+    const serialized = JSON.stringify(await (await remoteGet(statusRequest())).json());
     expect(serialized.includes("tokenHash")).toBe(false);
     expect(serialized.includes("tlr_")).toBe(false);
   });
 
   test("the status names the calling device, by bearer or by cookie, and strangers get nothing", async () => {
-    freshHome();
+    await freshHome();
     const paired = (await (await pairPost(pairRequest(await mintToken(), {}, { platform: "ios" }))).json()) as {
       deviceToken: string;
       deviceId: string;
     };
-    const byBearer = (await remoteGet(statusRequest({ authorization: `Bearer ${paired.deviceToken}` })).json()) as {
+    const byBearer = (await (await remoteGet(statusRequest({ authorization: `Bearer ${paired.deviceToken}` }))).json()) as {
       callerDeviceId?: string;
       callerRole?: string;
       devices: { id: string; platform?: string }[];
@@ -145,17 +149,17 @@ describe("pairing routes", () => {
     expect(byBearer.callerRole).toBe("full");
     expect(byBearer.devices[0].platform).toBe("ios");
 
-    const byCookie = (await remoteGet(statusRequest({ cookie: `telar_device=${paired.deviceToken}` })).json()) as {
+    const byCookie = (await (await remoteGet(statusRequest({ cookie: `telar_device=${paired.deviceToken}` }))).json()) as {
       callerDeviceId?: string;
     };
     expect(byCookie.callerDeviceId).toBe(paired.deviceId);
 
-    const stranger = (await remoteGet(statusRequest()).json()) as { callerDeviceId?: string };
+    const stranger = (await (await remoteGet(statusRequest())).json()) as { callerDeviceId?: string };
     expect(stranger.callerDeviceId).toBeUndefined();
   });
 
   test("PATCH renames and re-roles a device; demoting the last full one is 409", async () => {
-    freshHome();
+    await freshHome();
     const paired = (await (await pairPost(pairRequest(await mintToken()))).json()) as { deviceId: string };
     const renamed = await patchDeviceRequest(paired.deviceId, { name: "  The phone  " });
     expect(((await renamed.json()) as { device: { name: string } }).device.name).toBe("The phone");
@@ -181,13 +185,13 @@ describe("pairing routes", () => {
   });
 
   test("DELETE /api/remote/devices keeps the caller and revokes the rest", async () => {
-    freshHome();
+    await freshHome();
     const keeper = (await (await pairPost(pairRequest(await mintToken()))).json()) as { deviceToken: string; deviceId: string };
     await pairPost(pairRequest(await mintToken()));
     await pairPost(pairRequest(await mintToken()));
-    const anonymous = devicesDeleteOthers(new Request("http://x/api/remote/devices", { method: "DELETE" }));
+    const anonymous = await devicesDeleteOthers(new Request("http://x/api/remote/devices", { method: "DELETE" }));
     expect(anonymous.status).toBe(401);
-    const response = devicesDeleteOthers(
+    const response = await devicesDeleteOthers(
       new Request("http://x/api/remote/devices", {
         method: "DELETE",
         headers: { authorization: `Bearer ${keeper.deviceToken}` },
@@ -201,14 +205,14 @@ describe("pairing routes", () => {
   test("the app running the server is listed, and named itself", async () => {
     // It holds a secret rather than a device record, so without this row the
     // one thing certainly connected appears nowhere in the list of what is.
-    freshHome();
+    await freshHome();
     const savedToken = process.env.TELAR_HOST_TOKEN;
     const savedClient = process.env.TELAR_HOST_CLIENT;
     try {
-      expect(((await remoteGet(statusRequest()).json()) as { host?: unknown }).host).toBeUndefined();
+      expect(((await (await remoteGet(statusRequest())).json()) as { host?: unknown }).host).toBeUndefined();
       process.env.TELAR_HOST_TOKEN = "tlr_hostsecret";
       process.env.TELAR_HOST_CLIENT = "Telar (dev)";
-      const withHost = (await remoteGet(statusRequest()).json()) as {
+      const withHost = (await (await remoteGet(statusRequest())).json()) as {
         host?: { name: string; isCaller: boolean; identity: { kind: string; client: string } };
       };
       expect(withHost.host?.identity.client).toBe("Telar (dev)");
@@ -216,23 +220,23 @@ describe("pairing routes", () => {
       expect(withHost.host?.name).toBe(`Telar (dev) · ${machineName()}`);
       expect(withHost.host?.isCaller).toBe(false);
 
-      const fromHost = (await remoteGet(
+      const fromHost = (await (await remoteGet(
         new Request("http://x/api/remote", { headers: { cookie: "telar_device=tlr_hostsecret" } }),
-      ).json()) as { host?: { isCaller: boolean } };
+      )).json()) as { host?: { isCaller: boolean } };
       expect(fromHost.host?.isCaller).toBe(true);
 
       // AND BY HEADER, WITH NO COOKIE (issue #259). The shell's window loses
       // its cookie to a network-service restart or to the other spelling of
       // loopback; if this row stopped saying "This device" then, the panel
       // would be telling the user their app is not the host of its own server.
-      const byHeader = (await remoteGet(
+      const byHeader = (await (await remoteGet(
         new Request("http://x/api/remote", { headers: { [HOST_HEADER]: "tlr_hostsecret" } }),
-      ).json()) as { host?: { isCaller: boolean } };
+      )).json()) as { host?: { isCaller: boolean } };
       expect(byHeader.host?.isCaller).toBe(true);
 
-      const wrongHeader = (await remoteGet(
+      const wrongHeader = (await (await remoteGet(
         new Request("http://x/api/remote", { headers: { [HOST_HEADER]: "tlr_hostsecre" } }),
-      ).json()) as { host?: { isCaller: boolean } };
+      )).json()) as { host?: { isCaller: boolean } };
       expect(wrongHeader.host?.isCaller).toBe(false);
     } finally {
       if (savedToken === undefined) delete process.env.TELAR_HOST_TOKEN;
@@ -245,7 +249,7 @@ describe("pairing routes", () => {
   test("the self-paired caller is identified, not called 'This browser'", async () => {
     // It is the one row guaranteed to be in every list, and it used to be the
     // only one with no client, no machine and no address to know it by.
-    freshHome();
+    await freshHome();
     await remotePatch(new Request("http://127.0.0.1:3100/api/remote", {
       method: "PATCH",
       headers: {
@@ -264,7 +268,7 @@ describe("pairing routes", () => {
   });
 
   test("enabling requireAuth pairs the calling browser in the same response", async () => {
-    freshHome();
+    await freshHome();
     const response = await remotePatch(new Request("http://cockpit.test/api/remote", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -277,7 +281,7 @@ describe("pairing routes", () => {
   });
 
   test("revoking a device removes its access", async () => {
-    freshHome();
+    await freshHome();
     const paired = (await (await pairPost(pairRequest(await mintToken()))).json()) as {
       deviceToken: string;
       deviceId: string;
@@ -293,7 +297,7 @@ describe("pairing routes", () => {
   });
 
   test("an oversized pair body is refused before parsing", async () => {
-    freshHome();
+    await freshHome();
     const response = await pairPost(new Request("http://x/api/pair", {
       method: "POST",
       body: "x".repeat(2048),

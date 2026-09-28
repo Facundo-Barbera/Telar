@@ -3,9 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { DirectoryListing } from "@telar/engine-client";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { fsRoute } from "../src/routes/fs";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "../../daemon";
+import { matchRoute } from "../../platform/http/route";
+import { filesRoutes } from "./routes";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -21,7 +22,10 @@ const scratch = (prefix: string): string => {
   return directory;
 };
 
-const ask = (query: string, home: string) => fsRoute.handle(new URL(`http://engine/v2/fs${query}`), { home, mounts: [] });
+const ask = (query: string, home: string) => {
+  const { route, params } = matchRoute(filesRoutes({ home, mounts: [] }), "GET", "/v2/fs")!;
+  return route.handle({ body: {}, params, query: new URLSearchParams(query) });
+};
 
 test("lists home's folders, badging checkouts and hiding dotfolders unless asked", () => {
   const home = scratch("telar-fs-home-");
