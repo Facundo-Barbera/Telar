@@ -7,14 +7,15 @@ import type { JournalTurn } from "@/platform/engine";
 import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
-import { groupNotificationTurns, TranscriptWorkspace } from "@/features/transcript";
+import { TranscriptWorkspace } from "@/features/transcript";
 import type { useSessionSync } from "../hooks/use-session-sync";
 import type { useTranscriptModel } from "../hooks/use-transcript-model";
 import { transcriptRows } from "../model";
-import { CohortFold, foldCohortTurns } from "./cohort-fold";
+import { useSessionDirectory } from "../hooks/use-session-directory";
 import { SessionProblem } from "./masthead";
 import { ReadReceiptMarker, type useReadReceipt } from "./read-receipt";
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
+import { TranscriptTurns } from "./transcript-turns";
 
 type TurnProps = ComponentProps<typeof SessionTurn>;
 
@@ -27,6 +28,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
   onAtBottomChange: (atBottom: boolean) => void;
   onConversationClick: (event: React.MouseEvent) => void;
   projectId: string | undefined;
+  hostId: string;
   fresh: boolean;
   turn: Pick<TurnProps, "roster" | "sending" | "onInsert" | "onOpenAgent" | "onOpenTab" | "onOpenFile" | "onOpenFileInNewTab" | "onDecide">;
   onResumeNow: (runId: string) => void;
@@ -37,13 +39,11 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
   const { shown, hostOf } = transcriptRows(model.transcript);
   const hostRun = (request: EngineRequest) => hostOf.get(request.runId) ?? request.runId;
   // A cohort folds, except a turn with a request (open or decided) and the newest answer, whose marker must show.
-  const segments = foldCohortTurns(shown, {
-    ...(active ? { activeRunId: active.runId } : {}),
-    keep: new Set([...sync.requests.map(hostRun), ...(newestResultRunId ? [newestResultRunId] : [])]),
-  });
-  const turnRow = (turn: JournalTurn) => (
+  const keep = new Set([...sync.requests.map(hostRun), ...(newestResultRunId ? [newestResultRunId] : [])]);
+  const directory = useSessionDirectory(props.hostId, shown);
+  const turnRow = (turn: JournalTurn, absorbed: boolean) => (
     <Fragment key={turn.runId}>
-      <TurnFrame skippable={turn.runId !== active?.runId}>
+      {!absorbed && <TurnFrame skippable={turn.runId !== active?.runId}>
         <SessionTurn
           turn={turn}
           live={turn.runId === active?.runId}
@@ -51,7 +51,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
           {...props.turn}
           {...(turn.failureCode === "rate_limited" && turn.state === "failed" ? { onResumeNow: () => props.onResumeNow(turn.runId) } : {})}
         />
-      </TurnFrame>
+      </TurnFrame>}
       {turn.runId === newestResultRunId && <ReadReceiptMarker markerRef={receipt.markerRefFor(turn.runId)} />}
     </Fragment>
   );
@@ -85,24 +85,15 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
             </div>
           </ConversationTopEdge>
           <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
-            {segments.map((segment) => {
-              const rows = groupNotificationTurns(segment.turns, active?.runId).map((group) =>
-                group.length === 1 ? (
-                  <Fragment key={group[0]!.runId}>{group.map(turnRow)}</Fragment>
-                ) : (
-                  <div key={group[0]!.runId} className="flex flex-col gap-0.5" data-notification-strip={group.length}>
-                    {group.map(turnRow)}
-                  </div>
-                ),
-              );
-              return segment.kind === "fold" ? (
-                <CohortFold key={segment.turns[0]!.runId} turns={segment.turns} members={segment.members}>
-                  {rows}
-                </CohortFold>
-              ) : (
-                <Fragment key={segment.turns[0]!.runId}>{rows}</Fragment>
-              );
-            })}
+            <TranscriptTurns
+              turns={shown}
+              {...(active ? { activeRunId: active.runId } : {})}
+              keep={keep}
+              renderTurn={turnRow}
+              directory={directory}
+              hostId={props.hostId}
+              {...(session?.projectId ? { projectId: session.projectId } : {})}
+            />
           </TranscriptWorkspace>
         </ConversationContent>
         <ConversationScrollButton />
