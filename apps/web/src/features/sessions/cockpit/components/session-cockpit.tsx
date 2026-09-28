@@ -17,7 +17,7 @@ import {
   turnHasContent,
   workspacePath,
 } from "@telar/engine-client";
-import { announcePromptShelfChanged, splitImages } from "@/features/prompts";
+import { splitImages } from "@/features/prompts";
 import { createEngineApi, newRunId, retryAmbiguousTurn, EngineApiError } from "@/platform/engine";
 import { createJournalProjector, hostPassiveArrivals, isActiveTurn, isCompacting, taskRoster } from "@/platform/engine";
 import { isCompactDraft, readDraft, rememberedProjectName, writeDraft, writeFrontDoorNote } from "@/features/composer";
@@ -42,19 +42,12 @@ import { processToReveal, stillWorking } from "../background-presence";
 import { Composer, MAX_ATTACHMENTS } from "@/features/composer";
 import { CohortFold, foldCohortTurns } from "./cohort-fold";
 import { groupNotificationTurns, TranscriptWorkspace } from "@/features/transcript";
-import { agentBrowserActivity, browserPanelTab, describeBrowserStart, editorInstanceKey, issuePanelTab, latestBrowserState, LIVE_BROWSER_TAB, panelTabForPath, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
+import { browserPanelTab, describeBrowserStart, editorInstanceKey, issuePanelTab, latestBrowserState, pullPanelTab, RailToggle, RightPanel, type BrowserStartState, type PanelTab, type TaskFocus } from "@/features/panel";
 import { desktopBrowserBridge } from "@/features/browser/desktop-browser-bridge";
 import { claimLinks, openInSystemBrowser, openLinksInSessionBrowser } from "@/platform/link-policy";
 import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "../session-links";
 import { SessionSchedules } from "@/features/schedules";
-import {
-  canvasPanelKey,
-  openPanelTab,
-  revealPanelTab,
-  writePanelTabs,
-  clearPanelTabs,
-} from "@/features/panel";
-import { freshTerminals, revealTerminal, type RunView } from "@/features/terminal";
+import { canvasPanelKey, writePanelTabs, clearPanelTabs } from "@/features/panel";
 import { writeEditor, clearEditor } from "@/features/files";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
@@ -64,6 +57,7 @@ import { SessionMasthead, SessionProblem, SoloTools, usePanelPresence } from "./
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
 import { useSessionSync } from "../hooks/use-session-sync";
 import { useCockpitPanel } from "../hooks/use-cockpit-panel";
+import { useJournalReactions } from "../hooks/use-journal-reactions";
 
 const api = createEngineApi();
 
@@ -301,69 +295,7 @@ export function SessionCockpit({
   );
   useEffect(() => (solo ? undefined : claimLinks((href) => routeLink(href, false))), [solo, routeLink]);
 
-  const seenPages = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (desktopBrowserBridge()) return;
-    const pages = browser?.tabs ?? [];
-    const fresh = pages.filter((page) => !seenPages.current.has(page.id));
-    for (const page of pages) seenPages.current.add(page.id);
-    if (fresh.length === 0) return;
-    updatePanel((current) => {
-      if (!current.open) return current;
-      return fresh.reduce((state, page) => openPanelTab(state, browserPanelTab(page.id)), current);
-    });
-  }, [browser, updatePanel]);
-
-  const browserEventsThrough = useRef(0);
-  const browserMountedAt = useRef(0);
-  useEffect(() => {
-    if (!desktopBrowserBridge()) return;
-    if (browserMountedAt.current === 0) browserMountedAt.current = Date.now();
-    const { acted, through } = agentBrowserActivity(events, browserMountedAt.current, browserEventsThrough.current);
-    browserEventsThrough.current = through;
-    if (!acted) return;
-    updatePanel((current) => revealPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
-  }, [events, updatePanel]);
-
-  const seenDisplays = useRef<Set<number>>(new Set());
-  // Stamped in the effect, not at render: reading the clock during render is
-  // impure (react-hooks/purity). The first run of this effect precedes any
-  // display event being acted on, so the guard holds identically.
-  const mountedAt = useRef(0);
-  useEffect(() => {
-    if (mountedAt.current === 0) mountedAt.current = Date.now();
-    const fresh = events.filter(
-      (event) => event.type === "display.opened" && event.at >= mountedAt.current && !seenDisplays.current.has(event.id),
-    );
-    if (fresh.length === 0) return;
-    for (const event of fresh) seenDisplays.current.add(event.id);
-    const last = fresh.at(-1)!;
-    if (last.type !== "display.opened") return;
-    showPanelTab(panelTabForPath(last.path, enabledPlugins));
-  }, [events, enabledPlugins, showPanelTab]);
-
-  const seenTerminals = useRef<Set<string>>(new Set());
-  const revealNewTerminals = useCallback(
-    (terminals: readonly RunView[]) => {
-      if (mountedAt.current === 0) mountedAt.current = Date.now();
-      const fresh = freshTerminals(terminals, mountedAt.current, seenTerminals.current);
-      for (const run of terminals) seenTerminals.current.add(run.terminalId);
-      if (fresh.length === 0) return;
-      updatePanel((current) => fresh.reduce((state, run) => revealTerminal(state, run, "terminal"), current));
-    },
-    [updatePanel],
-  );
-
-  const seenDrafts = useRef<Set<number>>(new Set());
-  useEffect(() => {
-    if (mountedAt.current === 0) mountedAt.current = Date.now();
-    const fresh = events.filter(
-      (event) => event.type === "prompt.drafted" && event.at >= mountedAt.current && !seenDrafts.current.has(event.id),
-    );
-    if (fresh.length === 0) return;
-    for (const event of fresh) seenDrafts.current.add(event.id);
-    announcePromptShelfChanged();
-  }, [events]);
+  const revealNewTerminals = useJournalReactions({ events, browser, enabledPlugins, showPanelTab, updatePanel });
 
   const owner = useRef<{ sessionId: string | undefined; projectId: string | undefined }>({ sessionId, projectId });
   /** The live text, readable from an effect that must not re-run per keystroke. */
