@@ -16,9 +16,9 @@ import { expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { startEngine } from "../src/daemon";
+import { startEngine } from "../../daemon";
 import { EngineClient } from "@telar/engine-client";
-import { stubModels } from "./stub-models";
+import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];
 const root = (): string => {
