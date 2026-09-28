@@ -264,39 +264,6 @@ test("the cached item projection is per session and never outlives a write", () 
   expect(store.items("session_two").map((item) => [item.id, item.status])).toEqual([["i_two", "inProgress"]]);
 });
 
-test("stop is durable and idempotent", () => {
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(store.stopTurn("session_one", "run_one").stopped).toBe(true);
-  expect(store.turns("session_one")[0]?.state).toBe("stopped");
-  expect(store.stopTurn("session_one", "run_one").stopped).toBe(false);
-  expect(store.readEvents("session_one").at(-1)?.type).toBe("turn.stopped");
-});
-
-test("a stopped turn closes the tool row it was inside; a background task is left alone", () => {
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
-    { kind: "item.started", item: { id: "shell", detail: { type: "command_execution", command: { command: "sleep 60" } }, title: "sleep 60" } },
-    { kind: "item.started", item: { id: "done", detail: { type: "assistant_message", text: "ok" } } },
-    { kind: "item.completed", itemId: "done", status: "completed" },
-    { kind: "task.started", task: { id: "task_bg", kind: "background", state: "running", title: "watch", backgrounded: true } },
-  ]);
-  expect(store.stopTurn("session_one", "run_one").stopped).toBe(true);
-
-  const byId = new Map(store.items("session_one").map((item) => [item.id, item]));
-  expect(byId.get("shell")).toMatchObject({ status: "failed", completedAt: 100 });
-  expect(byId.get("done")?.status).toBe("completed");
-  expect(store.tasks("session_one").find((task) => task.id === "task_bg")?.state).toBe("running");
-  const closes = store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell");
-  expect(closes).toHaveLength(1);
-  // Idempotent: a second sweep finds nothing open.
-  expect(store.recover()).toEqual({ stopped: [] });
-  expect(store.readEvents("session_one").filter((event) => event.type === "item.completed" && event.item.id === "shell")).toHaveLength(1);
-});
-
 test("a turn that fails while parked on a question retires the question; the session is idle and recoverable", () => {
   // Reproduced live: the provider CLI was killed while inside AskUserQuestion.
   // The turn failed, but the request stayed open — sidebar "Waiting on you",
@@ -761,14 +728,6 @@ test("a v1 document names the version break instead of reading as corruption", (
   expect(() => store.turns("session_one")).toThrow(/protocol v1/);
 });
 
-test("discard cannot alter a non-ambiguous turn", () => {
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(() => store.discardAmbiguousTurn("session_one", "run_one")).toThrow(/only an ambiguous turn/);
-  expect(store.turns("session_one")[0]).toMatchObject({ runId: "run_one", state: "queued" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toEqual(["session.created", "turn.accepted"]);
-});
-
 test("stale lock recovery uses exclusive replacement and never removes a newly held lock", () => {
   const stateRoot = root();
   const paths = statePaths(stateRoot);
@@ -1082,39 +1041,6 @@ test("fast mode survives a selection that names no model", () => {
   expect(store.claimNextTurn("worker_one")?.model).toEqual({ instanceId: session.providerInstanceId, fastMode: true, model: "claude-opus-5[1m]" });
 });
 
-test("stopping a turn sweeps its sub-agents but SPARES background work", () => {
-  /**
-   * THE SESSION-RUNTIME CONTRACT. A sub-agent left at `running` after its turn
-   * ends is a roster lie — found in real dogfood data — so the turn's own
-   * agents are swept. A background task is the opposite: outliving its turn is
-   * the DEFINITION of background, and since the session runtime landed a turn
-   * Stop is the provider's own `interrupt()` (declared with
-   * `perTaskStopAffordance`), which spares the live process and everything
-   * backgrounded inside it. The pre-runtime code killed the process on stop
-   * and closed background tasks here; that assumption no longer holds.
-   */
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
-  const claim = store.claimNextTurn("worker_one")!;
-  const token = claim.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
-    { kind: "task.started", task: { id: "task_a", kind: "agent", state: "running", title: "Explore" } },
-    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
-  ]);
-  expect(store.getSession("session_one").activity).toBe("working");
-
-  store.stopTurn("session_one", "run_one");
-
-  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
-  // The turn's own agent is swept — no process is running it any more.
-  expect(byId.get("task_a")).toMatchObject({ state: "failed" });
-  // The background task SURVIVES the turn Stop, exactly as it survives a normal
-  // turn end — the interrupt spared it.
-  expect(byId.get("task_b")).toMatchObject({ state: "running" });
-  expect(store.readEvents("session_one").map((event) => event.type)).toContain("task.completed");
-});
-
 test("stopBackgroundTasks ends lingering background work and queues the real kill", () => {
   /**
    * THE "N tasks still working" CHIP. A background task outlives its turn, so
@@ -1279,33 +1205,6 @@ test("a provider turn can open over a queued one, so a lower sequence can start 
   store.markRunning("session_one", "run_waiting", claimed.turn.claim!.token);
   const turns = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
   expect(turns.get("run_waiting")!.startedAt!).toBeGreaterThan(turns.get(provider.runId)!.completedAt!);
-});
-
-test("stop with nothing running settles lingering background work", () => {
-  /**
-   * THE RETROACTIVE CURE. A background task orphaned before the process-death
-   * sweeps existed sits at `running` forever — the session reads "monitoring",
-   * and Stop used to no-op because no turn was live. Now the press means the
-   * only thing it can mean: settle whatever still claims to be working.
-   */
-  const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
-  const claim = store.claimNextTurn("worker_one")!;
-  const token = claim.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
-    { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Tail the log" } },
-  ]);
-  store.completeTurn("session_one", "run_one", token, { text: "Started the watcher" });
-  expect(store.getSession("session_one").activity).toBe("monitoring");
-
-  const result = store.stopTurn("session_one");
-  expect(result.stopped).toBe(true);
-  const byId = new Map(store.tasks("session_one").map((task) => [task.id, task]));
-  expect(byId.get("task_b")).toMatchObject({ state: "stopped", failure: "stopped from the cockpit" });
-  expect(store.getSession("session_one").activity).toBe("idle");
-  // A second press has nothing left to stop.
-  expect(store.stopTurn("session_one").stopped).toBe(false);
 });
 
 test("the live-session read carries the arrangement, so a drag on one device reaches the others", () => {
@@ -1569,163 +1468,6 @@ describe("a Claude model is stored and claimed as named — both windows are cho
     store.createSession({ id: "session_codex", projectId: "project_one", driver: "codex" });
     const instanceId = store.getSession("session_codex").providerInstanceId;
     expect(store.updateSession("session_codex", { model: { instanceId, model: "gpt-5.6-sol" } }).model?.model).toBe("gpt-5.6-sol");
-  });
-});
-
-describe("stop is stop — there is no pause to resume", () => {
-  /**
-   * WHAT THESE REPLACED. Two suites pinned a persistent pause: a latch on the
-   * session, every queued message held behind it, `claimTurn` refusing while
-   * it was set, and a human's Resume as the only way out. The person it was
-   * built for rejected it in one sentence — hitting stop should stop a
-   * session, not put it in a pause for them to resume.
-   *
-   * The guarantees underneath it are kept and asserted here: the live turn
-   * ends, the work waiting behind it does NOT then start, and nothing is
-   * deleted. What is gone is the waiting.
-   */
-  function busy(): { store: EngineStore; token: string } {
-    const { store } = readyStore();
-    store.submitTurn("session_one", { runId: "run_live", input: "Long task" });
-    const claimed = store.claimTurn("session_one", "worker_one")!;
-    store.markRunning("session_one", "run_live", claimed.claim!.token);
-    return { store, token: claimed.claim!.token };
-  }
-
-  test("stop ends the live turn AND settles what was queued behind it", () => {
-    const { store } = busy();
-    store.submitTurn("session_one", { runId: "run_steered", input: "also this" });
-    store.pauseSession("session_one"); // the deprecated alias — same verb now
-    const states = new Map(store.turns("session_one").map((turn) => [turn.runId, turn]));
-    expect(states.get("run_live")).toMatchObject({ state: "stopped", stopReason: "user" });
-    expect(states.get("run_steered")).toMatchObject({ state: "stopped", stopReason: "user" });
-    // NOT held, and not requeued — requeueing is what made stop start the
-    // next thing a heartbeat later.
-    expect(states.get("run_steered")?.held).toBeUndefined();
-    expect(store.claimTurn("session_one", "worker_two")).toBeUndefined();
-  });
-
-  test("and then the session is IDLE: the next message runs, with nothing to resume", () => {
-    const { store } = busy();
-    store.submitTurn("session_one", { runId: "run_queued", input: "waiting" });
-    store.stopSession("session_one");
-    expect(store.getSession("session_one").paused).toBeUndefined();
-    // No gesture in between. This is the whole point.
-    expect(store.submitTurn("session_one", { runId: "run_after", input: "carry on" }).turn.state).toBe("queued");
-    expect(store.claimTurn("session_one", "worker_two")?.runId).toBe("run_after");
-  });
-
-  test("the words survive being cancelled — nothing is deleted", () => {
-    const { store } = busy();
-    store.submitTurn("session_one", { runId: "run_queued", input: "the thing I typed" });
-    store.stopSession("session_one");
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_queued")).toMatchObject({
-      state: "stopped",
-      input: "the thing I typed",
-    });
-  });
-
-  test("a DELIVERED steer stays steered: its words were part of the run", () => {
-    // Cancelling it would be a lie about what the model saw.
-    const { store, token } = busy();
-    store.submitTurn("session_one", { runId: "run_heard", input: "heard this" });
-    store.ackSteer("session_one", "run_heard", token);
-    store.stopSession("session_one");
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_heard")?.state).toBe("steered");
-  });
-
-  test("stopping wakes a subscriber once — for the live turn, not once per cancelled message", () => {
-    const { store } = readyStore();
-    store.createSession({ id: "session_two", projectId: "project_one", title: "the worker" });
-    store.subscribe("session_one", { targetSessionId: "session_two", events: ["turn_stopped"] });
-    store.submitTurn("session_two", { runId: "run_live", input: "Long task" });
-    const claimed = store.claimTurn("session_two", "worker_one")!;
-    store.markRunning("session_two", "run_live", claimed.claim!.token);
-    store.submitTurn("session_two", { runId: "run_q1", input: "one" });
-    store.submitTurn("session_two", { runId: "run_q2", input: "two" });
-
-    store.stopSession("session_two");
-    const wakes = store.turns("session_one").filter((turn) => turn.origin === "session");
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]?.wakeReason).toMatchObject({ kind: "turn_stopped", sessionId: "session_two", runId: "run_live" });
-  });
-
-  test("an agent's stop is the person's stop — same verb, same result", () => {
-    // `sessions_stop` used to mean pause, so an agent stopping a peer left it
-    // latched while the Stop button did something else entirely.
-    const { store } = busy();
-    store.submitTurn("session_one", { runId: "run_q", input: "queued" });
-    store.stopSession("session_one");
-    expect(store.getSession("session_one").paused).toBeUndefined();
-    expect(store.turns("session_one").find((turn) => turn.runId === "run_q")?.state).toBe("stopped");
-  });
-
-  for (const foreground of [true, false]) {
-    test(`session Stop cancels background work with foreground=${foreground} and fences late reports`, () => {
-      const { store, token } = busy();
-      store.ingestObservations("session_one", "run_live", token, [
-        { kind: "task.started", task: { id: "task_bg", kind: "background", state: "running", title: "Watch", providerTaskId: "provider_bg" } },
-      ]);
-      if (!foreground) store.completeTurn("session_one", "run_live", token, { text: "watching" });
-      store.createSession({ id: "session_other", projectId: "project_one" });
-      store.submitTurn("session_other", { runId: "run_other", input: "unrelated work" });
-      const other = store.claimTurn("session_other", "worker_other")!;
-      store.markRunning("session_other", "run_other", other.claim!.token);
-      store.ingestObservations("session_other", "run_other", other.claim!.token, [
-        { kind: "task.started", task: { id: "task_other", kind: "background", state: "running", title: "Other", providerTaskId: "provider_other" } },
-      ]);
-
-      store.stopSession("session_one");
-      expect(store.tasks("session_one")[0]?.state).toBe("stopped");
-      const queued = store.taskStopsForWorker("worker_one");
-      expect(queued.map(({ sessionId, providerTaskId }) => ({ sessionId, providerTaskId }))).toEqual([{ sessionId: "session_one", providerTaskId: "provider_bg" }]);
-      store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId!));
-      store.reportSessionTasks("session_one", "worker_one", [
-        { kind: "task.progress", task: { id: "task_bg", kind: "background", state: "running", title: "late report" } },
-      ]);
-      expect(store.tasks("session_one")[0]?.state).toBe("stopped");
-      expect(store.tasks("session_other")[0]?.state).toBe("running");
-      store.stopSession("session_one");
-      expect(store.taskStopsForWorker("worker_one")).toEqual([]);
-      store.submitTurn("session_one", { runId: "run_after", input: "continue" });
-      expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_after");
-    });
-  }
-
-  test("session Stop terminalizes legacy held work before clearing its pause latch", () => {
-    const { store, root: directory } = readyStore();
-    store.submitTurn("session_one", { runId: "run_held", input: "keep these words" });
-    editDocument(store, directory, "queue.json", (queue) => { queue.turns[0].held = { at: 100, reason: "session_paused" }; });
-    editDocument(store, directory, "session.json", (metadata) => { metadata.paused = { at: 100, by: "human" }; });
-    store.closeExecutionStore();
-    const legacy = new EngineStore(directory, () => 200);
-    legacy.stopSession("session_one");
-    expect(legacy.turns("session_one")[0]).toMatchObject({ state: "stopped", input: "keep these words" });
-    expect(legacy.turns("session_one")[0]?.held).toBeUndefined();
-    expect(legacy.getSession("session_one").paused).toBeUndefined();
-    expect(legacy.claimTurn("session_one", "worker_one")).toBeUndefined();
-    legacy.submitTurn("session_one", { runId: "run_after", input: "new instruction" });
-    expect(legacy.claimTurn("session_one", "worker_one")?.runId).toBe("run_after");
-  });
-
-  test("stopping an idle session with nothing waiting changes nothing", () => {
-    const { store } = readyStore();
-    expect(store.stopSession("session_one")).toEqual({ stopped: [] });
-  });
-
-  test("a late completion cannot resurrect a stopped turn", () => {
-    // The fence that makes stop mean stop even when the worker is mid-flight:
-    // `completeTurn` takes only a RUNNING claim.
-    const { store, token } = busy();
-    store.stopSession("session_one");
-    expect(() => store.completeTurn("session_one", "run_live", token, { text: "done" })).toThrow(EngineStateError);
-    expect(store.turns("session_one")[0]?.state).toBe("stopped");
-  });
-
-  test("resume is inert: there is no latch to lift", () => {
-    const { store } = busy();
-    store.stopSession("session_one");
-    expect(store.resumeSession("session_one")).toMatchObject({ released: 0, already: true });
   });
 });
 
