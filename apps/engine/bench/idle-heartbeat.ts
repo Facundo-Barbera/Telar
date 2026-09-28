@@ -24,7 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
 import { startEngine } from "../src/daemon";
-import type { TurnDriver } from "../src/driver";
+import type { TurnDriver } from "../src/drivers";
 
 const [sessions = 129, liveIndex = 45, turnsEach = 27] = process.argv.slice(2).map(Number);
 const IDLE_WINDOW_MS = Number(process.env.BENCH_IDLE_MS ?? 15_000);

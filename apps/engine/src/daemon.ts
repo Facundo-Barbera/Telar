@@ -3,7 +3,7 @@
 // semantics before a driver is allowed to execute an agent turn.
 import crypto from "node:crypto";
 import { atomicWrite } from "./platform/fs/atomic";
-import { createExecutionPort, withDirectExecution } from "./execution-port";
+import { createExecutionPort, withDirectExecution } from "./worker/execution-port";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";

@@ -4,18 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { qualifyTelarTool, requiresHuman, type TurnObservation } from "@telar/engine-client";
 import { unifiedDiff } from "../src/domains/git/diff";
-import {
-  createClaudeDriver as createRealClaudeDriver,
-  itemDetailForToolCall,
-  pathFromPartialInput,
-  planDetailForTodos,
-  ProviderUnavailableError,
-  RateLimitedError,
-  requestKindForTool,
-  taskKindForType,
-  taskStateForStatus,
-  titleForToolCall,
-} from "../src/driver";
+import { createClaudeDriver as createRealClaudeDriver, itemDetailForToolCall, pathFromPartialInput, planDetailForTodos, RateLimitedError, requestKindForTool, taskKindForType, taskStateForStatus, titleForToolCall } from "../src/driver";
+import { ProviderUnavailableError } from "../src/drivers";
 import { SteerMailbox } from "../src/domains/turns";
 import { until } from "./wait";
 

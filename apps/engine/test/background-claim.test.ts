@@ -23,7 +23,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
-import type { DriverRun, DriverSessionHooks, ProviderTurnBinding, TurnDriver } from "../src/driver";
+import type { DriverRun, DriverSessionHooks, ProviderTurnBinding, TurnDriver } from "../src/drivers";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";
 import { until } from "./wait";

@@ -13,7 +13,7 @@ import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { EngineStateError, EngineStore } from "../src/state";
 import { EngineWorker } from "../src/worker";
-import { normalizeOutcome, type TurnDriver } from "../src/driver";
+import { normalizeOutcome, type TurnDriver } from "../src/drivers";
 import { stubModels } from "./stub-models";
 
 const roots: string[] = [];

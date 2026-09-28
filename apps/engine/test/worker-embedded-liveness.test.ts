@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineClientError } from "@telar/engine-client";
-import type { TurnDriver } from "../src/driver";
+import type { TurnDriver } from "../src/drivers";
 import { EngineWorker } from "../src/worker";
 import { createWorkerDiagnostics, sanitizeDiagnostic } from "../src/worker-diagnostics";
 

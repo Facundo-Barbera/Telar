@@ -36,7 +36,7 @@ import { EngineStore, EngineStateError } from "../src/state";
 import { assertProjectRoot } from "../src/worker";
 import { createClaudeDriver } from "../src/driver";
 import { createCodexDriver } from "../src/drivers/codex";
-import type { DriverRun } from "../src/provider-contract";
+import type { DriverRun } from "../src/drivers";
 
 const roots: string[] = [];
 const root = (): string => {

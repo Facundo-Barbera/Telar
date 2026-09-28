@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { DriverRequest } from "../../provider-contract";
+import type { DriverRequest } from "../contract";
 import { deltas, replies, runTurn, useFakeCodex } from "../../../test/codex-harness";
 
 useFakeCodex();

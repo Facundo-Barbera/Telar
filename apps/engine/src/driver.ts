@@ -74,11 +74,9 @@ import type { SessionsCapability } from "./sessions-tools/tools";
 import type { NotesCapability } from "./domains/notes";
 import type { PromptsCapability } from "./domains/prompts";
 
-export { ProviderUnavailableError, normalizeOutcome } from "./provider-contract";
-export type { DriverRequest, DriverRun, ProviderTurnBinding, DriverSessionHooks, TurnDriver, SessionsCapability } from "./provider-contract";
 import { ProviderUnavailableError, normalizeOutcome, type DriverRun, type ProviderTurnBinding, type DriverSessionHooks,
-  type TurnDriver } from "./provider-contract";
-import { requireCwd } from "./provider-contract";
+  type TurnDriver } from "./drivers/contract";
+import { requireCwd } from "./drivers/contract";
 import { taskOutputFileFrom } from "./task-output";
 
 /** The SDK's permission callback, narrowed to what this driver uses. */

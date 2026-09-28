@@ -4,7 +4,7 @@ import { openCodeFailure, openCodeFailureText } from "./errors";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantMessage, Message, SessionStatus, Part, PermissionRequest, QuestionRequest, Config } from "@opencode-ai/sdk/v2";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, type ItemDetail, type TurnObservation, type UserInputField } from "@telar/engine-client";
-import { normalizeOutcome, type DriverRun, type TurnDriver } from "../../provider-contract";
+import { normalizeOutcome, type DriverRun, type TurnDriver } from "../contract";
 import { startOpenCodeRuntime, type OpenCodeRuntime } from "./runtime";
 
 type Client = OpenCodeRuntime["client"];

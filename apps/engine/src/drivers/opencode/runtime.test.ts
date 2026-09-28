@@ -13,7 +13,7 @@ import {
   parseOpenCodeModelLimits,
   type OpenCodeModelLimits,
 } from "./runtime";
-import type { DriverRun } from "../../provider-contract";
+import type { DriverRun } from "../contract";
 
 const OPUS_200K: OpenCodeModelLimits = { context: 200_000, output: 64_000 };
 const GPT_1M: OpenCodeModelLimits = { context: 1_050_000, output: 128_000, input: 922_000 };

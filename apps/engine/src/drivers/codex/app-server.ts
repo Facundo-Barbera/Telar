@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { requireCli } from "../../domains/providers";
-import { ProviderUnavailableError } from "../../driver";
+import { ProviderUnavailableError } from "../contract";
 import { record } from "./items";
 
 type CodexNotification = { method: string; params: Record<string, unknown> };

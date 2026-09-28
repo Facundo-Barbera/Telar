@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import type { DriverRun } from "../../provider-contract";
+import type { DriverRun } from "../contract";
 import { mcp, PEER } from "../../../test/codex-harness";
 import { codexMcpServers, codexNotificationInstruction, codexSandboxPolicy, codexThreadParams, codexTurnInput, defaultThreadConfig } from "./thread";
 

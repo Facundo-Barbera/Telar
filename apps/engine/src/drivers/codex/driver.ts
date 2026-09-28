@@ -1,5 +1,5 @@
 import type { TurnObservation } from "@telar/engine-client";
-import { requireCwd, type DriverResult, type DriverRun, type TurnDriver } from "../../provider-contract";
+import { requireCwd, type DriverResult, type DriverRun, type TurnDriver } from "../contract";
 import { CodexAppServer, resolveCodexBinary } from "./app-server";
 import { str } from "./items";
 import { answerCodexRequests } from "./requests";
