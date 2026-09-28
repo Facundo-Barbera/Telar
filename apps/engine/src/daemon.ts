@@ -9,31 +9,26 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
-import { URL } from "node:url";
 import {
   BUNDLED_PLUGIN_TOOL_PREFIXES,
   ENGINE_PROTOCOL_VERSION,
   EngineClientError,
-  GitHubLineCommentInput,
   ProviderDriverKind,
   type ComputerUseGrant,
   type EngineDiscovery,
   type EngineHealth,
   type WorkerClaim,
   machineAllows,
-  parseDiffBaseQuery,
-  parseFilePatchQuery,
   pluginSettings,
   readProjectPlugins,
-  workspacePath,
 } from "@telar/engine-client";
 import { providersRoutes, type CliUpdateRun } from "./domains/providers";
 import { computerUseRoutes, createComputerUseGate, type ComputerUseGate } from "./domains/computer-use";
 import { bearerIsValid } from "./platform/http/auth";
-import { readProviderSkillsCached, type LoadProviderCommands, type VersionProbe } from "./domains/providers";
+import { type VersionProbe } from "./domains/providers";
 import { BUNDLED_SKILLS, type SocketTool } from "./domains/agent-tools";
 import { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionBootstrap, type SessionBootstrapWindow, sessionsCapability, sessionSnapshot, sessionsSocketConnectCard, storeReads, storeSessionsPort, syncTelarSkill } from "./domains/sessions";
-import { browserRoutes, createLoginGrantStore } from "./domains/browser";
+import { browserRoutes, browserSessionRoutes, createLoginGrantStore } from "./domains/browser";
 import {
   acquireDaemonLock,
   EngineStateError,
@@ -41,9 +36,7 @@ import {
   migrateLegacyEngineRoot,
   statePaths,
   engineRootFromEnv,
-  type DiffBaseOption,
   type EngineNotifier,
-  type FilePatchOptions,
   type StoppedClaim,
 } from "./state";
 import { bundledPlugins } from "./plugins/bundled";
@@ -54,8 +47,7 @@ import { PluginHost } from "./plugins/host";
 import { PluginInputError } from "./plugins/routes";
 import { setPluginReadTools } from "./drivers/claude";
 import { createRunMount } from "./run/mount";
-import { RunError } from "./run/types";
-import { maybeRetitleSession } from "./domains/providers";
+import { maybeRetitleSession, sessionProviderRoutes, type ProviderSkillsOptions } from "./domains/providers";
 import { appearanceRoutes } from "./domains/appearance";
 import { warmUsageScanCache } from "./usage";
 import {
@@ -69,16 +61,17 @@ import {
   notesRoutes,
 } from "./domains/notes";
 import { PreparedPromptsError, promptsRoutes } from "./domains/prompts";
-import { githubRoutes, type GhRunner } from "./domains/github";
+import { githubRoutes, sessionGitHubRoutes, type GhRunner } from "./domains/github";
 import { createStorageMeter, reapNodeModules, storageRoutes, reapReport, retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms, type CheckoutSizesOptions } from "./domains/storage";
 import { WorktreeError, type AsyncGitRunner, type GitRunner } from "./worktree";
 import { readWorktreesRoot } from "./worktrees-location";
 import type { VolumeDeps } from "./volumes";
 import type { DriverSelector } from "./worker";
-import { readTaskOutput, resolveTaskOutputFile } from "./drivers/claude";
-import { filesRoutes } from "./domains/files";
+import { filesRoutes, sessionFilesRoutes } from "./domains/files";
+import { sessionGitRoutes } from "./domains/git";
+import { runRoutes } from "./domains/terminal";
 import { projectCheckoutRoutes, projectRoutes } from "./domains/projects";
-import { installedPlugins, pluginRoutes, pluginScopedRoutes } from "./domains/plugins";
+import { installedPlugins, pluginRoutes, pluginScopedRoutes, pluginSessionRoutes } from "./domains/plugins";
 import { settingsRoutes } from "./domains/settings";
 import { dictationRoutes } from "./domains/dictation";
 import { worktreesRoutes } from "./domains/worktrees";
@@ -88,11 +81,11 @@ import { createHostsStore, hostsRoutes } from "./domains/hosts";
 import { mcpOAuthRoutes, mcpSocketRoute } from "./domains/agent-tools";
 import { aboutRoutes } from "./domains/updates";
 import { createPushService } from "./domains/push";
-import { body, errorFor as httpErrorFor, HttpError, rawBody, writeError, writeJson } from "./platform/http/http";
+import { errorFor as httpErrorFor, HttpError } from "./platform/http/http";
 import { router } from "./platform/http/router";
 import type { Route } from "./platform/http/route";
 import { stringValue } from "./platform/http/params";
-import { sessionLifecycleRoutes, sessionReadRoutes, sessionsRoutes } from "./domains/sessions";
+import { sessionAttachmentRoutes, sessionLifecycleRoutes, sessionReadRoutes, sessionsRoutes } from "./domains/sessions";
 import { schedulesRoutes } from "./domains/schedules";
 import { sessionTurnRoutes, turnRoutes, workerRoutes } from "./domains/turns";
 
@@ -290,7 +283,7 @@ export type EngineDaemonOptions = {
    * (`CLAUDE_CONFIG_DIR`, exactly as the CLI itself reads it); the loader
    * replaces the `supportedCommands()` handshake. Both default to the real thing.
    */
-  providerSkills?: { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
+  providerSkills?: ProviderSkillsOptions;
   /**
    * Whether computer use WORKS here, remembered from the last probe — the one
    * fact that decides whether a claim gets the `mac` server.
@@ -325,38 +318,6 @@ function domainError(error: unknown): HttpError | undefined {
 
 const errorFor = (error: unknown): HttpError => httpErrorFor(error, domainError);
 
-/** The HTTP edge's own ceiling. The store enforces the same number again —
- *  an in-process caller must not be able to walk past a check that only ever
- *  ran on the socket. */
-const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
-
-function sessionPath(pathname: string): { sessionId: string; tail: string } | undefined {
-  const match = /^\/v2\/sessions\/([A-Za-z0-9_-]+)(\/.*)?$/.exec(pathname);
-  if (!match) return undefined;
-  return { sessionId: decodeURIComponent(match[1]), tail: match[2] ?? "" };
-}
-
-/**
- * `?path=…&untracked=1&ignoreWhitespace=1` — how one file's patch is read.
- *
- * SHARED BY THE SESSION AND PROJECT ROUTES, which is the whole reason it is a
- * function: they serve the same surface (`diff-surface.tsx` switches between
- * them on whether there is a session yet), so a parameter one parsed and the
- * other ignored would be a toolbar control that worked in a conversation and
- * did nothing on a canvas.
- */
-/**
- * THE QUERY IS PARSED BY THE CONTRACT'S OWN PARSER, not by a copy written here
- * — `protocol/diff-query.ts` carries the argument, and the bug it was written
- * for was a hand-written third copy dropping a parameter in silence.
- */
-function filePatchOptions(url: URL): FilePatchOptions {
-  return parseFilePatchQuery(url.searchParams);
-}
-
-function requestedBase(url: URL): DiffBaseOption {
-  return parseDiffBaseQuery(url.searchParams);
-}
 
 
 
@@ -1056,469 +1017,6 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       throw new HttpError(401, "engine_unauthorized", "the notes socket answers to its own secret — see /v2/notes/mcp-info");
     }
   };
-  const legacyRoutes = async (request: http.IncomingMessage, response: http.ServerResponse, url: URL): Promise<void> => {
-    try {
-      authorize("engine", request);
-      const session = sessionPath(url.pathname);
-      if (session) {
-        /**
-         * The session's review: what it has done to the repository since it
-         * started. `?path=` narrows it to ONE file's patch, because a review of
-         * two hundred files carrying every patch is a megabyte on a poll.
-         */
-        if (request.method === "GET" && session.tail === "/diff") {
-          const target = url.searchParams.get("path");
-          if (target) {
-            writeJson(response, 200, {
-              file: await store.sessionFilePatchAsync(session.sessionId, target, filePatchOptions(url)),
-            });
-            return;
-          }
-          writeJson(response, 200, { diff: await store.sessionDiffAsync(session.sessionId, requestedBase(url)) });
-          return;
-        }
-        /**
-         * The session's checkout, as a file list. `?path=` reads ONE file's
-         * text — the same split as `/diff`, and for the same reason: a tree asks
-         * for every path once and a viewer asks for one file at a time.
-         */
-        if (request.method === "GET" && session.tail === "/files") {
-          // OPENING A RELEASED SESSION'S FILES BRINGS ITS CHECKOUT BACK, the way
-          // a message does; the listing answers once the re-cut lands.
-          store.restoreSessionWorktree(session.sessionId);
-          const target = url.searchParams.get("path");
-          if (target) {
-            writeJson(response, 200, { file: await store.sessionFileAsync(session.sessionId, target) });
-            return;
-          }
-          writeJson(response, 200, { listing: await store.sessionFilesAsync(session.sessionId) });
-          return;
-        }
-        /**
-         * WHAT THE SESSION'S PROVIDER CAN BE ASKED TO DO — the composer's `$`
-         * and `/` menus (#387).
-         *
-         * Read where the session actually runs, which is its worktree when it
-         * cut one: a project's skills are the ones in ITS checkout, and the
-         * provider answers about the directory it was started in. Cached per
-         * session inside `provider-skills.ts` — the menu is allowed to ask on a
-         * keystroke, so the route must not be a subprocess per keystroke.
-         */
-        if (request.method === "GET" && session.tail === "/skills") {
-          const record = store.getSession(session.sessionId);
-          // A session with no checkout has no project skills to read — the
-          // answer is the empty menu, not a probe of some other directory.
-          const checkout = workspacePath(record.workspace);
-          if (checkout === undefined) {
-            writeJson(response, 200, { skills: [], commands: [] });
-            return;
-          }
-          writeJson(
-            response,
-            200,
-            await readProviderSkillsCached({
-              cacheKey: record.id,
-              driver: record.driver,
-              checkout,
-              ...(options.providerSkills?.env ? { env: options.providerSkills.env } : {}),
-              ...(options.providerSkills?.loadProviderCommands
-                ? { loadProviderCommands: options.providerSkills.loadProviderCommands }
-                : {}),
-            }),
-          );
-          return;
-        }
-        /**
-         * ADOPT ONE — fork it, import its history, and point this session's
-         * next turn at the fork.
-         *
-         * A POST ON THE SESSION, because that is what changes: nothing about
-         * the person's own conversation is touched (asserted, not assumed), and
-         * what comes back is this session's new turn plus the stamp saying
-         * where it came from.
-         */
-        if (request.method === "POST" && session.tail === "/adopt") {
-          const input = await body(request);
-          const cut = input.cut === "since_compact_boundary" || input.cut === "whole" ? input.cut : undefined;
-          writeJson(
-            response,
-            201,
-            await store.adoptClaudeConversation(session.sessionId, {
-              sourceSessionId: stringValue(input.sourceSessionId, "source session id")!,
-              ...(cut ? { cut } : {}),
-              ...((value) => (value ? { sourceCwd: value } : {}))(stringValue(input.sourceCwd, "source cwd", true)),
-            }),
-          );
-          return;
-        }
-        /** The session twin of `/v2/projects/:id/files/raw` — one file's bytes,
-         *  fenced inside the session's own checkout. */
-        if (request.method === "GET" && session.tail === "/files/raw") {
-          const target = url.searchParams.get("path");
-          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
-          const raw = await store.sessionFileBytesAsync(session.sessionId, target);
-          response.writeHead(200, {
-            "content-type": raw.mediaType,
-            "content-length": raw.data.byteLength,
-            "cache-control": "no-store",
-          });
-          response.end(raw.data);
-          return;
-        }
-        /**
-         * PUT, not POST: this replaces one named file and is idempotent given the
-         * same hash. A refusal comes back 200 with `written: false` — "the file
-         * changed under you" is an answer the editor renders, not an error it
-         * should catch (same rule as `/git/commit`).
-         */
-        if (request.method === "PUT" && session.tail === "/files") {
-          const target = url.searchParams.get("path");
-          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
-          const input = await body(request);
-          writeJson(
-            response,
-            200,
-            store.sessionFileWrite(session.sessionId, target, stringValue(input.text, "file text")!, stringValue(input.expectedSha256, "expected hash")!),
-          );
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/git/commit") {
-          const input = await body(request);
-          writeJson(response, 200, await store.commitSessionWork(session.sessionId, stringValue(input.message, "commit message")!));
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/git/push") {
-          /**
-           * NO BODY IS READ, and that is the whole security posture of this
-           * route: the branch, the checkout and the remote come off the session
-           * record. A refusal is a 200 with a reason, like the commit's — "this
-           * checkout has no origin" is an answer about the repository, not a
-           * failure of the request.
-           */
-          writeJson(response, 200, await store.pushSessionBranch(session.sessionId));
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/github/pull") {
-          const input = await body(request);
-          writeJson(
-            response,
-            200,
-            await store.openSessionPullRequest(session.sessionId, {
-              title: stringValue(input.title, "pull request title")!,
-              ...(typeof input.body === "string" ? { body: input.body } : {}),
-              ...(typeof input.base === "string" && input.base.trim() ? { base: input.base } : {}),
-            }),
-          );
-          return;
-        }
-        /** The pull request a Diff line would be placed on, and the facts that
-         *  decide whether it can be (#1014). */
-        if (request.method === "GET" && session.tail === "/github/pull/anchor") {
-          writeJson(response, 200, await store.sessionPullAnchor(session.sessionId));
-          return;
-        }
-        /** A new review thread on the session branch's pull request. The pull
-         *  request is the branch's; the body names only the line and the words. */
-        if (request.method === "POST" && session.tail === "/github/pull/comments") {
-          const input = GitHubLineCommentInput.safeParse(await body(request));
-          if (!input.success) throw new HttpError(400, "invalid_request", "a comment needs a 40-character commit, a path, a line, a side and a body");
-          writeJson(response, 200, await store.sessionPullLineComment(session.sessionId, input.data));
-          return;
-        }
-        if (request.method === "GET" && session.tail === "/browser") {
-          writeJson(response, 200, {
-            browser: await store.browserState(session.sessionId, {
-              screenshot: url.searchParams.get("screenshot") === "1",
-              start: url.searchParams.get("start") === "1",
-            }),
-          });
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/browser/open") {
-          // A human opening a page in the session's browser from a client
-          // with no desktop shell of its own — see EngineStore.browserOpen.
-          const input = await body(request);
-          writeJson(response, 200, { browser: await store.browserOpen(session.sessionId, stringValue(input.url, "url")!) });
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/browser/control") {
-          // The desktop shell reporting whose hands are on the shared browser
-          // — see EngineStore.recordBrowserControl. Idempotent by dedupe.
-          const input = await body(request);
-          const controller = stringValue(input.controller, "controller")!;
-          if (controller !== "agent" && controller !== "human" && controller !== "idle") {
-            throw new HttpError(400, "invalid_request", "controller must be agent, human or idle");
-          }
-          store.recordBrowserControl(session.sessionId, controller, stringValue(input.tabId, "tab id", true), input.interrupted === true);
-          writeJson(response, 200, {});
-          return;
-        }
-        /**
-         * THE DATA SCIENCE DOOR, NOW AN ALIAS. Data science is a migrated
-         * plugin (`plugins/data-science.ts`): its verbs live in that module's
-         * `routes` table and are served by the generic arm below at
-         * `/plugins/data-science/<method>`. This arm stays because
-         * `/ds/<method>` is what a RELEASED client calls, and an old cockpit
-         * pointed at a new daemon has to keep working.
-         *
-         * It FORWARDS rather than reimplementing — the switch that used to sit
-         * here is gone, so the two doors cannot drift apart.
-         */
-        const dsMethod = /^\/ds\/([a-z]+(?:\/[a-z]+)?)$/.exec(session.tail)?.[1];
-        if (request.method === "POST" && dsMethod) {
-          const module = pluginHost.ready("data-science");
-          if (!module) throw new HttpError(404, "not_found", "data science is unavailable");
-          const route = module.routes?.[dsMethod];
-          if (!route) throw new HttpError(404, "not_found", `no data-science method ${dsMethod}`);
-          const input = await body(request);
-          try {
-            writeJson(response, 200, (await route(input, module.resolve?.(session.sessionId))) ?? {});
-          } catch (error) {
-            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
-            throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
-          }
-          return;
-        }
-        /**
-         * THE LATEX DOOR, NOW AN ALIAS, for the same reason and in the same
-         * shape: `/latex/<method>` is what a released client calls, and the
-         * verbs live in `plugins/latex.ts`.
-         */
-        const latexMethod = /^\/latex\/([a-z]+)$/.exec(session.tail)?.[1];
-        if (request.method === "POST" && latexMethod) {
-          const module = pluginHost.ready("latex");
-          if (!module) throw new HttpError(404, "not_found", "latex is unavailable");
-          const route = module.routes?.[latexMethod];
-          if (!route) throw new HttpError(404, "not_found", `no latex method ${latexMethod}`);
-          const input = await body(request);
-          try {
-            writeJson(response, 200, (await route(input, module.resolve?.(session.sessionId))) ?? {});
-          } catch (error) {
-            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
-            throw new HttpError(400, "invalid_request", error instanceof Error ? error.message : String(error));
-          }
-          return;
-        }
-        /**
-         * THE GENERIC PLUGIN DOOR — the one arm that replaces the two above.
-         * `/plugins/<id>/<verb>` resolves the plugin's capability for this
-         * session and calls its own route. Nothing here knows what any plugin
-         * does, which is the whole claim: adding a plugin adds no line here.
-         */
-        /**
-         * ONE OPTIONAL SECOND SEGMENT IN THE VERB, and no more. A plugin may
-         * own a second tool prefix — data science owns `notebook` — and those
-         * verbs arrive as `notebook/read`, which a one-segment matcher could
-         * not see: the request fell past this arm to "endpoint does not exist"
-         * while the `/ds/` alias (whose own matcher allows the slash) answered
-         * it. The depth is capped rather than opened up, and the route TABLE
-         * still decides what executes, so this widens what can be addressed by
-         * exactly the shape a registered verb can have.
-         */
-        const pluginCallPath = /^\/plugins\/([a-z][a-z0-9-]*)\/([a-z][a-z0-9-]*(?:\/[a-z][a-z0-9-]*)?)$/.exec(session.tail);
-        if (request.method === "POST" && pluginCallPath) {
-          const [, pluginId, verb] = pluginCallPath as unknown as [string, string, string];
-          const module = pluginHost.ready(pluginId);
-          if (!module) throw new HttpError(404, "not_found", `no plugin ${pluginId}`);
-          const route = module.routes?.[verb];
-          if (!route) throw new HttpError(404, "not_found", `plugin ${pluginId} has no ${verb}`);
-          const input = await body(request);
-          try {
-            writeJson(response, 200, (await route(input, module.resolve?.(session.sessionId))) ?? {});
-          } catch (error) {
-            if (error instanceof HttpError || error instanceof EngineStateError) throw error;
-            // A BROKEN PLUGIN IS LEGIBLE AS ITS OWN FAILURE — the id is on the
-            // message, so a person sees which switch to turn off.
-            throw new HttpError(400, "plugin_error", `${pluginId}: ${error instanceof Error ? error.message : String(error)}`);
-          }
-          return;
-        }
-        /**
-         * THE RUN DOOR. Gated on the tail BEFORE the body is read, because
-         * `body(request)` consumes the stream and every other session route
-         * below still needs it. `run/mount.ts` owns everything else and answers
-         * `undefined` when the request is not a run request.
-         */
-        /**
-         * THE RUN FEED — #890, and it is what deletes two poll loops.
-         *
-         * BEFORE THE TABLE, because `RunRoute` returns a VALUE and this route
-         * has none: it holds the socket open for the life of the panel. Same
-         * frame shape as `/v2/sessions/stream` — the `: open` flush that puts
-         * headers on the wire, the 25 s `: beat`, the `openStreams`
-         * registration so `server.close()` is not parked on a connection that
-         * by design never ends — and every reason written out there applies
-         * here verbatim.
-         *
-         * THE FRAME CARRIES THE WHOLE `RunView`, WHICH THE SESSION FEED'S
-         * FRAMES DELIBERATELY DO NOT. That rule exists because a thin frame
-         * names a journal entry a reader can page back to; a run's status is
-         * in the engine's memory and the only read of it is `/run/status` —
-         * the poll this route exists to delete. See `RunStatusEvent`.
-         *
-         * SCOPED TO THE SESSION. A run is a terminal in one session's panel
-         * ("Run = a new terminal"), and a connection that saw every session's
-         * terminals would be a cross-session read granted by a typo.
-         */
-        if (request.method === "GET" && session.tail === "/run/stream") {
-          const record = store.getSession(session.sessionId);
-          if (!record.projectId) throw new HttpError(400, "invalid_request", "runs need a project");
-          response.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache, no-transform",
-            Connection: "keep-alive",
-          });
-          response.write(": open\n\n");
-          const stop = runMount.watch(record.id, (event) => {
-            try {
-              response.write(`data: ${JSON.stringify(event)}\n\n`);
-            } catch {
-              // The socket has gone; the close handler below unsubscribes.
-            }
-          });
-          const beat = setInterval(() => {
-            try {
-              response.write(": beat\n\n");
-            } catch {
-              /* the close handler is what actually tidies up */
-            }
-          }, 25_000);
-          beat.unref();
-          const finish = () => {
-            clearInterval(beat);
-            stop();
-            openStreams.delete(finish);
-          };
-          openStreams.add(finish);
-          request.on("close", finish);
-          response.on("close", finish);
-          (finish as { end?: () => void }).end = () => {
-            finish();
-            try {
-              response.end();
-            } catch {
-              /* already gone */
-            }
-          };
-          return;
-        }
-        if (session.tail === "/run" || session.tail.startsWith("/run/")) {
-          const runAnswer = runMount.handle(
-            request.method ?? "",
-            session.tail,
-            request.method === "GET" ? Object.fromEntries(url.searchParams) : await body(request),
-            () => {
-              const record = store.getSession(session.sessionId);
-              if (!record.projectId) throw new RunError("invalid_request", "runs need a project");
-              // A run is a process in a directory; a session with none cannot
-              // have one. Stated separately from the project check because they
-              // are different absences, even though today only one session has
-              // both.
-              const worktreePath = workspacePath(record.workspace);
-              if (worktreePath === undefined) throw new RunError("invalid_request", "runs need a working directory");
-              return {
-                sessionId: record.id,
-                projectId: record.projectId,
-                worktreePath,
-                ...(record.workspace.mode === "worktree" ? { worktreeBranch: record.workspace.branch } : {}),
-              };
-            },
-          );
-          if (runAnswer !== undefined) {
-            try {
-              writeJson(response, 200, (await runAnswer) ?? {});
-            } catch (error) {
-              // A run's refusal is an ANSWER about the request — "that port is
-              // taken", "nothing is deployed" — not a crash.
-              if (error instanceof RunError) {
-                throw new HttpError(error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400, error.code, error.message);
-              }
-              throw error;
-            }
-            return;
-          }
-        }
-        /** The CSV / Parquet table viewer's backend: a window of rows. */
-        if (request.method === "GET" && session.tail === "/data/table") {
-          const target = url.searchParams.get("path");
-          if (!target) throw new HttpError(400, "invalid_request", "a file path is required");
-          writeJson(response, 200, await store.sessionTable(session.sessionId, target, {
-            offset: Number(url.searchParams.get("offset") ?? 0),
-            limit: Math.min(Number(url.searchParams.get("limit") ?? 200), 1000),
-            ...(url.searchParams.get("sort") ? { sort: url.searchParams.get("sort")! } : {}),
-            ...(url.searchParams.get("desc") === "1" ? { desc: true } : {}),
-          }));
-          return;
-        }
-        /**
-         * A BACKGROUND TASK'S LOG, a page at a time — the Processes tab's row.
-         * The path is the one the driver stored on the task, never the
-         * caller's; `after` is a byte cursor, absent for "the tail".
-         */
-        const taskOutput = /^\/tasks\/([A-Za-z0-9_-]+)\/output$/.exec(session.tail);
-        if (taskOutput && request.method === "GET") {
-          const task = store.tasks(session.sessionId).find((one) => one.id === taskOutput[1]);
-          if (!task) throw new HttpError(404, "not_found", "task not found");
-          const file = task.kind === "background" && task.outputFile ? resolveTaskOutputFile(task.outputFile, task.providerTaskId) : undefined;
-          if (!file) throw new HttpError(404, "not_found", "this task has no log");
-          const raw = url.searchParams.get("after");
-          const after = raw === null ? undefined : Number(raw);
-          if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, "invalid_request", "after must be a byte offset");
-          writeJson(response, 200, await readTaskOutput(file, after));
-          return;
-        }
-        /** The plots gallery reads the index; the transcript reads the bytes. */
-        if (request.method === "GET" && session.tail === "/attachments") {
-          const tag = url.searchParams.get("tag") ?? undefined;
-          writeJson(response, 200, { attachments: store.listAttachments(session.sessionId, tag ? { tag } : {}) });
-          return;
-        }
-        const attachmentOne = /^\/attachments\/([A-Za-z0-9_-]+)$/.exec(session.tail);
-        if (attachmentOne && request.method === "GET") {
-          const { attachment, data } = store.attachmentBytes(session.sessionId, attachmentOne[1]!);
-          response.writeHead(200, {
-            "content-type": attachment.mediaType,
-            "content-length": data.byteLength,
-            // The id is minted per write, so the bytes behind it never change.
-            "cache-control": "private, max-age=31536000, immutable",
-          });
-          response.end(Buffer.from(data));
-          return;
-        }
-        if (attachmentOne && request.method === "PATCH") {
-          const input = await body(request);
-          const tags = Array.isArray(input.tags) ? input.tags.filter((t): t is string => typeof t === "string") : [];
-          writeJson(response, 200, { attachment: store.tagAttachment(session.sessionId, attachmentOne[1]!, tags) });
-          return;
-        }
-        if (request.method === "POST" && session.tail === "/attachments") {
-          const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
-          const header = request.headers["x-telar-attachment-name"];
-          const encoded = Array.isArray(header) ? header[0] : header;
-          let name = "attachment";
-          try {
-            // Encoded by the client because a filename may hold bytes a header
-            // may not. A name that will not decode is not worth failing an
-            // upload over — the bytes are the point.
-            if (encoded) name = decodeURIComponent(encoded);
-          } catch {
-            name = encoded ?? "attachment";
-          }
-          writeJson(response, 201, {
-            attachment: store.putAttachment(session.sessionId, {
-              name,
-              mediaType: (request.headers["content-type"] ?? "application/octet-stream").split(";")[0]!.trim(),
-              data,
-            }),
-          });
-          return;
-        }
-      }
-      throw new HttpError(404, "not_found", "engine endpoint does not exist");
-    } catch (error) {
-      writeError(response, errorFor(error));
-    }
-  };
   domainRoutes.push(
     mcpSocketRoute("/v2/sessions/mcp", "sessions-socket", "sessions", (message) => handleSessionsSocketMessage(sessionsSocketTools(), message)),
     mcpSocketRoute("/v2/notes/mcp", "notes-socket", "notes", (message) => handleNotesSocketMessage(notesSocketTools(), message)),
@@ -1528,6 +1026,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     ...projectRoutes(store, pluginHost), ...projectCheckoutRoutes(store, options.providerSkills), ...githubRoutes(store),
     ...pluginRoutes(store, pluginHost, { dir: pluginsDir, installed, moduleFor: externalModule }), ...pluginScopedRoutes(store, pluginHost),
     ...sessionReadRoutes(store), ...sessionLifecycleRoutes(store, push.dismiss),
+    ...sessionFilesRoutes(store), ...sessionGitRoutes(store), ...sessionGitHubRoutes(store), ...sessionProviderRoutes(store, options.providerSkills),
+    ...browserSessionRoutes(store), ...pluginSessionRoutes((id) => pluginHost.ready(id)), ...runRoutes(store, runMount, openStreams), ...sessionAttachmentRoutes(store),
     ...sessionTurnRoutes(store, {
       execution,
       activeWorker,
@@ -1538,7 +1038,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       retitle: (sessionId, input) => setImmediate(() => void maybeRetitleSession(store, sessionId, input)),
     }),
   );
-  const server = http.createServer(router(domainRoutes, { authorize, errorFor, fallback: legacyRoutes }));
+  const server = http.createServer(router(domainRoutes, { authorize, errorFor }));
 
   try {
     await new Promise<void>((resolve, reject) => {

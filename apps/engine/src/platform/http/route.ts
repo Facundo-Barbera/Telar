@@ -24,6 +24,9 @@ export type Route = {
   handle(input: RouteInput): RouteAnswer | undefined | Promise<RouteAnswer | undefined>;
 };
 
-export const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
+/** `^/v2/sessions/<id><tail>$`, the session id as `params[0]`. */
+export const sessionRoute = (tail: string): RegExp => new RegExp(`^/v2/sessions/([A-Za-z0-9_-]+)${tail}$`);
+
+export const ok =(body: unknown): RouteAnswer => ({ status: 200, body });
 export const fail = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 export const notModified = (etag: string): RouteAnswer => ({ status: 304, body: null, bytes: new Uint8Array(), headers: { etag, "cache-control": "no-store" } });

@@ -1,11 +1,9 @@
 import { HttpError, matchesETag } from "../../platform/http/http";
 import { positiveParam } from "../../platform/http/params";
-import { notModified, ok, type Route } from "../../platform/http/route";
+import { notModified, ok, sessionRoute, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./bootstrap";
 
-/** `/v2/sessions/:id<tail>`; the id charset is the one every session route uses. */
-export const sessionRoute = (tail: string): RegExp => new RegExp(`^/v2/sessions/([A-Za-z0-9_-]+)${tail}$`);
 
 // Ceilings, not suggestions: these answers land in a model's context, so a caller pages for the rest.
 const EVENT_PAGE_DEFAULT = 200;

@@ -5,10 +5,9 @@ import { stringValue } from "../../platform/http/params";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { readProjectIconBytes } from "../appearance";
-import { readProviderSkillsCached, type LoadProviderCommands } from "../providers";
+import { readProviderSkillsCached, type ProviderSkillsOptions } from "../providers";
 import { createIconPng } from "./icon-png";
 
-type ProviderSkillsOptions = { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
 
 /** A project's own checkout, for a canvas that has no session yet. */
 export function projectCheckoutRoutes(store: EngineStore, providerSkills: ProviderSkillsOptions | undefined): Route[] {

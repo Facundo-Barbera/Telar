@@ -37,7 +37,6 @@ export {
   providerSkillRoots,
   readClaudeSupportedCommands,
   readProviderSkillsCached,
-  type LoadProviderCommands,
 } from "./skills";
 export {
   generateSessionTitle,
@@ -47,3 +46,4 @@ export {
 } from "./textgen";
 export { assertInstanceId, ProviderRegistry, type ProviderInstanceInput } from "./registry";
 export { providersRoutes } from "./routes";
+export { sessionProviderRoutes, type ProviderSkillsOptions } from "./session-routes";

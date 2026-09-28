@@ -9,12 +9,14 @@ export { sessionsCapability, storeReads, storeSessionsPort, windowedReads } from
 export { indexRow, rowIsShelved, SessionIndex } from "./session-index";
 export { SessionActivity } from "./activity";
 export { createSessionModules } from "./modules";
-export { sessionBootstrap, sessionSnapshot, type SessionBootstrapWindow } from "./bootstrap";
+export { sessionSnapshot } from "./bootstrap";
 export { delegationSettle, newestAssignment, type DeliveryTurn } from "./delegation-settling";
 export { ORIENTATION_VERSION, syncTelarSkill, TELAR_ORIENTATION, TELAR_SKILL, TELAR_SKILL_NAME, writeOrientationInstructions } from "./orientation";
 export { collectSessionsWallTools, ensureSessionsSocketSecret, handleSessionsSocketMessage, sessionsSocketConnectCard } from "./tools/socket";
 export { pageEvents, type SessionsCapability } from "./tools/shared";
 export { sessionsTools } from "./tools/tools";
 export { sessionsRoutes } from "./routes";
-export { sessionReadRoutes, sessionRoute } from "./reads";
+export { sessionReadRoutes } from "./reads";
 export { sessionLifecycleRoutes } from "./lifecycle";
+export { holdEventStream, type OpenStream } from "./stream";
+export { sessionAttachmentRoutes } from "./attachments";

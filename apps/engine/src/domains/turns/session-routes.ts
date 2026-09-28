@@ -1,11 +1,10 @@
 import { AgentTurnInput, ProviderTurnOpenInput, SessionTaskReport, TurnModelSelection, type TurnSubmissionResult } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { stringValue } from "../../platform/http/params";
-import { ok, type Route } from "../../platform/http/route";
+import { ok, sessionRoute, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import type { ExecutionPort } from "../../worker/execution-port";
 
-const sessionRoute = (tail: string): RegExp => new RegExp(`^/v2/sessions/([A-Za-z0-9_-]+)${tail}$`);
 const submitted = (result: TurnSubmissionResult) => ({ status: result.replayed ? 200 : 202, body: result });
 
 type TurnRouteDeps = {

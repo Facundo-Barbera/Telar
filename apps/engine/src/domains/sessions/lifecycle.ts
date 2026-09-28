@@ -1,8 +1,7 @@
 import { WakeKind as WakeKindSchema, type ModelSelection, type RuntimeMode, type WakeKind } from "@telar/engine-client";
 import { stringValue } from "../../platform/http/params";
-import { ok, type Route } from "../../platform/http/route";
+import { ok, sessionRoute, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
-import { sessionRoute } from "./reads";
 
 const completionWake = (value: unknown): { completionWake?: "always" | "settled_only" } => (value === "always" || value === "settled_only" ? { completionWake: value } : {});
 
