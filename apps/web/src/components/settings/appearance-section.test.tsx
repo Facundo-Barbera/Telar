@@ -56,6 +56,8 @@ beforeEach(async () => {
 });
 
 afterAll(() => {
+  act(() => root.unmount());
+  window.localStorage.clear();
   GlobalRegistrator.unregister();
 });
 
