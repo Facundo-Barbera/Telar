@@ -1,41 +1,7 @@
-/**
- * THE PLUGIN HOST'S SERIALIZABLE HALF — metadata and per-project configuration,
- * and NOTHING EXECUTABLE. Everything in this file can be written to
- * `projects.json`, sent over the wire, decoded by a phone, or one day read out
- * of a folder somebody dropped into `~/.telar/plugins`. The executable half —
- * zod schemas for settings, capability factories, lifecycle hooks, React
- * components — lives in `apps/engine/src/plugins/contract.ts` and never crosses
- * a wire.
- *
- * THE SPLIT IS THE WHOLE POINT. Bundled plugins are trusted in-process code and
- * this file does not pretend otherwise: nothing here is a sandbox, and a
- * bundled plugin's engine module can do anything the daemon can. What the split
- * buys is that the day external installation ships, the manifest ON DISK is
- * exactly `PluginMeta` — unchanged — and only the module-loading half is new.
- *
- * ── WHY A MAP AND NOT MORE FIELDS ON `Project` ──────────────────────────────
- * `Project` grew `dataScience` and then `latex`, each a bespoke optional block
- * with its own patch arm in `updateProject`. A third would have been a third
- * arm. `ProjectPlugins` is the last one: a versioned map from plugin id to
- * `{enabled, settings}`, where `settings` is opaque here and validated by the
- * plugin that owns it.
- */
 import { z } from "zod";
 
-/**
- * The contract revision a plugin is written against. ONE number, checked at
- * registration: a plugin declaring an api the host does not implement fails to
- * register rather than half-working.
- */
 export const PLUGIN_API_VERSION = 1;
 
-/**
- * A plugin id is a route segment, a config key and a settings-page key. It is
- * NOT a tool prefix — see `toolPrefixes` — and the two namespaces are kept
- * apart deliberately: Data Science is one plugin (`data-science`) that owns two
- * shipped tool prefixes (`ds_`, `notebook_`), and renaming either tool to match
- * the id would split every remembered approval.
- */
 export const PluginId = z
   .string()
   .min(1)
@@ -43,25 +9,12 @@ export const PluginId = z
   .regex(/^[a-z][a-z0-9-]*$/, "a plugin id is lowercase letters, digits and dashes, starting with a letter");
 export type PluginId = z.infer<typeof PluginId>;
 
-/**
- * A tool prefix, without its trailing underscore. `latex` means the plugin owns
- * every tool called `latex_*`. Prefixes are GLOBALLY UNIQUE across registered
- * plugins and are asserted so at registration — two plugins claiming `ds` would
- * make `parseToolName` ambiguous and route approvals to whichever registered
- * first.
- */
 export const PluginToolPrefix = z
   .string()
   .min(1)
   .max(32)
   .regex(/^[a-z][a-z0-9]*$/, "a tool prefix is lowercase letters and digits, starting with a letter");
 
-/**
- * Where a plugin's settings page hangs. `project` is the common case — the
- * per-project drawer beside "Data science" today. `machine` is for the things
- * that are properties of the Mac rather than the checkout (a TeX distribution,
- * a Python install), which today live on the same page and confuse people.
- */
 export const PluginSettingsScope = z.enum(["project", "machine"]);
 export type PluginSettingsScope = z.infer<typeof PluginSettingsScope>;
 
@@ -80,13 +33,6 @@ export type PluginSettingsSection = z.infer<typeof PluginSettingsSection>;
 /** A session verb, as the generic door spells it: `status`, `jobs-refresh`. */
 const PluginSessionVerb = z.string().regex(/^[a-z][a-z0-9-]*$/, "a verb is lowercase letters, digits and dashes");
 
-/**
- * A PANEL SURFACE AN EXTERNAL PLUGIN DRAWS WITHOUT SHIPPING UI CODE. The
- * cockpit asks the plugin's session verb `verb` and gets a `PluginPanelView`
- * back: a list of blocks it knows how to draw. Declarative on purpose — an
- * installed plugin brings data and a vocabulary, never a script into the
- * cockpit.
- */
 export const PluginPanel = z.strictObject({
   /** Unique within the plugin. */
   id: z.string().regex(/^[a-z][a-z0-9-]*$/).max(64),
@@ -98,11 +44,6 @@ export type PluginPanel = z.infer<typeof PluginPanel>;
 
 const Cell = z.union([z.string().max(2000), z.number(), z.boolean(), z.null()]);
 
-/**
- * ONE BLOCK OF A PANEL. A closed vocabulary: the web and the phone draw each
- * kind natively, and a kind this build does not know is skipped rather than
- * failing the panel (`PluginPanelView` parses block by block).
- */
 export const PluginPanelBlock = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("heading"), text: z.string().min(1).max(200) }),
   /** Plain text, or Markdown when `markdown` is set. */
@@ -132,11 +73,6 @@ export const PluginPanelBlock = z.discriminatedUnion("type", [
 ]);
 export type PluginPanelBlock = z.infer<typeof PluginPanelBlock>;
 
-/**
- * What a panel verb answers. PARSED BLOCK BY BLOCK: one malformed or unknown
- * block is dropped and counted, so a plugin a version ahead of the cockpit
- * still draws everything the cockpit understands.
- */
 export function parsePluginPanelView(value: unknown): { blocks: PluginPanelBlock[]; skipped: number } {
   const raw = (value as { blocks?: unknown } | null)?.blocks;
   if (!Array.isArray(raw)) return { blocks: [], skipped: 0 };
@@ -148,16 +84,6 @@ export function parsePluginPanelView(value: unknown): { blocks: PluginPanelBlock
   return { blocks, skipped: raw.length - blocks.length };
 }
 
-/**
- * EVERYTHING THE HOST NEEDS TO KNOW ABOUT A PLUGIN WITHOUT RUNNING IT.
- *
- * `readTools` deserves its own sentence, because it is the field most likely to
- * be misread as a grant. IT IS NOT ONE. A plugin naming a tool here is making a
- * CLAIM that the tool only reads; the host's own policy decides whether that
- * claim is honoured (see `apps/engine/src/plugins/policy.ts`). A plugin cannot
- * widen its own authority by editing its manifest, which is precisely the
- * property that has to hold before external plugins are conceivable.
- */
 export const PluginMeta = z.object({
   id: PluginId,
   /** The contract revision this plugin is written against. */
@@ -168,32 +94,11 @@ export const PluginMeta = z.object({
   version: z.string().min(1).max(32),
   blurb: z.string().max(300).optional(),
   icon: z.string().min(1).max(64).optional(),
-  /**
-   * Tool prefixes this plugin owns, without trailing underscores. EMPTY IS
-   * ALLOWED: an external plugin may contribute only UI, and a manifest the
-   * host refused is still listed (with its reason) and owns nothing.
-   */
   toolPrefixes: z.array(PluginToolPrefix),
-  /**
-   * Tools this plugin CLAIMS are pure reads. A claim, not a grant — the host
-   * ratifies. Names are unqualified (`latex_status`, not `mcp__telar__…`).
-   */
   readTools: z.array(z.string().min(1)).default([]),
-  /**
-   * The paragraph a session is told when this plugin is on for it — what the
-   * tools are for, in a few lines. Appended beside the browser and run
-   * briefings by every driver, and absent from a session whose project did not
-   * enable the plugin, so no agent is taught tools it does not have.
-   */
   briefing: z.string().min(1).max(2000).optional(),
   /** Journal event kinds this plugin emits, inside the `plugin.event` envelope. */
   eventKinds: z.array(z.string().min(1)).default([]),
-  /**
-   * The directory under `sessions/<id>/` this plugin keeps per-session state
-   * in. DELIBERATELY INDEPENDENT OF `id`: Data Science keeps `sessions/<id>/ds/`
-   * and always will, because moving a live user's files to match a new naming
-   * scheme is a migration nobody asked for.
-   */
   sessionStateDir: z.string().min(1).max(64).optional(),
   /** A `.gitignore` rule the plugin wants in projects that enable it. */
   gitignore: z
@@ -209,20 +114,6 @@ export const PluginMeta = z.object({
 });
 export type PluginMeta = z.infer<typeof PluginMeta>;
 
-/**
- * AN EXTERNAL PLUGIN'S MANIFEST — `<TELAR_HOME>/plugins/<id>/plugin.json`.
- *
- * Everything the host needs without running it: who it is, how to start it,
- * which tools it will answer (declared here, so an approval and a provider's
- * catalog never depend on a process having started), its settings as JSON
- * Schema, and the route verbs it serves. STRICT: an unknown key is a typo the
- * author should hear about, so it refuses rather than being ignored — and a
- * refused manifest is listed on Settings ▸ Plugins with the reason, never
- * fatal to the engine.
- *
- * THE PROCESS speaks newline-delimited JSON-RPC 2.0 on stdio: MCP's
- * `initialize` and `tools/call` for tools, and `telar/route` for route verbs.
- */
 export const ExternalPluginTool = z.strictObject({
   /** Must start with the manifest's `toolPrefix` and an underscore. */
   name: z.string().regex(/^[a-z][a-z0-9]*_[a-z0-9_]+$/, "a tool name is <prefix>_<name>, lowercase"),
@@ -254,7 +145,6 @@ export const ExternalPluginManifest = z
     machineSettingsSchema: z.record(z.string(), z.unknown()).optional(),
     routes: z
       .strictObject({
-        /** POST verbs a session calls, e.g. `"refresh"`. */
         session: z.array(PluginSessionVerb).default([]),
         project: z.array(ExternalRouteKey).default([]),
         machine: z.array(ExternalRouteKey).default([]),
@@ -294,12 +184,6 @@ export type ExternalPluginManifest = z.infer<typeof ExternalPluginManifest>;
 export const PluginRuntimeState = z.enum(["ready", "failed", "disposed"]);
 export type PluginRuntimeState = z.infer<typeof PluginRuntimeState>;
 
-/**
- * One plugin as `GET /v2/health` and the settings page see it. Additive on
- * every client: the phone's `EngineHealth` decodes three known keys and ignores
- * this one entirely, which is exactly the tolerance we want while there is no
- * mobile plugin surface.
- */
 export const PluginStatus = z.object({
   meta: PluginMeta,
   state: PluginRuntimeState,
@@ -307,22 +191,8 @@ export const PluginStatus = z.object({
   error: z.string().optional(),
   /** How long `init` took, so a slow plugin is visible before it is a bug report. */
   initMs: z.number().optional(),
-  /**
-   * THE PLUGIN'S SETTINGS, AS JSON SCHEMA — generated by the host from the zod
-   * schema it validates writes against, so a cockpit can render a pane for a
-   * plugin it has never heard of. Project scope here, the Mac's below.
-   *
-   * Beyond the standard keywords, a property may carry three renderer hints,
-   * set with the schema's `.meta()`: `info` (the fact behind a row's ⓘ),
-   * `widget: "path"` (a string that names a place on disk) and `inherits`
-   * (the MACHINE key whose value a project inherits when it sets none).
-   */
   settingsSchema: z.record(z.string(), z.unknown()).optional(),
   machineSettingsSchema: z.record(z.string(), z.unknown()).optional(),
-  /**
-   * Present for a plugin installed from a folder, which Settings may remove.
-   * `linked` when the folder is a link to the owner's own copy.
-   */
   installed: z.object({ linked: z.boolean() }).optional(),
 });
 export type PluginStatus = z.infer<typeof PluginStatus>;
@@ -336,33 +206,12 @@ export type PluginInstallInput = z.input<typeof PluginInstallInput>;
 
 // ── per-project configuration ───────────────────────────────────────────────
 
-/**
- * One plugin's per-project state. `settings` is OPAQUE HERE and validated by
- * the plugin's own zod schema at the host boundary — the protocol deliberately
- * does not know what a LaTeX toolchain choice looks like, which is what lets a
- * plugin change its own settings shape without touching this file.
- */
 export const PluginConfig = z.object({
   enabled: z.boolean(),
   settings: z.record(z.string(), z.unknown()).optional(),
 });
 export type PluginConfig = z.infer<typeof PluginConfig>;
 
-/**
- * THE MAP, AND ITS DURABLE MARKER.
- *
- * `version` is not decoration and not a schema version to bump casually: its
- * PRESENCE is the fact that this project has been migrated, and that fact is
- * what makes the map authoritative. Once it is there:
- *
- *   - the map is the WHOLE truth. A plugin absent from `entries` is OFF.
- *   - legacy `Project.latex` / `Project.dataScience` are never read again.
- *
- * That second rule is the one that kills the resurrection bug. A one-time copy
- * plus a "fall back to legacy when the entry is missing" read looks harmless
- * and is not: disabling LaTeX deletes the map entry, the next read falls back
- * to the stale legacy block, and the feature turns itself back on.
- */
 export const PROJECT_PLUGINS_VERSION = 1;
 
 export const ProjectPlugins = z.object({
@@ -371,53 +220,14 @@ export const ProjectPlugins = z.object({
 });
 export type ProjectPlugins = z.infer<typeof ProjectPlugins>;
 
-/**
- * THE TWO PLUGINS THAT PREDATE THE MAP, and the `Project` key each one used to
- * live under.
- *
- * THE MIRROR IS RETIRED (P1c). The engine used to write `Project.latex` /
- * `Project.dataScience` beside the map so a rollback to an engine older than
- * the map kept its settings; that is no longer supported. What remains is
- * READING: a record an older engine wrote still carries these keys, so the
- * engine folds them into the map when it opens the registry
- * (`migrateLegacyPluginFields`), and a client reading such a record off an
- * older engine still gets the right answer from `readProjectPlugins`.
- */
 export const LEGACY_PLUGIN_KEYS = {
   latex: "latex",
   "data-science": "dataScience",
 } as const satisfies Record<string, "latex" | "dataScience">;
 export type LegacyPlugin = keyof typeof LEGACY_PLUGIN_KEYS;
 
-/**
- * EVERY TOOL PREFIX A BUNDLED PLUGIN OWNS, declared in the protocol rather than
- * discovered from the registry — and the reason is that three consumers need to
- * know it in places the registry cannot reach.
- *
- * `parseToolName` maps a tool to its capability so an approval card and a
- * timeline row can be typed; that function runs in the web app and its answer is
- * decoded by a phone. Neither has a plugin host. If the prefix list were built
- * at daemon startup, the cockpit would have to be TOLD the list before it could
- * render a `latex_compile` row — and until it was, every plugin tool would fall
- * into the anonymous `mcp_tool_call` bucket, which is the exact defect
- * `tools.ts` was written to fix.
- *
- * So the list is data, it lives in the serializable half, and the HOST ASSERTS
- * AGAINST IT at startup: a registered plugin whose prefix is missing here fails
- * loudly rather than quietly losing its typed display.
- *
- * A plugin installed from a folder cannot appear here. Its prefix reaches
- * `parseToolName` through `registerPluginToolPrefixes` (tools.ts), which the
- * daemon and a cockpit call once they have the plugin list.
- */
 export const BUNDLED_PLUGIN_TOOL_PREFIXES = ["ds", "notebook", "latex", "hello"] as const;
 
-
-/**
- * A legacy block is `{enabled, ...settings}` flattened; the map keeps `enabled`
- * and `settings` apart. These two functions are the only translation, stated
- * once so the read and the write cannot drift.
- */
 export function pluginConfigFromLegacy(legacy: Record<string, unknown>): PluginConfig {
   const { enabled, ...rest } = legacy;
   const settings = Object.fromEntries(Object.entries(rest).filter(([, value]) => value !== undefined));
@@ -431,23 +241,12 @@ export function legacyFromPluginConfig(config: PluginConfig): Record<string, unk
   return { enabled: config.enabled, ...(config.settings ?? {}) };
 }
 
-/**
- * THE ONE READ PATH. Given a project record as it sits on disk — which may be
- * pre-migration, migrated, or a migrated one an old engine stripped — answer
- * what the plugin map IS.
- *
- * `migrated` tells the caller whether the answer came from the marker or from
- * legacy fields, which is what `updateProject` uses to decide it must write the
- * marker back on the next write.
- */
 export function readProjectPlugins(project: {
   plugins?: unknown;
   latex?: unknown;
   dataScience?: unknown;
 }): { plugins: ProjectPlugins; migrated: boolean } {
   const parsed = ProjectPlugins.safeParse(project.plugins);
-  // THE MARKER WINS ENTIRELY. No per-key fallback to legacy: see the comment on
-  // PROJECT_PLUGINS_VERSION for why a fallback resurrects disabled features.
   if (parsed.success) return { plugins: parsed.data, migrated: true };
 
   const entries: Record<string, PluginConfig> = {};
@@ -460,17 +259,6 @@ export function readProjectPlugins(project: {
   return { plugins: { version: PROJECT_PLUGINS_VERSION, entries }, migrated: false };
 }
 
-/**
- * FOLD A RECORD'S LEGACY BLOCKS INTO ITS MAP, AND DROP THEM — the one-way
- * migration the engine runs on every registry open.
- *
- * NON-DESTRUCTIVE AND IDEMPOTENT:
- *   - an existing map entry always wins; a legacy block only fills an id the
- *     map does not name, and its settings come across whole;
- *   - a record with no legacy keys is returned untouched (`changed: false`), so
- *     a second run — or a project nobody configured — writes nothing, and no
- *     empty map is invented for it.
- */
 export function migrateLegacyPluginFields(project: Record<string, unknown>): { project: Record<string, unknown>; changed: boolean } {
   const legacyKeys = Object.values(LEGACY_PLUGIN_KEYS).filter((key) => project[key] !== undefined);
   if (legacyKeys.length === 0) return { project, changed: false };
@@ -507,12 +295,6 @@ export function pluginSettings(plugins: ProjectPlugins, id: string): Record<stri
   return plugins.entries[id]?.settings ?? {};
 }
 
-/**
- * One patch to the map, as `updateProject` applies it. `null` DELETES the entry
- * — the same spelling `dataScience: null` has today, kept because "off" being
- * an absence rather than a stored `{enabled:false}` is what stops the registry
- * growing a row for every project that tried a feature once.
- */
 export type PluginPatch = Record<string, PluginConfig | null>;
 
 export function applyPluginPatch(plugins: ProjectPlugins, patch: PluginPatch): ProjectPlugins {
@@ -526,32 +308,9 @@ export function applyPluginPatch(plugins: ProjectPlugins, patch: PluginPatch): P
 
 // ── machine-wide configuration ──────────────────────────────────────────────
 
-/**
- * THE SAME MAP, FOR THE MACHINE. One file beside `projects.json`, holding the
- * facts that are true of this Mac rather than of a checkout — which TeX install
- * compiles, and whether a plugin is available here at all.
- *
- * SCOPED TO THE ENGINE THAT OWNS IT. A cockpit viewing a remote Mac reads and
- * writes THAT Mac's file; nothing here is global across hosts, and a read taken
- * while looking at somebody else's engine must never land in this one.
- */
 export const MachinePlugins = ProjectPlugins;
 export type MachinePlugins = ProjectPlugins;
 
-/**
- * EFFECTIVE ENABLEMENT IS AN AND, and the global half is a CEILING rather than
- * a value.
- *
- * A plugin runs for a project when the machine allows it AND the project asked
- * for it. Turning it off machine-wide therefore makes it unavailable everywhere
- * without touching one project's settings — which is what makes re-enabling
- * restore exactly what each project had, rather than a blank slate.
- *
- * A MISSING GLOBAL ENTRY MEANS ALLOWED. Every machine that predates this file
- * has none, and reading absence as "off" would silently disable working setups
- * on upgrade. Absence never ENABLES anything either: the project still has to
- * have asked.
- */
 export function machineAllows(machine: ProjectPlugins | undefined, id: string): boolean {
   const entry = machine?.entries[id];
   return entry === undefined ? true : entry.enabled;
@@ -566,39 +325,11 @@ export function pluginEffectivelyEnabled(
   return machineAllows(machine, id) && pluginEnabled(project, id);
 }
 
-/**
- * A plugin's machine settings, or `{}`. Validated by the PLUGIN's own schema at
- * the host boundary, exactly as the project blob is — the protocol does not know
- * what a TeX distribution looks like and must not pretend to.
- */
 export function machineSettings(machine: ProjectPlugins | undefined, id: string): Record<string, unknown> {
   return machine?.entries[id]?.settings ?? {};
 }
 
 // ── the bundled plugins' machine settings, for clients ──────────────────────
-
-/**
- * WHAT A MAC-WIDE DEFAULT IS, and why these shapes are written down HERE when
- * the blob above is deliberately opaque.
- *
- * The opacity rule is about AUTHORITY: the host validates a settings write with
- * the plugin's own schema, and nothing in this file may override that. These
- * schemas are not that. They are READER schemas — the same precedent as
- * `BUNDLED_PLUGIN_TOOL_PREFIXES`, and for the same reason. A cockpit rendering
- * "Mac-wide defaults" has no plugin host to ask, and the alternative is each
- * client hand-rolling its own cast of `Record<string, unknown>` and drifting
- * from the engine one field at a time.
- *
- * SO THE RULE IS: the engine's copy decides what may be STORED; this copy
- * decides only what a client dares to READ. A blob carrying a field this does
- * not know survives untouched — `safeParse` on a passthrough-free object drops
- * unknown keys from the parsed VALUE, never from the stored one.
- *
- * AND THESE ARE DEFAULTS, NOT OVERRIDES. Every field here answers "what does a
- * project that has not chosen get", so a project that HAS chosen keeps its
- * choice. That is the whole semantic, and it is why the engine resolves them as
- * a fallback chain rather than by merging.
- */
 
 /** What latexmk drives when nothing more specific said. Tectonic ignores it. */
 export const PluginLatexEngine = z.enum(["pdflatex", "lualatex", "xelatex"]);
@@ -616,20 +347,6 @@ export const PluginLatexDistribution = z.object({
 });
 export type PluginLatexDistribution = z.infer<typeof PluginLatexDistribution>;
 
-/**
- * THE PATH IS OPTIONAL IN THE TYPE AND REQUIRED IN PRACTICE — for every kind
- * but one.
- *
- * `tectonic` and `texlive` name a PLACE: a binary, a bin directory. One stored
- * without a path resolves to nothing, which in the pane reads as a default that
- * was accepted and then quietly did not work. `managed` names an INTENT and the
- * engine supplies the place, so requiring a path there would mean writing down
- * a versioned directory that the next Tectonic bump invalidates.
- *
- * So the rule is per-kind, and it lives on the WRITE schema rather than in the
- * shape itself: a blob already on disk is read for whatever it can give, and
- * `resolveLatex` skips a choice whose binary is not there regardless.
- */
 export const PluginLatexDistributionWrite = PluginLatexDistribution.refine(
   (choice) => choice.kind === "managed" || (choice.path !== undefined && choice.path.length > 0),
   { message: "a tectonic or texlive distribution needs the path it lives at", path: ["path"] },
@@ -648,14 +365,6 @@ const latexMachineFields = {
     icon: "settings",
     labels: { pdflatex: "pdfLaTeX", lualatex: "LuaLaTeX", xelatex: "XeLaTeX" },
   }),
-  /**
-   * Whether a compile may fetch the packages a document asks for.
-   *
-   * TECTONIC DOES THIS BY DESIGN and cannot be told not to — its whole model is
-   * fetch-on-first-use. So this field is honest about being a TeX Live
-   * behaviour: off, a missing package is an error with the package named; on,
-   * tlmgr installs it and the compile carries on.
-   */
   autoInstallPackages: z.boolean().optional().meta({
     title: "Install missing packages automatically",
     description:
@@ -665,12 +374,6 @@ const latexMachineFields = {
 };
 
 const dataScienceMachineFields = {
-  /**
-   * The interpreter a project inherits when it has not picked one. ABSOLUTE:
-   * unlike the per-project `python.path`, which is relative inside a checkout so
-   * a worktree resolves its own `.venv`, a Mac-wide default cannot be relative
-   * to a checkout it does not know about.
-   */
   python: z.string().min(1).optional().meta({
     title: "Default Python",
     description: "The interpreter a project with none of its own runs its kernel on.",
@@ -678,50 +381,12 @@ const dataScienceMachineFields = {
     widget: "path",
     icon: "flask-conical",
   }),
-  /**
-   * What a NEW environment is built with. A list of requirement strings, not a
-   * lockfile and not a promise about environments that already exist — nothing
-   * here reaches into an interpreter somebody has already configured.
-   *
-   * The WRITE schema additionally requires each entry to LOOK like a
-   * requirement — see `PLUGIN_PACKAGE_REQUIREMENT`. Not here, because a reader
-   * that rejected one bad entry would discard the whole blob and take the
-   * default interpreter down with it.
-   */
   packages: z.array(z.string().min(1).max(200)).max(200).optional(),
 };
 
-/**
- * What a package requirement may look like: a distribution name, optional
- * extras, optional version clauses — `pandas`, `pandas>=2.0`, `pandas[excel]`.
- *
- * THE LEADING CHARACTER IS ALPHANUMERIC, and that is the point of having a
- * pattern at all: these strings end up in argv for uv, pip or conda, so
- * `--index-url=…` must not be storable as a "package". The same shape the
- * engine's own package installs already enforce.
- *
- * THIS IS NOT THE LAST LINE OF DEFENCE. The engine re-checks at environment
- * creation, because a blob on disk may predate this field. Refusing the write
- * is so a person is told at the moment they typed it, rather than a week later
- * when a venv build fails for reasons that are not on screen.
- */
 export const PLUGIN_PACKAGE_REQUIREMENT =
   /^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9._,\s-]+\])?\s*((?:[<>=!~]=?|===)\s*[A-Za-z0-9.*+!_-]+(?:\s*,\s*(?:[<>=!~]=?|===)\s*[A-Za-z0-9.*+!_-]+)*)?$/;
 
-/**
- * ── READING IS LENIENT, WRITING IS STRICT, AND THE ASYMMETRY IS THE POINT ────
- *
- * These two are the READERS. They ignore a key they do not recognise, because
- * the alternative is a cockpit one release behind a newer engine throwing away
- * a blob's every valid field on account of one it has never heard of — which is
- * the whole reason `Project` is tolerant too.
- *
- * `*Write` below are what the engine VALIDATES A WRITE WITH, and they are
- * strict. zod drops an unknown key rather than refusing it, so without this a
- * field that does not belong here — `mainFile`, a fact about a checkout — is
- * accepted with a 200 and then silently discarded: the person is told their
- * default was saved, and it was not.
- */
 export const LatexMachineSettings = z.object(latexMachineFields);
 export type LatexMachineSettings = z.infer<typeof LatexMachineSettings>;
 

@@ -1,23 +1,4 @@
 import { PluginStatus } from "./plugins";
-/**
- * engine protocol v2 — the event journal.
- *
- * ONE append-only, monotonically-numbered stream per session. Every client
- * state is a fold over it and there is no second source of truth; the entity
- * shapes in ./entities.ts are snapshots the engine derives from this same
- * stream, offered so a client does not have to replay from zero to render a
- * list.
- *
- * Cursor replay (`?since=<id>`) carries over from v1 unchanged — it is the
- * mechanism that lets a client disconnect for an hour and catch up, which is
- * the whole premise of a detached engine.
- *
- * WHY A DISCRIMINATED UNION AND NOT v1's `{ type, data: Record<string,
- * unknown> }`: narrowing on `type` in a `switch` gives the exact payload that
- * event carries. v1's shape pushed that work to every call site, which is
- * visible in `apps/web/lib/engine/journal.ts` hand-checking `typeof
- * event.data.text === "string"` before it dares use a field.
- */
 import { z } from "zod";
 import { BrowserProvider, BrowserTab, Effort, Id, ProviderRefs, RawProviderEvent, Timestamp, UsageSnapshot } from "./common";
 import { Item, ContentStream } from "./items";
@@ -25,13 +6,6 @@ import { Project, Runtime, RuntimeState, Session, SessionSettledBy, Turn, TurnFa
 import { EngineRequest, RequestDecision, RequestResolver } from "./requests";
 import { Task } from "./tasks";
 
-/**
- * Envelope fields on every event.
- *
- * `id` is engine-assigned, strictly increasing per session, and is the replay
- * cursor. `at` is when the engine recorded it — NOT when the provider produced
- * it, which may differ and which only `raw` can answer.
- */
 export const EventEnvelope = z.object({
   id: z.number().int().positive(),
   at: Timestamp,
@@ -52,41 +26,7 @@ const event = <T extends string, S extends z.ZodRawShape>(type: T, shape: S) =>
 const SessionCreated = event("session.created", { session: Session });
 const SessionUpdated = event("session.updated", { session: Session });
 const SessionArchived = event("session.archived", {});
-/**
- * THE ENGINE SHELVED THIS CONVERSATION, AND SAID WHY — issue #378.
- *
- * A `session.updated` already carries the record, so this row is not how a
- * client learns the new state; it is how anything that wants to ACT on the
- * settling hears about it exactly once. Worktree removal is the case the issue
- * names as out of scope for now and this is the seam it would use: a fold over
- * `session.updated` would have to diff two snapshots to find the same moment,
- * and would fire again on every unrelated write.
- */
 const SessionSettled = event("session.settled", { settledBy: SessionSettledBy });
-/**
- * A SNOOZE ENDED, AND THIS IS WHEN — issues #490, #586.
- *
- * The one transition in this union with no write of its own behind it. Every
- * other row here is emitted because something was written: a turn ended, a
- * request opened, a human pressed something. A snooze ends because a DEADLINE
- * PASSED, and a deadline passing is not an event — `sessionsRevision` says the
- * same thing about the same class of bug ("no counter can move on an event that
- * does not happen"). `sweepSnoozeWakes` is what makes the moment happen; this
- * is what carries it.
- *
- * `wokeAt` IS THE WAKE MOMENT AND THE ENVELOPE'S `at` IS THE SWEEP'S — they are
- * two different numbers and the row carries both deliberately. The sweep
- * notices on a tick, so it records up to one tick late; the wake is still when
- * the snooze ENDED. Naming this field `at` would have shadowed the envelope and
- * left a reader with only the moment the engine got round to looking, which is
- * the per-device answer this whole mechanism exists to prevent.
- *
- * A `session.updated` rides beside it carrying the record, exactly as it does
- * for `session.settled`: this row is not how a client learns the new state, it
- * is how anything that wants to ACT on the wake hears about it exactly once.
- * #586's feed is the intended reader — it is the fifth frame that issue
- * sketches, and it could not have been built before this event existed.
- */
 const SessionWoke = event("session.woke", { wokeAt: Timestamp });
 
 // ── runtime: the process, not the conversation ─────────────────────────────
@@ -116,25 +56,12 @@ const TurnCompleted = event("turn.completed", {
  *  lifts, and so can draw the waiting row without re-reading the snapshot. */
 const TurnFailed = event("turn.failed", TurnFailure.shape);
 const TurnStopped = event("turn.stopped", { reason: z.string().optional() });
-/**
- * The crash-mid-call case, kept from v1: the engine cannot tell whether the
- * provider invocation actually happened. NOT auto-retried — replaying a turn
- * that already ran can duplicate side effects. A human chooses.
- */
 const TurnAmbiguous = event("turn.ambiguous", { reason: z.string().optional() });
 const TurnDiscarded = event("turn.discarded", {});
 const TurnRequeued = event("turn.requeued", { reason: z.string().optional() });
-/**
- * A message held by recovery was re-read by a human and allowed to run. The
- * hold is on the turn (`Turn.held`), so this is the moment it comes off — not
- * a state change: the turn was `queued` before and after.
- */
 const TurnReleased = event("turn.released", {});
-/** A human paused or resumed the SESSION — see `Session.paused`. `held` is
- *  how many queued messages the pause put on hold (or the resume let go). */
 const SessionPaused = event("session.paused", { by: z.enum(["human", "session"]), held: z.number().int().nonnegative() });
 const SessionResumed = event("session.resumed", { released: z.number().int().nonnegative() });
-/** A queued turn was promoted into the running one (send now). */
 const TurnSteering = event("turn.steering", { intoRunId: Id });
 /** ...and its text reached the provider inside that run. Terminal. */
 const TurnSteered = event("turn.steered", { intoRunId: Id });
@@ -147,15 +74,6 @@ const ItemStarted = event("item.started", { item: Item });
 const ItemUpdated = event("item.updated", { item: Item });
 const ItemCompleted = event("item.completed", { item: Item });
 
-/**
- * Streaming text against an open item.
- *
- * DELTAS ARE NOT ITEM UPDATES. An `item.updated` carries the whole item and is
- * idempotent; a delta is an append and is ORDER-DEPENDENT. Conflating them
- * means either re-sending the full text on every token or losing the ability to
- * resend an item safely. The `id` ordering in the envelope is what makes
- * appends reconstructible after a reconnect.
- */
 const ContentDelta = event("content.delta", {
   itemId: Id,
   stream: ContentStream,
@@ -181,57 +99,18 @@ const BrowserStateChanged = event("browser.state.changed", {
   provider: BrowserProvider,
   tabs: z.array(BrowserTab),
 });
-/** Whose hands were on the shared browser most recently — advisory. "human"
- *  means a person interacted with the tab; the agent's mutations defer while
- *  that is fresh and must re-observe the page before acting on it. There is
- *  no handback: the state decays on its own. Journalled so the transcript can
- *  say "You interacted with the browser" where it happened. */
 const BrowserControlChanged = event("browser.control.changed", {
   controller: z.enum(["agent", "human", "idle"]),
-  /** WHICH tab changed hands. Control is per tab; absent means an engine (or
-   *  a transition, like scope teardown) that speaks scope-level control. */
   tabId: z.string().optional(),
-  /**
-   * The person's input landed WHILE THE AGENT WAS ACTING on that tab, so it
-   * stopped or invalidated something — which is the only case where saying so
-   * explains anything.
-   *
-   * Every human touch used to draw a transcript row, and most of them explain
-   * nothing: scrolling a page the agent is not working in is not an event in
-   * the conversation. Absent (an older shell) reads as "not known to have
-   * interrupted", which renders nothing — the quiet side, deliberately.
-   */
   interrupted: z.boolean().optional(),
 });
 
-// ── display: the agent showing the human something ─────────────────────────
-/**
- * The agent asked the cockpit to open one workspace file for the HUMAN — a
- * guide it wrote, a plot it rendered, a PDF it fetched. Carries the path and
- * never the bytes: the file is already on disk in the session's checkout, and
- * the panel reads it through the same file routes every other surface uses.
- * Unlike a browser page, this MAY open the panel — showing you something is
- * the tool's entire purpose, so arriving quietly would be failure.
- */
 const DisplayOpened = event("display.opened", {
-  /** Workspace-relative, fenced by the worker before it was reported. */
   path: z.string().min(1),
   /** What the agent calls it — "Setup guide" — for the toast/row, not the tab. */
   title: z.string().optional(),
 });
 
-/**
- * The agent prepared a prompt for the human and left it on the shelf — the
- * `prompt_draft` tool. Carries the title and never the text: the prompt is
- * already in the engine's own store, and the composer reads it from there
- * through the same routes the stash list uses.
- *
- * QUIETER THAN `display.opened`, deliberately. Showing you a file is the point
- * of the tool that does it, so arriving quietly would be failure; a drafted
- * follow-up is an OFFER, and one that seized the foreground would be the agent
- * deciding what you look at next — the exact authority the tool is built to
- * leave with you. It marks the stash and stops there.
- */
 const PromptDrafted = event("prompt.drafted", {
   promptId: Id,
   title: z.string().min(1),
@@ -252,11 +131,6 @@ const KernelStateChanged = event("kernel.state.changed", {
   state: z.enum(["starting", "idle", "busy", "restarting", "dead"]),
   reason: z.string().optional(),
 });
-/**
- * One output from one execution, as it happens. IMAGES CARRY AN ATTACHMENT ID,
- * never bytes: the plot is already on disk beside the session by the time this
- * is written, and the journal stays a journal rather than a picture store.
- */
 const NotebookCellOutput = event("notebook.cell.output", {
   execId: z.string(),
   cellId: z.string().optional(),
@@ -273,11 +147,6 @@ const DsWatchViolated = event("ds.watch.violated", {
 
 // ── latex: the session's compiles ──────────────────────────────────────────
 const LatexCompileStarted = event("latex.compile.started", { path: z.string() });
-/**
- * COUNTS AND ONE SENTENCE, never the log and never the diagnostics array: the
- * journal stays a journal. The surface reads full diagnostics through the
- * session's latex door.
- */
 const LatexCompileFinished = event("latex.compile.finished", {
   path: z.string(),
   ok: z.boolean(),
@@ -292,14 +161,6 @@ const RuntimeWarning = event("runtime.warning", { message: z.string() });
 /** Not recoverable by the engine, but not necessarily fatal to the session. */
 const RuntimeError = event("runtime.error", { message: z.string() });
 
-/**
- * Every event the engine emits.
- *
- * A CLIENT MUST TOLERATE AN UNRECOGNISED `type`. This union will grow, a cached
- * client will meet an engine newer than itself, and the correct behaviour is to
- * skip the row and keep folding — never to throw and lose the stream. Use
- * `safeParseEvent` below rather than `.parse` at the client boundary.
- */
 export const EngineEvent = z.discriminatedUnion("type", [
   SessionCreated,
   SessionUpdated,
@@ -351,14 +212,6 @@ export type EngineEvent = z.infer<typeof EngineEvent>;
 
 export type EngineEventType = EngineEvent["type"];
 
-/**
- * Parse one event off the wire, tolerating shapes this build does not know.
- *
- * Returns `null` for an unrecognised or malformed row INSTEAD OF THROWING,
- * because the alternative — one bad row killing the stream — turns a cosmetic
- * forward-compatibility problem into a dead session. The caller decides whether
- * to count and report skips; the stream keeps moving either way.
- */
 export function safeParseEvent(value: unknown): EngineEvent | null {
   const parsed = EngineEvent.safeParse(value);
   return parsed.success ? parsed.data : null;
@@ -379,12 +232,6 @@ export type EngineDiscovery = z.infer<typeof EngineDiscovery>;
 export const EngineHealth = z.object({
   version: z.literal(2),
   daemonId: Id,
-  /**
-   * THE MACHINE'S OWN NAME — what another cockpit calls this one before a
-   * person renames it. `daemonId` is minted fresh every start, so it can say
-   * "same engine as before" but never "which Mac". Optional because an engine
-   * from before this field never sends it and a client must not fail on it.
-   */
   hostname: z.string().min(1).optional(),
   startedAt: Timestamp,
   worker: z.object({
@@ -393,12 +240,6 @@ export const EngineHealth = z.object({
     activeWorkers: z.number().int().nonnegative().optional(),
   }),
   browser: z.object({ provider: BrowserProvider }).optional(),
-  /**
-   * Every registered plugin and what its startup did. ADDITIVE on every client:
-   * a cockpit or a phone that predates the host decodes the keys it knows and
-   * ignores this one, which is the tolerance we want while there is no mobile
-   * plugin surface.
-   */
   plugins: z.array(PluginStatus).optional(),
 });
 export type EngineHealth = z.infer<typeof EngineHealth>;
@@ -411,16 +252,6 @@ export const EventPage = z.object({
   /** True when more rows are immediately available — a client should keep
    *  paging before it starts tailing. */
   more: z.boolean(),
-  /**
-   * The `after` for the next page, present exactly when `more` is true (#494).
-   *
-   * It is `cursor`, and it is sent anyway: `cursor` means "what this page ends
-   * at", which a tailing client stores whether or not it pages again, while
-   * `next` means "there is another page, ask from here". Reading the second off
-   * the first is a rule a client has to remember; an absent `next` is one it
-   * cannot get wrong. OPTIONAL at every hop — an engine older than #494 answers
-   * without it, and `more: false` there means the same thing it always did.
-   */
   next: z.number().int().nonnegative().optional(),
 });
 export type EventPage = z.infer<typeof EventPage>;
@@ -436,16 +267,7 @@ export const EngineErrorCode = z.enum([
   "worker_unavailable",
   "provider_unavailable",
   "driver_failed",
-  /** A one-shot text generation produced no answer — the harness was missing,
-   *  timed out, refused, or printed something unparseable. Distinct from
-   *  `driver_failed`, which is about a SESSION's provider: nothing is broken
-   *  here and nothing is lost, the completion simply did not arrive. */
   "textgen_failed",
-  /**
-   * A PLUGIN FAILED, and its id is on the message. A broken plugin reads as ITS
-   * failure rather than as "the engine did something" — the difference between
-   * a person knowing which switch to turn off and filing a bug.
-   */
   "plugin_error",
   "internal_error",
 ]);
@@ -456,17 +278,6 @@ export const EngineErrorBody = z.object({
 });
 export type EngineErrorBody = z.infer<typeof EngineErrorBody>;
 
-/**
- * What a client may choose for ONE message, as opposed to for the session.
- *
- * THERE IS NO `instanceId` HERE, and its absence is the rule rather than an
- * omission: a turn is routed by the session's `providerInstanceId`, which owns
- * the resume cursor that makes the conversation continuous. A turn that could
- * name a different instance could strand the history mid-conversation. So the
- * engine stamps the instance from the session and a client can only ever change
- * the model and the effort — the provider is not a per-turn question, and this
- * shape is what makes that true by construction instead of by validation.
- */
 export const TurnModelSelection = z
   .object({
     /** Absent means "the provider's own default model", which is a real choice
@@ -501,14 +312,6 @@ export const TurnSubmission = z.object({
 });
 export type TurnSubmission = z.infer<typeof TurnSubmission>;
 
-/**
- * WHETHER A MESSAGE HAS SOMETHING TO SAY: words, or a picture.
- *
- * A screenshot with no text is a whole message — "look at this" goes without
- * saying. Any other file alone is not: a PDF with no words is a path the agent
- * is handed with no idea why. One rule for every composer and for the engine's
- * own guard, so a client can never offer Send on a message the engine refuses.
- */
 export function turnHasContent(text: string, mediaTypes: readonly string[]): boolean {
   return text.trim() !== "" || mediaTypes.some((type) => type.startsWith("image/"));
 }
@@ -530,10 +333,3 @@ export const TurnSubmissionResult = z.object({
 });
 export type TurnSubmissionResult = z.infer<typeof TurnSubmissionResult>;
 
-// NO CONVENIENCE RE-EXPORT OF Project/Session/Turn/Item/Request/Task HERE.
-// This module imports them to build event payloads, and re-exporting them
-// would make ./index.ts's `export *` see the SAME NAME from two modules —
-// which ES module semantics resolve by silently omitting it from the barrel,
-// not by erroring. The names would simply vanish from `@telar/engine-client`
-// with a green typecheck. They are exported from ./entities, ./items,
-// ./requests and ./tasks, which is where they are defined.
