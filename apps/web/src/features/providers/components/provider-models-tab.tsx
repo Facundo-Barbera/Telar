@@ -61,6 +61,112 @@ export function modelCountLine(models: readonly ProviderModel[], driverLabel: st
   ].join(" · ");
 }
 
+type OverlayPatch = Parameters<typeof api.setModelOverlay>[1];
+
+function ModelRow({
+  model,
+  overlay,
+  busy,
+  first,
+  last,
+  onPatch,
+  onMove,
+}: {
+  model: ProviderModel;
+  overlay: ModelOverlay;
+  busy: boolean;
+  first: boolean;
+  last: boolean;
+  onPatch: (next: OverlayPatch) => void;
+  onMove: (direction: -1 | 1) => void;
+}) {
+  const starred = overlay.favorites.includes(model.id);
+  const added = model.source === "user";
+  return (
+    <div
+      className={cn("group flex items-center gap-2 px-2.5 py-1.5", model.hiddenByUser && "opacity-55")}
+    >
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => onPatch({ favorites: toggled(overlay.favorites, model.id) })}
+        aria-label={`${starred ? "Unstar" : "Star"} ${model.label}`}
+        title={starred ? "Starred — kept at the top of the picker" : "Star"}
+        className={cn("shrink-0 rounded-sm transition-colors", starred ? "text-warning" : "text-muted-foreground/50 hover:text-foreground")}
+      >
+        <StarIcon className={cn("size-3.5", starred && "fill-current")} />
+      </button>
+      <span className={cn("min-w-0 truncate text-xs-plus", model.hiddenByUser && "line-through")}>{model.label}</span>
+      <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">{model.id}</code>
+      {model.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
+      {model.isDefault && overlay.default === model.id ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onPatch({ default: null })}
+          className="shrink-0 text-3xs text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline"
+        >
+          Reset
+        </button>
+      ) : (
+        !model.isDefault &&
+        canBeDefault(model) && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onPatch({ default: model.id })}
+            className="shrink-0 text-3xs text-muted-foreground/70 opacity-0 underline-offset-2 transition-opacity group-hover:opacity-100 hover:text-foreground hover:underline focus-visible:opacity-100"
+          >
+            Make default
+          </button>
+        )
+      )}
+      {added && <span className="shrink-0 text-3xs text-muted-foreground">added by you</span>}
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          disabled={first}
+          onClick={() => onMove(-1)}
+          aria-label={`Move ${model.label} up`}
+          className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-25"
+        >
+          <ArrowUpIcon className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          disabled={last}
+          onClick={() => onMove(1)}
+          aria-label={`Move ${model.label} down`}
+          className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-25"
+        >
+          <ArrowDownIcon className="size-3.5" />
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onPatch({ hidden: toggled(overlay.hidden, model.id) })}
+          aria-label={`${model.hiddenByUser ? "Show" : "Hide"} ${model.label}`}
+          title={model.hiddenByUser ? "Hidden from the picker" : "Hide from the picker"}
+          className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+        >
+          {model.hiddenByUser ? <EyeOffIcon className="size-3.5" /> : <EyeIcon className="size-3.5" />}
+        </button>
+        {added && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onPatch({ custom: overlay.custom.filter((entry) => entry.id !== model.id) })}
+            aria-label={`Remove ${model.id}`}
+            className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-destructive"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) {
   const [catalogue, setCatalogue] = useState<ModelCatalogue | undefined>();
   const [overlay, setOverlay] = useState<ModelOverlay | undefined>();
@@ -92,7 +198,7 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
     };
   }, [load]);
 
-  const patch = async (next: Parameters<typeof api.setModelOverlay>[1]) => {
+  const patch = async (next: OverlayPatch) => {
     setBusy(true);
     setError(null);
     try {
@@ -151,94 +257,18 @@ export function ProviderModelsTab({ instance }: { instance: ProviderInstance }) 
       </div>
 
       <div className="divide-y divide-border/60 rounded-lg border border-border/70 bg-card">
-        {models.map((model, index) => {
-          const starred = overlay.favorites.includes(model.id);
-          const added = model.source === "user";
-          return (
-            <div
-              key={model.id}
-              className={cn("group flex items-center gap-2 px-2.5 py-1.5", model.hiddenByUser && "opacity-55")}
-            >
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void patch({ favorites: toggled(overlay.favorites, model.id) })}
-                aria-label={`${starred ? "Unstar" : "Star"} ${model.label}`}
-                title={starred ? "Starred — kept at the top of the picker" : "Star"}
-                className={cn("shrink-0 rounded-sm transition-colors", starred ? "text-warning" : "text-muted-foreground/50 hover:text-foreground")}
-              >
-                <StarIcon className={cn("size-3.5", starred && "fill-current")} />
-              </button>
-              <span className={cn("min-w-0 truncate text-xs-plus", model.hiddenByUser && "line-through")}>{model.label}</span>
-              <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">{model.id}</code>
-              {model.isDefault && <span className="shrink-0 text-3xs text-muted-foreground">Default</span>}
-              {model.isDefault && overlay.default === model.id ? (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void patch({ default: null })}
-                  className="shrink-0 text-3xs text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline"
-                >
-                  Reset
-                </button>
-              ) : (
-                !model.isDefault &&
-                canBeDefault(model) && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void patch({ default: model.id })}
-                    className="shrink-0 text-3xs text-muted-foreground/70 opacity-0 underline-offset-2 transition-opacity group-hover:opacity-100 hover:text-foreground hover:underline focus-visible:opacity-100"
-                  >
-                    Make default
-                  </button>
-                )
-              )}
-              {added && <span className="shrink-0 text-3xs text-muted-foreground">added by you</span>}
-              <div className="ml-auto flex shrink-0 items-center gap-0.5">
-                <button
-                  type="button"
-                  disabled={index === 0}
-                  onClick={() => move(model.id, -1)}
-                  aria-label={`Move ${model.label} up`}
-                  className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-25"
-                >
-                  <ArrowUpIcon className="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  disabled={index === models.length - 1}
-                  onClick={() => move(model.id, 1)}
-                  aria-label={`Move ${model.label} down`}
-                  className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-foreground disabled:opacity-25"
-                >
-                  <ArrowDownIcon className="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void patch({ hidden: toggled(overlay.hidden, model.id) })}
-                  aria-label={`${model.hiddenByUser ? "Show" : "Hide"} ${model.label}`}
-                  title={model.hiddenByUser ? "Hidden from the picker" : "Hide from the picker"}
-                  className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
-                >
-                  {model.hiddenByUser ? <EyeOffIcon className="size-3.5" /> : <EyeIcon className="size-3.5" />}
-                </button>
-                {added && (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void patch({ custom: overlay.custom.filter((entry) => entry.id !== model.id) })}
-                    aria-label={`Remove ${model.id}`}
-                    className="rounded-sm p-1 text-muted-foreground/60 transition-colors hover:text-destructive"
-                  >
-                    <XIcon className="size-3.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
+        {models.map((model, index) => (
+          <ModelRow
+            key={model.id}
+            model={model}
+            overlay={overlay}
+            busy={busy}
+            first={index === 0}
+            last={index === models.length - 1}
+            onPatch={(next) => void patch(next)}
+            onMove={(direction) => move(model.id, direction)}
+          />
+        ))}
         {models.length === 0 && (
           <p className="px-2.5 py-3 text-xs-plus text-muted-foreground">
             {label} did not report any models. You can still add one below.

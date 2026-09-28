@@ -1,52 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { CopyIcon, HardDriveIcon, TrashIcon } from "lucide-react";
-import { chooseDirectory } from "@/platform/desktop/choose-directory";
 import { formatBytes } from "@/ui/format";
-import {
-  desktopStore,
-  progressLabel,
-  REMOVABLE_DRIVE_WARNING,
-  useStoreStatus,
-  type StoreProgress,
-} from "../desktop-store";
-import { createEngineApi } from "@/platform/engine";
+import { progressLabel, REMOVABLE_DRIVE_WARNING, useStoreStatus } from "../desktop-store";
+import { useStoreActions } from "../hooks/use-store-actions";
 import { Row, SettingsGroup } from "@/features/settings";
 import { Button } from "@/ui/button";
 
-const api = createEngineApi();
-
 export function StoreSection() {
   const { status, supported, refresh } = useStoreStatus();
-  const [progress, setProgress] = useState<StoreProgress | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<string | undefined>(undefined);
-  const [moved, setMoved] = useState(false);
-  const [copying, setCopying] = useState(false);
-  const [copied, setCopied] = useState<string | undefined>(undefined);
-
-  const copyStore = async () => {
-    const chosen = await chooseDirectory({ title: "Choose where Telar should write the copy" });
-    if (!("path" in chosen)) {
-      if ("unavailable" in chosen) setFailure(chosen.unavailable);
-      return;
-    }
-    setCopying(true);
-    setFailure(undefined);
-    setCopied(undefined);
-    try {
-      const destination = `${chosen.path.replace(/\/$/, "")}/telar-store-${new Date().toISOString().replace(/[:.]/g, "-")}`;
-      const { copy } = await api.copyStore(destination);
-      setCopied(`Copied ${copy.files.toLocaleString()} files (${formatBytes(copy.bytes)}) to ${copy.root}.`);
-    } catch (cause) {
-      setFailure(cause instanceof Error ? cause.message : "Telar could not write the copy.");
-    } finally {
-      setCopying(false);
-    }
-  };
-
-  useEffect(() => desktopStore()?.onProgress(setProgress) ?? undefined, []);
+  const { progress, busy, failure, moved, copying, copied, copyStore, move, removeOld, keepOld } = useStoreActions(refresh);
 
   if (!supported) {
     return (
@@ -55,54 +18,6 @@ export function StoreSection() {
       </SettingsGroup>
     );
   }
-
-  const move = async () => {
-    setFailure(undefined);
-    const chosen = await chooseDirectory({ title: "Choose where Telar should keep its store" });
-    if (!("path" in chosen)) {
-      if ("unavailable" in chosen) setFailure(chosen.unavailable);
-      return;
-    }
-    const store = desktopStore();
-    if (!store) return;
-
-    const checked = await store.preflight(chosen.path);
-    if (!checked.ok) {
-      setFailure(checked.message);
-      return;
-    }
-
-    setBusy(true);
-    setProgress(null);
-    try {
-      const outcome = await store.move(chosen.path);
-      if (!outcome.ok) {
-        setFailure(outcome.message);
-        return;
-      }
-      setMoved(true);
-      refresh();
-    } finally {
-      setBusy(false);
-      setProgress(null);
-    }
-  };
-
-  const removeOld = async () => {
-    setBusy(true);
-    try {
-      const outcome = await desktopStore()?.removeOld();
-      if (outcome && !outcome.ok) setFailure(outcome.message);
-      refresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const keepOld = async () => {
-    await desktopStore()?.keepOld();
-    refresh();
-  };
 
   const onVolume = Boolean(status?.volume);
   const where = status?.volume?.label ? `${status.volume.label} · ${status.path}` : status?.path;

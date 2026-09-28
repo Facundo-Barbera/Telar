@@ -4,10 +4,8 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import { accentPrimary } from "../accent-colours";
 import { detachFromHost, useFollowNotice } from "../host-follow";
-import { ThemeControl } from "./theme-control";
 import { useTheme } from "./theme-provider";
-import { useAppearance, type Frost } from "../appearance";
-import { desktopAppearance } from "@/platform/desktop/desktop-appearance";
+import { useAppearance } from "../appearance";
 import { applyLook, readLooks as readLooksNow, writeLooks, type Look } from "../looks";
 import {
   compositionHalf,
@@ -19,56 +17,15 @@ import { halfFromBase } from "../palette-from-image";
 import { mergeById, readAppearanceHome } from "../appearance-home";
 import { THEME_TOKENS, type ThemeToken } from "../theme-palettes";
 import { Button } from "@/ui/button";
-import { Row, Segmented, SettingsGroup, ToggleRow } from "@/features/settings";
+import { Row, SettingsGroup } from "@/features/settings";
 import { DepthControl } from "./depth-control";
 import { LooksSection } from "./looks-section";
 import { GroupStrip } from "./studio/tool-strip";
-import { BaseControl, ColourTool, PaletteStrip, ShowThroughRow, TypeTool } from "./studio/tools";
+import { BaseControl, ColourTool, PaletteStrip, TypeTool } from "./studio/tools";
 import { LayerStack } from "./studio/layer-stack";
+import { AppearanceWindowGroup } from "./appearance-window-group";
 
-const subscribeToNothing = () => () => {};
-const bridgeIsPresent = () => desktopAppearance() !== undefined;
-const noBridgeOnTheServer = () => false;
-
-export function AppearanceSection() {
-  const { appearance, setAppearance } = useAppearance();
-  const { composition, images, setBase, setLayers, setOverride, setComposition } = useComposition();
-
-  const hasBridge = useSyncExternalStore(subscribeToNothing, bridgeIsPresent, noBridgeOnTheServer);
-  const [windowSupported, setWindowSupported] = useState(false);
-  const [notice, setNotice] = useState<string>();
-  const followNotice = useFollowNotice();
-
-  const { theme } = useTheme();
-  const systemIsDark = useSyncExternalStore(
-    (onChange) => {
-      const query = window.matchMedia("(prefers-color-scheme: dark)");
-      query.addEventListener("change", onChange);
-      return () => query.removeEventListener("change", onChange);
-    },
-    () => window.matchMedia("(prefers-color-scheme: dark)").matches,
-    () => false,
-  );
-  const mode: CompositionMode = (theme === "system" ? systemIsDark : theme === "dark") ? "dark" : "light";
-  const other: CompositionMode = mode === "light" ? "dark" : "light";
-
-  useEffect(() => {
-    if (!hasBridge) return;
-    let live = true;
-    void desktopAppearance()
-      ?.get()
-      .then((state) => {
-        if (!live) return;
-        setWindowSupported(state.supported);
-        setAppearance({ translucent: state.translucent, frost: state.frost });
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasBridge]);
-
+function useAppearanceHomeNotice(): string | undefined {
   const [homeNotice, setHomeNotice] = useState<string>();
   useEffect(() => {
     const abort = new AbortController();
@@ -86,6 +43,28 @@ export function AppearanceSection() {
     });
     return () => abort.abort();
   }, []);
+  return homeNotice;
+}
+
+export function AppearanceSection() {
+  const { appearance, setAppearance } = useAppearance();
+  const { composition, images, setBase, setLayers, setOverride, setComposition } = useComposition();
+  const [notice, setNotice] = useState<string>();
+  const followNotice = useFollowNotice();
+  const homeNotice = useAppearanceHomeNotice();
+
+  const { theme } = useTheme();
+  const systemIsDark = useSyncExternalStore(
+    (onChange) => {
+      const query = window.matchMedia("(prefers-color-scheme: dark)");
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia("(prefers-color-scheme: dark)").matches,
+    () => false,
+  );
+  const mode: CompositionMode = (theme === "system" ? systemIsDark : theme === "dark") ? "dark" : "light";
+  const other: CompositionMode = mode === "light" ? "dark" : "light";
 
   const state = composition[mode];
   const half = useMemo(() => compositionHalf(composition, mode), [composition, mode]);
@@ -100,16 +79,6 @@ export function AppearanceSection() {
   const compose = (ok: boolean) => {
     detachFromHost();
     setNotice(ok ? undefined : "That change would not fit in browser storage — its layer images are large.");
-  };
-
-  const setTranslucent = (next: boolean) => {
-    setAppearance({ translucent: next });
-    void desktopAppearance()?.set({ translucent: next });
-  };
-
-  const setFrost = (next: Frost) => {
-    setAppearance({ frost: next });
-    void desktopAppearance()?.set({ frost: next });
   };
 
   return (
@@ -182,36 +151,7 @@ export function AppearanceSection() {
         <DepthControl value={appearance.depth} onChange={(depth) => setAppearance({ depth })} />
       </SettingsGroup>
 
-      <SettingsGroup title="Window" description="How this window itself is drawn. None of it travels in a look — it belongs to this machine.">
-        <Row
-          label="Colour scheme"
-          hint="Which state this window wears — and the one the composer above edits."
-          control={<ThemeControl />}
-        />
-        {hasBridge && windowSupported ? (
-          <>
-            <ToggleRow label="Translucency" hint="Rebuilds the window." checked={appearance.translucent} onCheckedChange={setTranslucent} />
-            {appearance.translucent && (
-              <Row
-                label="Glass"
-                control={
-                  <Segmented<Frost>
-                    value={appearance.frost}
-                    onChange={setFrost}
-                    options={[
-                      { value: "blur", label: "Blur" },
-                      { value: "clear", label: "Clear" },
-                    ]}
-                  />
-                }
-              />
-            )}
-          </>
-        ) : (
-          <p className="py-3 text-xs text-muted-foreground">Translucency needs the macOS desktop app.</p>
-        )}
-        <ShowThroughRow level={appearance.translucencyLevel} onChange={(translucencyLevel) => setAppearance({ translucencyLevel })} />
-      </SettingsGroup>
+      <AppearanceWindowGroup appearance={appearance} setAppearance={setAppearance} />
     </div>
   );
 }

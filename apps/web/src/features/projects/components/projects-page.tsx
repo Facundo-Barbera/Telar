@@ -368,6 +368,70 @@ export function ProjectPluginPanes({
   );
 }
 
+function ProjectScopePicker({
+  hosts,
+  hostId,
+  onHost,
+  projects,
+  selected,
+  onSelect,
+  project,
+  unreachable,
+}: {
+  hosts: readonly PublicHost[];
+  hostId: string;
+  onHost: (hostId: string) => void;
+  projects: readonly ScopedProject[];
+  selected: string;
+  onSelect: (id: string) => void;
+  project: ScopedProject | undefined;
+  unreachable: boolean;
+}) {
+  return (
+    <>
+    <div className="mb-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+      {hosts.length > 0 && (
+        <Segmented<string>
+          value={hostId}
+          onChange={onHost}
+          options={[
+            { value: LOCAL_HOST_ID, label: "This Mac" },
+            ...hosts.map((host) => ({
+              value: host.id,
+              label: (
+                <>
+                  <MonitorIcon className="size-3" />
+                  {host.name}
+                </>
+              ),
+            })),
+          ]}
+        />
+      )}
+      <Select value={selected} onValueChange={(next) => typeof next === "string" && onSelect(next)}>
+        <SelectTrigger size="sm" className="ml-auto w-56" aria-label="Project these settings are about">
+          <FolderKanbanIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <SelectValue>
+            {selected === ALL_PROJECTS ? "All projects" : (project?.name ?? "Select a project")}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          {projects.length !== 1 && <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>}
+          {projects.map((entry) => (
+            <SelectItem key={entry.id} value={entry.id}>
+              {entry.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+    {unreachable && (
+      <p className="-mt-4 mb-6 text-xs text-muted-foreground">The engine is not answering, so there is nothing to choose from.</p>
+    )}
+    </>
+  );
+}
+
 export function ProjectsPage() {
   const [hosts, setHosts] = useState<PublicHost[]>([]);
   const [hostId, setHostId] = useState<string>(LOCAL_HOST_ID);
@@ -467,48 +531,19 @@ export function ProjectsPage() {
 
   return (
     <>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        {hosts.length > 0 && (
-          <Segmented<string>
-            value={hostId}
-            onChange={(next) => {
-              setHostId(next);
-              setSelected(ALL_PROJECTS);
-            }}
-            options={[
-              { value: LOCAL_HOST_ID, label: "This Mac" },
-              ...hosts.map((host) => ({
-                value: host.id,
-                label: (
-                  <>
-                    <MonitorIcon className="size-3" />
-                    {host.name}
-                  </>
-                ),
-              })),
-            ]}
-          />
-        )}
-        <Select value={selected} onValueChange={(next) => typeof next === "string" && setSelected(next)}>
-          <SelectTrigger size="sm" className="ml-auto w-56" aria-label="Project these settings are about">
-            <FolderKanbanIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            <SelectValue>
-              {selected === ALL_PROJECTS ? "All projects" : (project?.name ?? "Select a project")}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {projects.length !== 1 && <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>}
-            {projects.map((entry) => (
-              <SelectItem key={entry.id} value={entry.id}>
-                {entry.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      {unreachable && (
-        <p className="-mt-4 mb-6 text-xs text-muted-foreground">The engine is not answering, so there is nothing to choose from.</p>
-      )}
+      <ProjectScopePicker
+        hosts={hosts}
+        hostId={hostId}
+        onHost={(next) => {
+          setHostId(next);
+          setSelected(ALL_PROJECTS);
+        }}
+        projects={projects}
+        selected={selected}
+        onSelect={setSelected}
+        project={project}
+        unreachable={unreachable}
+      />
 
       <ProjectIdentityRows {...(project ? { project } : {})} writer={writer} />
       <ProjectConversationRows

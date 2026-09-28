@@ -32,6 +32,9 @@ import { canvasHref } from "@/features/sessions";
 
 const api = createEngineApi();
 
+const SETUP_PROMPT =
+  "Set up Data Science for this workspace. Please inspect the project, create or choose the right Python environment, install the usual analysis stack, and confirm the notebook/ds tools can run.";
+
 const STACK = ["pandas", "matplotlib", "duckdb", "pyarrow"] as const;
 
 const LOCATION_LABEL: Record<DataScienceEnvironment["location"], string> = { project: "In this project", user: "On this machine", telar: "Telar's" };
@@ -111,14 +114,8 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
 
   const currentEnv = data?.environments.find((env) => env.id === data.currentId);
   const toolchain = data?.toolchain;
-  const cards = data?.environments.filter((env) => env.manager !== "system" || env.id === data.currentId) ?? [];
-  const interpreters = data?.environments.filter((env) => env.manager === "system" && env.id !== data.currentId) ?? [];
   const askAgentToSetUp = () => {
-    writeDraft(
-      undefined,
-      project.id,
-      "Set up Data Science for this workspace. Please inspect the project, create or choose the right Python environment, install the usual analysis stack, and confirm the notebook/ds tools can run.",
-    );
+    writeDraft(undefined, project.id, SETUP_PROMPT);
     router.push(canvasHref(project.id));
   };
 
@@ -183,65 +180,30 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
           </span>
         }
       >
-        {adding === "new" && toolchain && (
-          <div className="py-3">
-            <NewEnvironmentForm
-              projectId={project.id}
-              toolchain={toolchain}
-              hasProjectVenv={data?.environments.some((e) => e.location === "project") ?? false}
-              hasTelarVenv={data?.environments.some((e) => e.manager === "telar") ?? false}
-              onStarted={(handle) => {
-                setAdding(undefined);
-                runJob(handle, (finished) => {
-                  if (finished.status !== "ok" || !finished.result) return;
-                  const made = finished.result as { path: string; root: string; manager: DataScienceEnvironment["manager"]; source: Source };
-                  void save(toConfig(made, made.source));
-                });
-              }}
-              onCancel={() => setAdding(undefined)}
-            />
-          </div>
-        )}
-        {adding === "existing" && (
-          <div className="py-3">
-            <AddExistingForm projectId={project.id} onUse={(probe) => void save(toConfig({ path: probe.relativePath ?? probe.path, root: probe.root, manager: probe.manager ?? "system" }, "chosen"))} onCancel={() => setAdding(undefined)} />
-          </div>
-        )}
+        <EnvironmentAdder
+          adding={adding}
+          projectId={project.id}
+          toolchain={toolchain}
+          environments={data?.environments}
+          onStarted={(handle) => {
+            setAdding(undefined);
+            runJob(handle, (finished) => {
+              if (finished.status !== "ok" || !finished.result) return;
+              const made = finished.result as { path: string; root: string; manager: DataScienceEnvironment["manager"]; source: Source };
+              void save(toConfig(made, made.source));
+            });
+          }}
+          onUse={(probe) => void save(toConfig({ path: probe.relativePath ?? probe.path, root: probe.root, manager: probe.manager ?? "system" }, "chosen"))}
+          onCancel={() => setAdding(undefined)}
+        />
 
-        <div className="flex flex-col gap-2 py-3">
-          {!data && loading && <span className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" /> Probing interpreters…</span>}
-          {data && cards.length === 0 && (
-            <p className="text-xs text-muted-foreground">No Python environment found in this checkout or on this machine. Make one with New environment — uv will fetch a Python if there is none.</p>
-          )}
-          {cards.map((env) => (
-            <EnvironmentCard
-              key={env.id}
-              env={env}
-              inUse={env.id === data!.currentId}
-              onUse={() => void save(toConfig({ path: env.path, root: env.location === "project" ? relativeRoot(env) : env.root, manager: env.manager }, env.manager === "telar" ? "telar" : "detected"))}
-              saving={saving}
-            />
-          ))}
-          {current && data && !currentEnv && (
-            <p className="text-xs text-warning">
-              The configured interpreter <code className="font-mono">{current.path}</code> was not found. Pick another, or add it under Add existing.
-            </p>
-          )}
-          {interpreters.length > 0 && (
-            <div className="flex flex-col gap-1 pt-1">
-              <span className="text-xs font-medium text-muted-foreground">Bare interpreters</span>
-              <p className="text-xs text-muted-foreground">Pythons to build a new environment on — the kernel does not run on these and nothing installs into them.</p>
-              <div className="flex flex-wrap gap-1.5">
-                {interpreters.map((env) => (
-                  <span key={env.id} className="flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground" title={env.python}>
-                    {env.name}
-                    <span className="text-3xs opacity-70">{env.reason}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <EnvironmentList
+          data={data}
+          loading={loading}
+          current={current}
+          saving={saving}
+          onUse={(env) => void save(toConfig({ path: env.path, root: env.location === "project" ? relativeRoot(env) : env.root, manager: env.manager }, env.manager === "telar" ? "telar" : "detected"))}
+        />
       </SettingsGroup>
 
       {currentEnv && (
@@ -252,6 +214,101 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
         </SettingsGroup>
       )}
     </>
+  );
+}
+
+function EnvironmentAdder({
+  adding,
+  projectId,
+  toolchain,
+  environments,
+  onStarted,
+  onUse,
+  onCancel,
+}: {
+  adding: "new" | "existing" | undefined;
+  projectId: string;
+  toolchain: DataScienceToolchain | undefined;
+  environments: DataScienceEnvironment[] | undefined;
+  onStarted: (handle: JobHandle) => void;
+  onUse: (probe: Probe) => void;
+  onCancel: () => void;
+}) {
+  if (adding === "new" && toolchain) {
+    return (
+      <div className="py-3">
+        <NewEnvironmentForm
+          projectId={projectId}
+          toolchain={toolchain}
+          hasProjectVenv={environments?.some((e) => e.location === "project") ?? false}
+          hasTelarVenv={environments?.some((e) => e.manager === "telar") ?? false}
+          onStarted={onStarted}
+          onCancel={onCancel}
+        />
+      </div>
+    );
+  }
+  if (adding === "existing") {
+    return (
+      <div className="py-3">
+        <AddExistingForm projectId={projectId} onUse={onUse} onCancel={onCancel} />
+      </div>
+    );
+  }
+  return null;
+}
+
+function EnvironmentList({
+  data,
+  loading,
+  current,
+  saving,
+  onUse,
+}: {
+  data: DataScienceEnvironments | undefined;
+  loading: boolean;
+  current: DataScienceConfig["python"];
+  saving: boolean;
+  onUse: (env: DataScienceEnvironment) => void;
+}) {
+  const currentEnv = data?.environments.find((env) => env.id === data.currentId);
+  const cards = data?.environments.filter((env) => env.manager !== "system" || env.id === data.currentId) ?? [];
+  const interpreters = data?.environments.filter((env) => env.manager === "system" && env.id !== data.currentId) ?? [];
+  return (
+    <div className="flex flex-col gap-2 py-3">
+      {!data && loading && <span className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" /> Probing interpreters…</span>}
+      {data && cards.length === 0 && (
+        <p className="text-xs text-muted-foreground">No Python environment found in this checkout or on this machine. Make one with New environment — uv will fetch a Python if there is none.</p>
+      )}
+      {cards.map((env) => (
+        <EnvironmentCard
+          key={env.id}
+          env={env}
+          inUse={env.id === data!.currentId}
+          onUse={() => onUse(env)}
+          saving={saving}
+        />
+      ))}
+      {current && data && !currentEnv && (
+        <p className="text-xs text-warning">
+          The configured interpreter <code className="font-mono">{current.path}</code> was not found. Pick another, or add it under Add existing.
+        </p>
+      )}
+      {interpreters.length > 0 && (
+        <div className="flex flex-col gap-1 pt-1">
+          <span className="text-xs font-medium text-muted-foreground">Bare interpreters</span>
+          <p className="text-xs text-muted-foreground">Pythons to build a new environment on — the kernel does not run on these and nothing installs into them.</p>
+          <div className="flex flex-wrap gap-1.5">
+            {interpreters.map((env) => (
+              <span key={env.id} className="flex items-center gap-1.5 rounded-md border border-border/60 px-2 py-1 text-xs text-muted-foreground" title={env.python}>
+                {env.name}
+                <span className="text-3xs opacity-70">{env.reason}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

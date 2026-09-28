@@ -306,6 +306,90 @@ function StopControls({
   );
 }
 
+function GradientStarters({ mode, onPick }: { mode: CompositionMode; onPick: (spec: CustomGradientSpec) => void }) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">Start from</span>
+      <div className="flex flex-wrap gap-1.5">
+        {GRADIENT_STARTERS.map((starter) => (
+          <button
+            key={starter.id}
+            type="button"
+            title={`Fill these stops with ${starter.label}`}
+            onClick={() => onPick(starter[mode])}
+            className="flex items-center gap-1.5 rounded-full py-0.5 pr-2 pl-0.5 text-3xs ring-1 ring-foreground/10 transition-colors hover:bg-accent/50"
+          >
+            <span className="size-4 rounded-full ring-1 ring-inset ring-foreground/10" style={{ backgroundImage: composeGradient(starter[mode]) }} />
+            {starter.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GradientShape({ spec, patch }: { spec: CustomGradientSpec; patch: (changes: Partial<CustomGradientSpec>) => void }) {
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="text-muted-foreground">Shape</span>
+        <Segmented<GradientType>
+          value={spec.type}
+          onChange={(type) => patch({ type })}
+          options={[
+            { value: "linear", label: "Linear" },
+            { value: "radial", label: "Radial" },
+          ]}
+        />
+      </div>
+      {spec.type === "linear" ? (
+        <label className="flex items-center gap-2 text-2xs">
+          <span className="w-10 shrink-0 text-muted-foreground">Angle</span>
+          <input
+            type="range"
+            min={0}
+            max={359}
+            value={spec.angle}
+            onChange={(event) => patch({ angle: Number(event.target.value) })}
+            className="min-w-0 flex-1 accent-primary"
+            aria-label="Gradient angle"
+          />
+          <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground">{spec.angle}&deg;</span>
+        </label>
+      ) : (
+        <>
+          <label className="flex items-center gap-2 text-2xs">
+            <span className="w-10 shrink-0 text-muted-foreground">Centre X</span>
+            <input
+              type="range"
+              min={GRADIENT_LIMITS.center.min}
+              max={GRADIENT_LIMITS.center.max}
+              value={spec.centerX}
+              onChange={(event) => patch({ centerX: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-primary"
+              aria-label="Gradient centre X"
+            />
+            <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground">{spec.centerX}%</span>
+          </label>
+          <label className="flex items-center gap-2 text-2xs">
+            <span className="w-10 shrink-0 text-muted-foreground">Centre Y</span>
+            <input
+              type="range"
+              min={GRADIENT_LIMITS.center.min}
+              max={GRADIENT_LIMITS.center.max}
+              value={spec.centerY}
+              onChange={(event) => patch({ centerY: Number(event.target.value) })}
+              className="min-w-0 flex-1 accent-primary"
+              aria-label="Gradient centre Y"
+            />
+            <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground">{spec.centerY}%</span>
+          </label>
+        </>
+      )}
+    </>
+  );
+}
+
 export function GradientStops({
   spec,
   mode,
@@ -342,87 +426,20 @@ export function GradientStops({
         </Button>
       </div>
       <div className="flex flex-col gap-3 px-4 py-3">
-        <div className="flex flex-col gap-1.5">
-          <span className="font-mono text-3xs tracking-[0.08em] text-muted-foreground uppercase">Start from</span>
-          <div className="flex flex-wrap gap-1.5">
-            {GRADIENT_STARTERS.map((starter) => (
-              <button
-                key={starter.id}
-                type="button"
-                title={`Fill these stops with ${starter.label}`}
-                onClick={() => {
-                  setSelected(0);
-                  onChange(starter[mode]);
-                }}
-                className="flex items-center gap-1.5 rounded-full py-0.5 pr-2 pl-0.5 text-3xs ring-1 ring-foreground/10 transition-colors hover:bg-accent/50"
-              >
-                <span className="size-4 rounded-full ring-1 ring-inset ring-foreground/10" style={{ backgroundImage: composeGradient(starter[mode]) }} />
-                {starter.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        <GradientStarters
+          mode={mode}
+          onPick={(next) => {
+            setSelected(0);
+            onChange(next);
+          }}
+        />
 
         <StopStrip spec={spec} selected={at} onSelect={setSelected} onChange={onChange} />
         <StopColours stops={spec.stops} selected={at} onSelect={setSelected} onColour={setColour} onSettle={settle} />
 
         <div className="grid gap-3 sm:grid-cols-[1fr_1fr]">
           <div className="flex flex-col gap-2.5">
-            <div className="flex items-center justify-between gap-3 text-xs">
-              <span className="text-muted-foreground">Shape</span>
-              <Segmented<GradientType>
-                value={spec.type}
-                onChange={(type) => patch({ type })}
-                options={[
-                  { value: "linear", label: "Linear" },
-                  { value: "radial", label: "Radial" },
-                ]}
-              />
-            </div>
-            {spec.type === "linear" ? (
-              <label className="flex items-center gap-2 text-2xs">
-                <span className="w-10 shrink-0 text-muted-foreground">Angle</span>
-                <input
-                  type="range"
-                  min={0}
-                  max={359}
-                  value={spec.angle}
-                  onChange={(event) => patch({ angle: Number(event.target.value) })}
-                  className="min-w-0 flex-1 accent-primary"
-                  aria-label="Gradient angle"
-                />
-                <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground">{spec.angle}&deg;</span>
-              </label>
-            ) : (
-              <>
-                <label className="flex items-center gap-2 text-2xs">
-                  <span className="w-10 shrink-0 text-muted-foreground">Centre X</span>
-                  <input
-                    type="range"
-                    min={GRADIENT_LIMITS.center.min}
-                    max={GRADIENT_LIMITS.center.max}
-                    value={spec.centerX}
-                    onChange={(event) => patch({ centerX: Number(event.target.value) })}
-                    className="min-w-0 flex-1 accent-primary"
-                    aria-label="Gradient centre X"
-                  />
-                  <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground">{spec.centerX}%</span>
-                </label>
-                <label className="flex items-center gap-2 text-2xs">
-                  <span className="w-10 shrink-0 text-muted-foreground">Centre Y</span>
-                  <input
-                    type="range"
-                    min={GRADIENT_LIMITS.center.min}
-                    max={GRADIENT_LIMITS.center.max}
-                    value={spec.centerY}
-                    onChange={(event) => patch({ centerY: Number(event.target.value) })}
-                    className="min-w-0 flex-1 accent-primary"
-                    aria-label="Gradient centre Y"
-                  />
-                  <span className="w-9 shrink-0 text-right tabular-nums text-muted-foreground">{spec.centerY}%</span>
-                </label>
-              </>
-            )}
+            <GradientShape spec={spec} patch={patch} />
             <Button
               size="sm"
               variant="outline"

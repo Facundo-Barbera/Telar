@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CircleAlertIcon, DownloadIcon, HardDriveIcon } from "lucide-react";
 import type { LatexToolchain, ManagedTectonic, PluginLatexEngine, ProjectPlugins } from "@telar/engine-client";
 import { latexMachineSettings } from "@telar/engine-client";
@@ -8,6 +8,7 @@ import { createEngineApi } from "@/platform/engine";
 import { machineSettingsPatch } from "../sections";
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
+import { usePoll } from "@/ui/hooks/use-poll";
 import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
@@ -55,19 +56,16 @@ export function LatexDistributionSettings({
     return () => window.clearTimeout(task);
   }, [load]);
 
-  const installing = managed?.installing === true;
-  const pollRef = useRef<number | undefined>(undefined);
-  useEffect(() => {
-    if (!installing) return;
-    const tick = async () => {
+  usePoll(
+    async () => {
       try {
         setManaged((await api.managedTectonic()).managed);
       } catch {
       }
-    };
-    pollRef.current = window.setInterval(() => void tick(), INSTALL_POLL_MS);
-    return () => window.clearInterval(pollRef.current);
-  }, [installing]);
+    },
+    managed?.installing === true ? INSTALL_POLL_MS : null,
+    { immediate: false },
+  );
 
   const install = async () => {
     setError(undefined);
@@ -111,41 +109,12 @@ export function LatexDistributionSettings({
         description="What this Mac compiles with when a project has not chosen its own."
       >
         {managed && (
-          <Row
-            id="plugins-latex-managed"
-            icon={DownloadIcon}
-            label="Telar (managed)"
-            status={
-              sameChoice(chosen, { kind: "managed" }) ? <Badge variant="outline">Default</Badge> : undefined
-            }
-            hint={
-              managed.installed
-                ? `Tectonic ${managed.version}, downloaded by Telar — a project opened on any Mac compiles with it, with no TeX installed.`
-                : `Tectonic ${managed.version}, about 20 MB. Telar keeps it in its own folder, so LaTeX works on a Mac with no TeX on it.`
-            }
-            {...(managed.supported ? {} : { unavailable: { reason: "Telar has no managed Tectonic for this platform yet." } })}
-            {...(managed.error ? { error: managed.error } : {})}
-            control={
-              managed.installed ? (
-                <Button
-                  variant={sameChoice(chosen, { kind: "managed" }) ? "secondary" : "outline"}
-                  size="sm"
-                  disabled={busy}
-                  onClick={() => choose({ kind: "managed" }, sameChoice(chosen, { kind: "managed" }))}
-                >
-                  {sameChoice(chosen, { kind: "managed" }) ? "Default" : "Use"}
-                </Button>
-              ) : (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={managed.installing || !managed.supported}
-                  onClick={() => void install()}
-                >
-                  {managed.installing ? "Installing…" : "Install"}
-                </Button>
-              )
-            }
+          <ManagedTectonicRow
+            managed={managed}
+            selected={sameChoice(chosen, { kind: "managed" })}
+            busy={busy}
+            onChoose={(selected) => choose({ kind: "managed" }, selected)}
+            onInstall={() => void install()}
           />
         )}
 
@@ -178,5 +147,58 @@ export function LatexDistributionSettings({
         {error && <Row icon={CircleAlertIcon} label="Could not save" hint={error} control={<Badge variant="outline">Error</Badge>} />}
       </SettingsGroup>
     </>
+  );
+}
+
+function ManagedTectonicRow({
+  managed,
+  selected,
+  busy,
+  onChoose,
+  onInstall,
+}: {
+  managed: ManagedTectonic;
+  selected: boolean;
+  busy: boolean;
+  onChoose: (selected: boolean) => void;
+  onInstall: () => void;
+}) {
+  return (
+    <Row
+      id="plugins-latex-managed"
+      icon={DownloadIcon}
+      label="Telar (managed)"
+      status={
+        selected ? <Badge variant="outline">Default</Badge> : undefined
+      }
+      hint={
+        managed.installed
+          ? `Tectonic ${managed.version}, downloaded by Telar — a project opened on any Mac compiles with it, with no TeX installed.`
+          : `Tectonic ${managed.version}, about 20 MB. Telar keeps it in its own folder, so LaTeX works on a Mac with no TeX on it.`
+      }
+      {...(managed.supported ? {} : { unavailable: { reason: "Telar has no managed Tectonic for this platform yet." } })}
+      {...(managed.error ? { error: managed.error } : {})}
+      control={
+        managed.installed ? (
+          <Button
+            variant={selected ? "secondary" : "outline"}
+            size="sm"
+            disabled={busy}
+            onClick={() => onChoose(selected)}
+          >
+            {selected ? "Default" : "Use"}
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={managed.installing || !managed.supported}
+            onClick={onInstall}
+          >
+            {managed.installing ? "Installing…" : "Install"}
+          </Button>
+        )
+      }
+    />
   );
 }

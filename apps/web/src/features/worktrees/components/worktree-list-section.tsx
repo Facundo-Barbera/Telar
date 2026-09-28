@@ -94,6 +94,132 @@ function StateChips({ row }: { row: WorktreeRow }) {
   );
 }
 
+function ReclaimFailures({ results }: { results: readonly WorktreeReclaimResult[] | undefined }) {
+  const failed = results?.filter((result) => !result.ok) ?? [];
+  if (failed.length === 0) return null;
+  return (
+    <div className="space-y-1 py-3 text-xs text-muted-foreground">
+      {failed.map((result) => (
+        <div key={result.path} className="flex items-start gap-2">
+          <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" />
+          <span>
+            <span className="font-mono">{result.path.split("/").pop()}</span> — {LOCK_TEXT[result.refusal ?? ""] ?? result.detail ?? "was not given back."}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ReclaimConfirm({
+  selected,
+  archiveSettled,
+  busy,
+  onArchiveSettled,
+  onReclaim,
+  onCancel,
+}: {
+  selected: readonly WorktreeRow[];
+  archiveSettled: boolean;
+  busy: boolean;
+  onArchiveSettled: (next: boolean) => void;
+  onReclaim: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="space-y-3 py-3">
+      <p className="text-xs text-foreground">{confirmSentence(selected, archiveSettled)}</p>
+      {selected.some((row) => row.owner.kind === "session" && row.owner.lifecycle === "settled") && (
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={archiveSettled} onChange={(event) => onArchiveSettled(event.target.checked)} />
+          Archive those sessions instead
+        </label>
+      )}
+      <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-muted-foreground">
+        {selected.map((row) => (
+          <li key={row.path} className="font-mono">
+            {row.basename}
+            {row.owner.kind === "session" && row.owner.lifecycle === "settled" ? (archiveSettled ? " — archives its session" : " — released, session kept") : ""}
+          </li>
+        ))}
+      </ul>
+      <span className="flex items-center gap-2">
+        <Button size="sm" variant="outline" disabled={busy} onClick={onReclaim}>
+          {busy ? "Working…" : "Give them back"}
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
+          Cancel
+        </Button>
+      </span>
+    </div>
+  );
+}
+
+function WorktreeRowItem({
+  row,
+  checked,
+  typed,
+  onToggle,
+  onType,
+}: {
+  row: WorktreeRow;
+  checked: boolean;
+  typed: string;
+  onToggle: () => void;
+  onType: (value: string) => void;
+}) {
+  const locked = row.verdict.kind === "locked";
+  const forced = row.verdict.kind === "needs-force";
+  return (
+    <div className="flex items-start gap-3 py-2.5">
+      <div className="pt-0.5">
+        {locked ? (
+          <LockIcon className="size-4 text-muted-foreground/60" />
+        ) : forced ? (
+          <TriangleAlertIcon className="size-4 text-muted-foreground" />
+        ) : (
+          <input
+            type="checkbox"
+            checked={checked}
+            aria-label={checked ? `Keep ${row.basename}` : `Give back ${row.basename}`}
+            onChange={onToggle}
+            className="size-4 accent-primary"
+          />
+        )}
+      </div>
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <FolderGitIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <span className="truncate font-mono text-xs-plus text-foreground">{row.basename}</span>
+          {row.branch ? <span className="truncate text-xs text-muted-foreground">{row.branch}</span> : null}
+          {row.projectName ? <span className="truncate text-xs text-muted-foreground">· {row.projectName}</span> : null}
+        </div>
+        <StateChips row={row} />
+        {locked && row.verdict.kind === "locked" ? <p className="text-xs text-muted-foreground">{LOCK_TEXT[row.verdict.reason]}</p> : null}
+        {forced && row.verdict.kind === "needs-force" ? (
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">
+              This {row.verdict.reasons.map((reason) => FORCE_TEXT[reason] ?? reason).join(", and ")}. Type{" "}
+              <span className="font-mono text-foreground">{row.basename}</span> to give it back anyway.
+            </p>
+            <Input
+              value={typed}
+              aria-label={`Type ${row.basename} to confirm`}
+              placeholder={row.basename}
+              className="h-7 max-w-xs font-mono text-xs"
+              onChange={(event) => onType(event.target.value)}
+            />
+          </div>
+        ) : null}
+      </div>
+      <div className="shrink-0 text-right">
+        <div className="font-mono text-xs tabular-nums text-foreground">{row.bytes === undefined ? "—" : formatBytes(row.bytes)}</div>
+        {row.updatedAt ? <div className="text-xs text-muted-foreground">{fmtAgo(row.updatedAt)}</div> : null}
+      </div>
+    </div>
+  );
+}
+
 export function WorktreeListSection() {
   const [inventory, setInventory] = useState<WorktreeInventory>();
   const [busy, setBusy] = useState(false);
@@ -208,102 +334,29 @@ export function WorktreeListSection() {
     >
       {failure ? <div className="py-3 text-xs text-destructive">{failure}</div> : null}
       {summary ? <div className="py-3 text-xs text-muted-foreground">{summary}</div> : null}
-      {results?.filter((result) => !result.ok).length ? (
-        <div className="space-y-1 py-3 text-xs text-muted-foreground">
-          {results
-            .filter((result) => !result.ok)
-            .map((result) => (
-              <div key={result.path} className="flex items-start gap-2">
-                <TriangleAlertIcon className="mt-0.5 size-3 shrink-0" />
-                <span>
-                  <span className="font-mono">{result.path.split("/").pop()}</span> — {LOCK_TEXT[result.refusal ?? ""] ?? result.detail ?? "was not given back."}
-                </span>
-              </div>
-            ))}
-        </div>
-      ) : null}
+      <ReclaimFailures results={results} />
 
       {confirming ? (
-        <div className="space-y-3 py-3">
-          <p className="text-xs text-foreground">{confirmSentence(selected, archiveSettled)}</p>
-          {selected.some((row) => row.owner.kind === "session" && row.owner.lifecycle === "settled") && (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input type="checkbox" checked={archiveSettled} onChange={(event) => setArchiveSettled(event.target.checked)} />
-              Archive those sessions instead
-            </label>
-          )}
-          <ul className="max-h-40 space-y-0.5 overflow-auto text-xs text-muted-foreground">
-            {selected.map((row) => (
-              <li key={row.path} className="font-mono">
-                {row.basename}
-                {row.owner.kind === "session" && row.owner.lifecycle === "settled" ? (archiveSettled ? " — archives its session" : " — released, session kept") : ""}
-              </li>
-            ))}
-          </ul>
-          <span className="flex items-center gap-2">
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void reclaim()}>
-              {busy ? "Working…" : "Give them back"}
-            </Button>
-            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
-              Cancel
-            </Button>
-          </span>
-        </div>
+        <ReclaimConfirm
+          selected={selected}
+          archiveSettled={archiveSettled}
+          busy={busy}
+          onArchiveSettled={setArchiveSettled}
+          onReclaim={() => void reclaim()}
+          onCancel={() => setConfirming(false)}
+        />
       ) : null}
 
-      {rows.map((row) => {
-        const locked = row.verdict.kind === "locked";
-        const forced = row.verdict.kind === "needs-force";
-        const checked = !locked && selected.some((entry) => entry.path === row.path);
-        return (
-          <div key={row.path} className="flex items-start gap-3 py-2.5">
-            <div className="pt-0.5">
-              {locked ? (
-                <LockIcon className="size-4 text-muted-foreground/60" />
-              ) : forced ? (
-                <TriangleAlertIcon className="size-4 text-muted-foreground" />
-              ) : (
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  aria-label={checked ? `Keep ${row.basename}` : `Give back ${row.basename}`}
-                  onChange={() => toggle(row)}
-                  className="size-4 accent-primary"
-                />
-              )}
-            </div>
-            <div className="min-w-0 flex-1 space-y-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <FolderGitIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate font-mono text-xs-plus text-foreground">{row.basename}</span>
-                {row.branch ? <span className="truncate text-xs text-muted-foreground">{row.branch}</span> : null}
-                {row.projectName ? <span className="truncate text-xs text-muted-foreground">· {row.projectName}</span> : null}
-              </div>
-              <StateChips row={row} />
-              {locked && row.verdict.kind === "locked" ? <p className="text-xs text-muted-foreground">{LOCK_TEXT[row.verdict.reason]}</p> : null}
-              {forced && row.verdict.kind === "needs-force" ? (
-                <div className="space-y-1">
-                  <p className="text-xs text-muted-foreground">
-                    This {row.verdict.reasons.map((reason) => FORCE_TEXT[reason] ?? reason).join(", and ")}. Type{" "}
-                    <span className="font-mono text-foreground">{row.basename}</span> to give it back anyway.
-                  </p>
-                  <Input
-                    value={typed[row.path] ?? ""}
-                    aria-label={`Type ${row.basename} to confirm`}
-                    placeholder={row.basename}
-                    className="h-7 max-w-xs font-mono text-xs"
-                    onChange={(event) => setTyped((current) => ({ ...current, [row.path]: event.target.value }))}
-                  />
-                </div>
-              ) : null}
-            </div>
-            <div className="shrink-0 text-right">
-              <div className="font-mono text-xs tabular-nums text-foreground">{row.bytes === undefined ? "—" : formatBytes(row.bytes)}</div>
-              {row.updatedAt ? <div className="text-xs text-muted-foreground">{fmtAgo(row.updatedAt)}</div> : null}
-            </div>
-          </div>
-        );
-      })}
+      {rows.map((row) => (
+        <WorktreeRowItem
+          key={row.path}
+          row={row}
+          checked={row.verdict.kind !== "locked" && selected.some((entry) => entry.path === row.path)}
+          typed={typed[row.path] ?? ""}
+          onToggle={() => toggle(row)}
+          onType={(value) => setTyped((current) => ({ ...current, [row.path]: value }))}
+        />
+      ))}
     </SettingsGroup>
   );
 }

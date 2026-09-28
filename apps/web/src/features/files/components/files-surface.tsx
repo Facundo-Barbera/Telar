@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo } from "react";
 import { ChevronRightIcon, FolderIcon, FolderOpenIcon, FolderTreeIcon, HardDriveIcon, RotateCwIcon, SearchIcon } from "lucide-react";
 import type { GitChangeStatus, TurnState, WorkspaceListing } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/platform/engine";
-import { ancestorsOf, buildFileTree, directoryPaths, flattenTree, matchFiles, type FileTreeNode } from "../file-tree";
+import type { matchFiles } from "../file-tree";
+import { useFilesTree, type FileTreeRowModel } from "../hooks/use-files-tree";
 import { directoryReference, fileReference, startReferenceDrag, type TelarReference } from "@/features/composer";
 import type { OpenIntent } from "../editor-workspace";
 import { REVIEW_STATUS_LETTER, REVIEW_STATUS_WORD } from "@/features/git";
@@ -23,11 +23,9 @@ import {
 } from "@/ui/context-menu";
 import { cn } from "@/ui/utils";
 
-const api = createEngineApi();
-
 const INDENT = 10;
 
-type Row = { node: FileTreeNode; depth: number };
+type FileMatches = ReturnType<typeof matchFiles>;
 
 export function FileRowMenuItems({
   path,
@@ -114,7 +112,7 @@ function FileTreeRow({
   onInsertReference,
   onOpenInNewPanelTab,
 }: {
-  row: Row;
+  row: FileTreeRowModel;
   expanded: boolean;
   focused: boolean;
   open: boolean;
@@ -201,167 +199,68 @@ function FileTreeRow({
   );
 }
 
-export function FilesSurface({
-  sessionId,
-  projectId,
-  hostId,
-  openPaths = [],
-  onOpenFile,
-  onWorkspacePath,
-  onInsertReference,
-  onOpenInNewPanelTab,
-  reveal,
-  active,
+function FilesToolbar({
+  refreshing,
+  query,
+  onRefresh,
+  onSearch,
 }: {
-  sessionId?: string;
-  projectId?: string;
-  hostId?: string;
-  openPaths?: readonly string[];
-  onOpenFile: (path: string, intent: OpenIntent) => void;
-  onWorkspacePath?: (path: string) => void;
-  onInsertReference?: (reference: TelarReference) => void;
-  onOpenInNewPanelTab?: (path: string) => void;
-  reveal?: { path: string; nonce: number };
-  active?: TurnState;
+  refreshing: boolean;
+  query: string;
+  onRefresh: () => void;
+  onSearch: (query: string) => void;
 }) {
-  const [listing, setListing] = useState<WorkspaceListing>();
-  const [statuses, setStatuses] = useState<ReadonlyMap<string, GitChangeStatus>>(new Map());
-  const [error, setError] = useState<string>();
-  const [refreshing, setRefreshing] = useState(false);
-  const [query, setQuery] = useState("");
-  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
-  const [shutWhileSearching, setShutWhileSearching] = useState<ReadonlySet<string>>(new Set());
-  const [focusedPath, setFocusedPath] = useState<string>();
-  const rowsRef = useRef(new Map<string, HTMLButtonElement>());
-
-  const load = useCallback(async () => {
-    if (!sessionId && !projectId) return;
-    const listFiles = () => (sessionId ? api.sessionFiles(sessionId) : api.projectFiles(projectId!));
-    const readDiff = () => (sessionId ? api.sessionDiff(sessionId) : api.projectDiff(projectId!));
-    try {
-      const [listed, diff] = await Promise.all([listFiles(), readDiff().catch(() => undefined)]);
-      setListing(listed.listing);
-      setStatuses(new Map((diff?.diff.files ?? []).map((file) => [file.path, file.status])));
-      setError(undefined);
-    } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause.message : "The engine did not answer.");
-    }
-  }, [sessionId, projectId]);
-
-  useEffect(() => {
-    const first = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(first);
-  }, [load, active]);
-
-  const workspacePath = listing?.workspacePath;
-  useEffect(() => {
-    if (workspacePath) onWorkspacePath?.(workspacePath);
-  }, [workspacePath, onWorkspacePath]);
-
-  const searched = useMemo(() => matchFiles(listing?.files ?? [], query), [listing, query]);
-  const tree = useMemo(() => buildFileTree(searched.files), [searched.files]);
-  const searching = query.trim().length > 0;
-  const expanded = useMemo(
-    () => (searching ? new Set(directoryPaths(tree).filter((path) => !shutWhileSearching.has(path))) : opened),
-    [searching, tree, shutWhileSearching, opened],
+  return (
+    <div className={cn(EDITOR_HEADER_ROW, "gap-1")}>
+      <button
+        type="button"
+        aria-label="Refresh the file list"
+        title={refreshing ? "Refreshing…" : "Refresh files"}
+        onClick={onRefresh}
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <RotateCwIcon className={cn("size-3.5", refreshing && "animate-spin")} />
+      </button>
+      <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md bg-muted/50 px-2 focus-within:bg-muted">
+        <SearchIcon className="size-3 shrink-0 text-muted-foreground" />
+        <input
+          type="search"
+          name="workspace-file-search"
+          value={query}
+          aria-label="Search files"
+          placeholder="Search files"
+          spellCheck={false}
+          autoComplete="off"
+          onChange={(event) => onSearch(event.target.value)}
+          onContextMenu={(event) => event.stopPropagation()}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.stopPropagation();
+            onSearch("");
+          }}
+          className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
+        />
+      </div>
+    </div>
   );
-  const rows = useMemo(() => flattenTree(tree, expanded), [tree, expanded]);
-  const dirty = useMemo(() => ancestorsOf(statuses.keys()), [statuses]);
-  const openTabs = useMemo(() => new Set(openPaths), [openPaths]);
+}
 
-  const toggle = useCallback(
-    (path: string) => {
-      const flip = (current: ReadonlySet<string>) => {
-        const next = new Set(current);
-        if (!next.delete(path)) next.add(path);
-        return next;
-      };
-      if (searching) setShutWhileSearching(flip);
-      else setOpened(flip);
-    },
-    [searching],
+function FilesFooter({ listing, searching, searched }: { listing: WorkspaceListing; searching: boolean; searched: FileMatches }) {
+  return (
+    <p className="shrink-0 border-t border-border px-3 py-2 text-2xs leading-snug text-muted-foreground">
+      {searching
+        ? `${searched.matches.toLocaleString("en-US")} of ${listing.files.length.toLocaleString("en-US")} paths match${
+            searched.truncated ? `, showing the first ${searched.files.length}` : ""
+          }.`
+        : `${listing.files.length.toLocaleString("en-US")} files${listing.truncated ? " (capped)" : ""} · ${
+            listing.repository ? "tracked and unignored, from git" : "walked — this directory is not a repository"
+          }`}
+    </p>
   );
+}
 
-  const refresh = useCallback(() => {
-    setRefreshing(true);
-    void load().finally(() => setRefreshing(false));
-  }, [load]);
-
-  const collapseAll = useCallback(() => {
-    if (searching) setShutWhileSearching(new Set(directoryPaths(tree)));
-    else setOpened(new Set());
-  }, [searching, tree]);
-
-  const revealPath = reveal?.path;
-  const revealNonce = reveal?.nonce;
-  const revealing = useRef<string>(undefined);
-  useEffect(() => {
-    if (!revealPath) return undefined;
-    revealing.current = revealPath;
-    const task = window.setTimeout(() => {
-      setQuery("");
-      setShutWhileSearching(new Set());
-      setOpened((current) => new Set([...current, ...ancestorsOf([revealPath])]));
-    }, 0);
-    return () => window.clearTimeout(task);
-  }, [revealPath, revealNonce]);
-
-  useEffect(() => {
-    const path = revealing.current;
-    if (path === undefined) return;
-    if (searching || ![...ancestorsOf([path])].every((directory) => expanded.has(directory))) return;
-    revealing.current = undefined;
-    rowsRef.current.get(path)?.scrollIntoView({ block: "nearest" });
-  }, [searching, expanded, rows]);
-
-  const files = useWorkspaceFileMenu({ workspacePath, hostId });
-
-  const focusRow = useCallback((path: string | undefined) => {
-    if (path === undefined) return;
-    setFocusedPath(path);
-    rowsRef.current.get(path)?.focus();
-  }, []);
-
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const index = rows.findIndex((row) => row.node.path === focusedPath);
-    const row = rows[index];
-    const step = (delta: number) => {
-      event.preventDefault();
-      focusRow(rows[Math.min(Math.max(index + delta, 0), rows.length - 1)]?.node.path);
-    };
-    if (event.key === "ArrowDown") return step(index === -1 ? 0 : 1);
-    if (event.key === "ArrowUp") return step(-1);
-    if (event.key === "Home") {
-      event.preventDefault();
-      return focusRow(rows[0]?.node.path);
-    }
-    if (event.key === "End") {
-      event.preventDefault();
-      return focusRow(rows[rows.length - 1]?.node.path);
-    }
-    if (!row) return;
-    if (event.key === "ArrowRight") {
-      event.preventDefault();
-      if (row.node.kind !== "directory") return;
-      if (expanded.has(row.node.path)) return focusRow(rows[index + 1]?.node.path);
-      return toggle(row.node.path);
-    }
-    if (event.key === "ArrowLeft") {
-      event.preventDefault();
-      if (row.node.kind === "directory" && expanded.has(row.node.path)) return toggle(row.node.path);
-      for (let above = index - 1; above >= 0; above -= 1) {
-        if (rows[above]!.depth < row.depth) return focusRow(rows[above]!.node.path);
-      }
-      return;
-    }
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      if (row.node.kind === "directory") return toggle(row.node.path);
-      return onOpenFile(row.node.path, "pin");
-    }
-  };
-
-  if (!sessionId && !projectId) {
+function FilesUnavailable({ scoped, error, listing }: { scoped: boolean; error: string | undefined; listing: WorkspaceListing | undefined }) {
+  if (!scoped) {
     return (
       <PanelEmpty icon={<FolderTreeIcon />} title="No project">
         No checkout to list yet.
@@ -389,45 +288,52 @@ export function FilesSurface({
       </PanelEmpty>
     );
   }
+  return null;
+}
+
+export function FilesSurface({
+  sessionId,
+  projectId,
+  hostId,
+  openPaths = [],
+  onOpenFile,
+  onWorkspacePath,
+  onInsertReference,
+  onOpenInNewPanelTab,
+  reveal,
+  active,
+}: {
+  sessionId?: string;
+  projectId?: string;
+  hostId?: string;
+  openPaths?: readonly string[];
+  onOpenFile: (path: string, intent: OpenIntent) => void;
+  onWorkspacePath?: (path: string) => void;
+  onInsertReference?: (reference: TelarReference) => void;
+  onOpenInNewPanelTab?: (path: string) => void;
+  reveal?: { path: string; nonce: number };
+  active?: TurnState;
+}) {
+  const tree = useFilesTree({ sessionId, projectId, reveal, active, onOpenFile });
+  const { listing, statuses, rows, expanded, searching, focusedPath, rowsRef } = tree;
+  const openTabs = useMemo(() => new Set(openPaths), [openPaths]);
+
+  const workspacePath = listing?.workspacePath;
+  useEffect(() => {
+    if (workspacePath) onWorkspacePath?.(workspacePath);
+  }, [workspacePath, onWorkspacePath]);
+
+  const files = useWorkspaceFileMenu({ workspacePath, hostId });
+
+  const scoped = Boolean(sessionId || projectId);
+  if (!scoped || tree.error || listing?.availability === "unmounted" || listing?.availability === "missing") {
+    return <FilesUnavailable scoped={scoped} error={tree.error} listing={listing} />;
+  }
 
   return (
     <ContextMenu>
       <ContextMenuTrigger render={<div className="flex h-full min-h-0 flex-col" />}>
-        <div className={cn(EDITOR_HEADER_ROW, "gap-1")}>
-          <button
-            type="button"
-            aria-label="Refresh the file list"
-            title={refreshing ? "Refreshing…" : "Refresh files"}
-            onClick={refresh}
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            <RotateCwIcon className={cn("size-3.5", refreshing && "animate-spin")} />
-          </button>
-          <div className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md bg-muted/50 px-2 focus-within:bg-muted">
-            <SearchIcon className="size-3 shrink-0 text-muted-foreground" />
-            <input
-              type="search"
-              name="workspace-file-search"
-              value={query}
-              aria-label="Search files"
-              placeholder="Search files"
-              spellCheck={false}
-              autoComplete="off"
-              onChange={(event) => {
-                setQuery(event.target.value);
-                setShutWhileSearching(new Set());
-              }}
-              onContextMenu={(event) => event.stopPropagation()}
-              onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
-                event.stopPropagation();
-                setQuery("");
-                setShutWhileSearching(new Set());
-              }}
-              className="min-w-0 flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground [&::-webkit-search-cancel-button]:hidden"
-            />
-          </div>
-        </div>
+        <FilesToolbar refreshing={tree.refreshing} query={tree.query} onRefresh={tree.refresh} onSearch={tree.search} />
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {!listing ? (
@@ -437,13 +343,13 @@ export function FilesSurface({
           ) : rows.length === 0 ? (
             <PanelEmpty icon={<FolderTreeIcon />} title={searching ? "Nothing matches" : "This checkout is empty"}>
               {searching
-                ? `No path in this checkout contains “${query.trim()}”.`
+                ? `No path in this checkout contains “${tree.query.trim()}”.`
                 : listing.repository
                   ? "git lists no files here — every path is ignored."
                   : "There are no files in this directory."}
             </PanelEmpty>
           ) : (
-            <div role="tree" aria-label="Workspace files" onKeyDown={onKeyDown} className="flex flex-col py-0.5">
+            <div role="tree" aria-label="Workspace files" onKeyDown={tree.onKeyDown} className="flex flex-col py-0.5">
               {rows.map((row) => (
                 <FileTreeRow
                   key={row.node.path}
@@ -452,18 +358,18 @@ export function FilesSurface({
                   focused={focusedPath === undefined ? row === rows[0] : focusedPath === row.node.path}
                   open={openTabs.has(row.node.path)}
                   {...(statuses.get(row.node.path) ? { status: statuses.get(row.node.path)! } : {})}
-                  {...(row.node.kind === "directory" && dirty.has(row.node.path) ? { dirtyInside: true } : {})}
-                  onToggle={() => toggle(row.node.path)}
+                  {...(row.node.kind === "directory" && tree.dirty.has(row.node.path) ? { dirtyInside: true } : {})}
+                  onToggle={() => tree.toggle(row.node.path)}
                   onOpen={() => onOpenFile(row.node.path, "preview")}
                   onKeep={() => onOpenFile(row.node.path, "pin")}
-                  onFocus={() => setFocusedPath(row.node.path)}
+                  onFocus={() => tree.setFocusedPath(row.node.path)}
                   register={(element) => {
                     if (element) rowsRef.current.set(row.node.path, element);
                     else rowsRef.current.delete(row.node.path);
                   }}
                   {...(workspaceFilePath(workspacePath, row.node.path) ? { absolute: workspaceFilePath(workspacePath, row.node.path)! } : {})}
                   files={files}
-                  onCollapseAll={collapseAll}
+                  onCollapseAll={tree.collapseAll}
                   {...(onInsertReference ? { onInsertReference } : {})}
                   {...(onOpenInNewPanelTab ? { onOpenInNewPanelTab } : {})}
                 />
@@ -472,21 +378,11 @@ export function FilesSurface({
           )}
         </div>
 
-        {listing && (
-          <p className="shrink-0 border-t border-border px-3 py-2 text-2xs leading-snug text-muted-foreground">
-            {searching
-              ? `${searched.matches.toLocaleString("en-US")} of ${listing.files.length.toLocaleString("en-US")} paths match${
-                  searched.truncated ? `, showing the first ${searched.files.length}` : ""
-                }.`
-              : `${listing.files.length.toLocaleString("en-US")} files${listing.truncated ? " (capped)" : ""} · ${
-                  listing.repository ? "tracked and unignored, from git" : "walked — this directory is not a repository"
-                }`}
-          </p>
-        )}
+        {listing && <FilesFooter listing={listing} searching={searching} searched={tree.searched} />}
       </ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onClick={refresh}>Refresh</ContextMenuItem>
-        <ContextMenuItem onClick={collapseAll}>Collapse all</ContextMenuItem>
+        <ContextMenuItem onClick={tree.refresh}>Refresh</ContextMenuItem>
+        <ContextMenuItem onClick={tree.collapseAll}>Collapse all</ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
   );

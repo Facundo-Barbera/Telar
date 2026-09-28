@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BlocksIcon, CircleAlertIcon, FolderPlusIcon } from "lucide-react";
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows } from "@telar/engine-client";
@@ -23,6 +23,37 @@ export function machinePanePlugins(plugins: readonly PluginStatus[], machine: Pr
       status.state !== "failed" &&
       machineAllows(machine, status.meta.id) &&
       status.meta.settings.some((section) => section.scope === "machine"),
+  );
+}
+
+function MachinePluginSettings({
+  status,
+  machine,
+  onMachine,
+}: {
+  status: PluginStatus;
+  machine: ProjectPlugins | undefined;
+  onMachine: (machine: ProjectPlugins) => void;
+}) {
+  const { machineGroups: Groups, machineRows: Rows } = machineBlocksFor(status.meta.id);
+  const fields = settingsFields(status.machineSettingsSchema);
+  const section = status.meta.settings.find((entry) => entry.scope === "machine");
+  return (
+    <>
+      {Groups && <Groups machine={machine} onChange={onMachine} />}
+      {(fields.length > 0 || Rows) && (
+        <SettingsGroup title={generatedGroupTitle(status, "machine")} {...(section?.blurb ? { description: section.blurb } : {})}>
+          <GeneratedSettingsRows
+            fields={fields}
+            values={machine?.entries[status.meta.id]?.settings ?? {}}
+            onWrite={async (settings) => {
+              onMachine((await api.updateMachinePlugins(machineSettingsPatch(machine, status.meta.id, settings))).machine);
+            }}
+          />
+          {Rows && <Rows machine={machine} onChange={onMachine} />}
+        </SettingsGroup>
+      )}
+    </>
   );
 }
 
@@ -159,28 +190,9 @@ export function PluginsPage() {
         />
       </SettingsGroup>
 
-      {machinePanePlugins(plugins, machine).map((status) => {
-        const { machineGroups: Groups, machineRows: Rows } = machineBlocksFor(status.meta.id);
-        const fields = settingsFields(status.machineSettingsSchema);
-        const section = status.meta.settings.find((entry) => entry.scope === "machine");
-        return (
-          <Fragment key={status.meta.id}>
-            {Groups && <Groups machine={machine} onChange={setMachine} />}
-            {(fields.length > 0 || Rows) && (
-              <SettingsGroup title={generatedGroupTitle(status, "machine")} {...(section?.blurb ? { description: section.blurb } : {})}>
-                <GeneratedSettingsRows
-                  fields={fields}
-                  values={machine?.entries[status.meta.id]?.settings ?? {}}
-                  onWrite={async (settings) => {
-                    setMachine((await api.updateMachinePlugins(machineSettingsPatch(machine, status.meta.id, settings))).machine);
-                  }}
-                />
-                {Rows && <Rows machine={machine} onChange={setMachine} />}
-              </SettingsGroup>
-            )}
-          </Fragment>
-        );
-      })}
+      {machinePanePlugins(plugins, machine).map((status) => (
+        <MachinePluginSettings key={status.meta.id} status={status} machine={machine} onMachine={setMachine} />
+      ))}
     </>
   );
 }

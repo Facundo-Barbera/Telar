@@ -10,7 +10,7 @@ import { SettingsSearchNav } from "./settings-search-nav";
 import { Button } from "@/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/ui/select";
 import { Switch } from "@/ui/switch";
-import { APP_SIDEBAR_STORAGE_KEY, APP_SIDEBAR_MAIN_MIN_WIDTH, clampSidebarWidth, keepsRoomForMain, setSidebarWidth, SIDEBAR_RESIZE_MIN_WIDTH, useSidebarPrefs } from "@/ui/sidebar-width";
+import { SettingsPaneList, useSettingsNavResize } from "./settings-pane-list";
 
 export type SettingsSection = {
   id: string;
@@ -56,6 +56,86 @@ export function useRestoreDefaults(restore: () => void | Promise<void>): void {
   }, [registry]);
 }
 
+function useRestoreRegistry() {
+  const [restorers, setRestorers] = useState<ReadonlyArray<() => void | Promise<void>>>([]);
+  const registry = useMemo<RestoreRegistry>(
+    () => ({
+      add: (restore) => {
+        setRestorers((current) => [...current, restore]);
+        return () => setRestorers((current) => current.filter((entry) => entry !== restore));
+      },
+    }),
+    [],
+  );
+  return { restorers, registry };
+}
+
+function useRevealRow(): (id: string) => void {
+  const [pendingRow, setPendingRow] = useState<string>();
+  useEffect(() => {
+    if (!pendingRow) return;
+    const deadline = Date.now() + REVEAL_TIMEOUT_MS;
+    let frame = 0;
+    const look = () => {
+      if (revealSettingsRow(pendingRow) || Date.now() > deadline) {
+        setPendingRow(undefined);
+        return;
+      }
+      frame = window.requestAnimationFrame(look);
+    };
+    frame = window.requestAnimationFrame(look);
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingRow]);
+  return setPendingRow;
+}
+
+function SettingsPaneHeader({
+  title,
+  section,
+  headerActions,
+  restorers,
+}: {
+  title: ReactNode;
+  section: SettingsSection;
+  headerActions?: ReactNode;
+  restorers: ReadonlyArray<() => void | Promise<void>>;
+}) {
+  return (
+    <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/65 px-5 text-foreground backdrop-blur md:h-[var(--titlebar-band-height)]">
+      <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
+        <span className="shrink-0 text-sm text-muted-foreground">{title}</span>
+        <span aria-hidden className="shrink-0 text-sm text-muted-foreground/50">
+          /
+        </span>
+        <h3 aria-current="page" className="truncate font-heading text-sm font-semibold tracking-tight">
+          {section.label}
+        </h3>
+        {section.scope && (
+          <span className="app-no-drag ml-1">
+            <ScopeBadge scope={section.scope} />
+          </span>
+        )}
+      </nav>
+      <div className="app-no-drag ml-auto flex items-center gap-2">
+        {headerActions}
+        {restorers.length > 0 && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => {
+              for (const restore of restorers) void restore();
+            }}
+          >
+            <Undo2Icon className="size-3.5" />
+            Restore defaults
+          </Button>
+        )}
+      </div>
+    </header>
+  );
+}
+
 export function SettingsShell({
   title,
   subtitle,
@@ -78,107 +158,16 @@ export function SettingsShell({
   children: ReactNode;
 }) {
   const activeSection = sections.find((s) => s.id === active) ?? sections[0];
-  const [restorers, setRestorers] = useState<ReadonlyArray<() => void | Promise<void>>>([]);
-  const restoreRegistry = useMemo<RestoreRegistry>(
-    () => ({
-      add: (restore) => {
-        setRestorers((current) => [...current, restore]);
-        return () => setRestorers((current) => current.filter((entry) => entry !== restore));
-      },
-    }),
-    [],
-  );
-  const prefsWidth = useSidebarPrefs(APP_SIDEBAR_STORAGE_KEY).width ?? SIDEBAR_RESIZE_MIN_WIDTH;
-  const [dragWidth, setDragWidth] = useState<number>();
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const navWidth = dragWidth ?? prefsWidth;
-
-  useEffect(() => {
-    if (dragWidth === undefined) return;
-    const stop = () => {
-      setSidebarWidth(APP_SIDEBAR_STORAGE_KEY, dragWidth);
-      setDragWidth(undefined);
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-    };
-    const move = (event: PointerEvent) => {
-      const wrapper = wrapperRef.current;
-      if (!wrapper) return;
-      const rect = wrapper.getBoundingClientRect();
-      const current = dragWidth;
-      const proposed = event.clientX - rect.left;
-      const max = Math.max(SIDEBAR_RESIZE_MIN_WIDTH, rect.width - APP_SIDEBAR_MAIN_MIN_WIDTH);
-      const next = clampSidebarWidth(proposed, SIDEBAR_RESIZE_MIN_WIDTH, max);
-      if (keepsRoomForMain(current, next, rect.width, APP_SIDEBAR_MAIN_MIN_WIDTH)) setDragWidth(next);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop, { once: true });
-    window.addEventListener("pointercancel", stop, { once: true });
-    return () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", stop);
-      window.removeEventListener("pointercancel", stop);
-    };
-  }, [dragWidth]);
-
-  const [pendingRow, setPendingRow] = useState<string>();
-  useEffect(() => {
-    if (!pendingRow) return;
-    const deadline = Date.now() + REVEAL_TIMEOUT_MS;
-    let frame = 0;
-    const look = () => {
-      if (revealSettingsRow(pendingRow) || Date.now() > deadline) {
-        setPendingRow(undefined);
-        return;
-      }
-      frame = window.requestAnimationFrame(look);
-    };
-    frame = window.requestAnimationFrame(look);
-    return () => window.cancelAnimationFrame(frame);
-  }, [pendingRow]);
+  const { restorers, registry: restoreRegistry } = useRestoreRegistry();
+  const { navWidth, wrapperRef, startDrag } = useSettingsNavResize();
+  const revealRow = useRevealRow();
 
   const jumpTo = (entry: SettingsSearchEntry) => {
     onSelect(entry.pageId);
-    setPendingRow(entry.id);
+    revealRow(entry.id);
   };
 
-  const groups = sections.some((s) => s.group)
-    ? Array.from(new Set(sections.map((s) => s.group ?? ""))).map((g) => ({
-        group: g,
-        items: sections.filter((s) => (s.group ?? "") === g),
-      }))
-    : [{ group: "", items: sections }];
-
-  const paneList = (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
-      {groups.map(({ group, items }) => (
-        <div key={group} className="flex flex-col gap-0.5">
-          {group && (
-            <div className="px-2 pb-1 text-3xs font-medium uppercase tracking-wider text-muted-foreground/60">{group}</div>
-          )}
-          {items.map((s) => {
-            const Icon = s.icon;
-            const on = s.id === active;
-            return (
-              <button
-                key={s.id}
-                type="button"
-                onClick={() => onSelect(s.id)}
-                className={cn(
-                  "group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
-                  on ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
-              >
-                <Icon className={cn("size-4 shrink-0", on ? "text-foreground" : "text-muted-foreground/70")} />
-                <span className="flex-1 truncate">{s.label}</span>
-                {s.count != null && <span className="text-2xs tabular-nums text-muted-foreground/60">{s.count}</span>}
-              </button>
-            );
-          })}
-        </div>
-      ))}
-    </div>
-  );
+  const paneList = <SettingsPaneList sections={sections} active={active} onSelect={onSelect} />;
 
   return (
     <div
@@ -237,46 +226,13 @@ export function SettingsShell({
         title="Drag to resize settings sidebar"
         onPointerDown={(event) => {
           event.preventDefault();
-          setDragWidth(navWidth);
-          document.body.style.cursor = "col-resize";
-          document.body.style.userSelect = "none";
+          startDrag();
         }}
         className="app-no-drag -mx-2 hidden w-4 shrink-0 cursor-col-resize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block"
       />
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border">
-        <header className="app-drag app-ground sticky top-0 z-10 flex h-[var(--titlebar-height)] shrink-0 items-center gap-2.5 border-b border-border bg-background/65 px-5 text-foreground backdrop-blur md:h-[var(--titlebar-band-height)]">
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
-            <span className="shrink-0 text-sm text-muted-foreground">{title}</span>
-            <span aria-hidden className="shrink-0 text-sm text-muted-foreground/50">
-              /
-            </span>
-            <h3 aria-current="page" className="truncate font-heading text-sm font-semibold tracking-tight">
-              {activeSection.label}
-            </h3>
-            {activeSection.scope && (
-              <span className="app-no-drag ml-1">
-                <ScopeBadge scope={activeSection.scope} />
-              </span>
-            )}
-          </nav>
-          <div className="app-no-drag ml-auto flex items-center gap-2">
-            {headerActions}
-            {restorers.length > 0 && (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="text-muted-foreground hover:text-foreground"
-                onClick={() => {
-                  for (const restore of restorers) void restore();
-                }}
-              >
-                <Undo2Icon className="size-3.5" />
-                Restore defaults
-              </Button>
-            )}
-          </div>
-        </header>
+        <SettingsPaneHeader title={title} section={activeSection} headerActions={headerActions} restorers={restorers} />
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-2xl px-5 py-5">
             <SettingsPaneContext.Provider value={activeSection.id}>

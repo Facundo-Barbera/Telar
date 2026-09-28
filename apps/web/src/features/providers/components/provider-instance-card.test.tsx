@@ -24,7 +24,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { AutoCompact, ProviderInstance, ProviderInstanceEnvVar } from "@telar/engine-client";
-import { compactionEdit, ProviderInstanceCard, type InheritanceNotice, type InstancePatch } from "./provider-instance-card";
+import { ProviderInstanceCard, type InstancePatch } from "./provider-instance-card";
+import { compactionEdit } from "./provider-instance-fields";
+import type { InheritanceNotice } from "./inheritance-notice";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
