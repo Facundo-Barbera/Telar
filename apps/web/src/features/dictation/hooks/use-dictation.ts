@@ -9,11 +9,11 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createEngineApi } from "@/lib/engine/client";
-import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "./deepgram";
-import { audioConstraints, readMicrophone } from "./devices";
-import { createDictationWriter, type DictationBox } from "./interim";
-import { microphoneRefusal, microphoneUnavailable } from "./refusal";
-import { parseFrame, readFrame } from "./transcript";
+import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "../deepgram";
+import { audioConstraints, readMicrophone } from "../devices";
+import { createDictationWriter, type DictationBox } from "../interim";
+import { microphoneRefusal, microphoneUnavailable } from "../refusal";
+import { parseFrame, readFrame } from "../transcript";
 
 export type DictationPhase =
   | "idle"

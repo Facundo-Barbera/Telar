@@ -33,9 +33,14 @@
  */
 
 import { AudioLinesIcon, MicIcon, TypeIcon } from "lucide-react";
-import { microphoneOptions, microphoneStatus } from "@/lib/dictation/devices";
-import { hearing } from "@/lib/dictation/level";
-import { useAudioInputs, useMicrophoneTest, useMicrophoneUnavailable } from "@/lib/dictation/use-microphone";
+import {
+  hearing,
+  microphoneOptions,
+  microphoneStatus,
+  useAudioInputs,
+  useMicrophoneTest,
+  useMicrophoneUnavailable,
+} from "@/features/dictation";
 import { Button } from "@/components/ui/button";
 import { Dropdown, Row, SettingsGroup } from "./settings-shell";
 import { cn } from "@/lib/utils";

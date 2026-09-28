@@ -1,18 +1,4 @@
-/**
- * THE MIC BUTTON, END TO END, WITH A FAKE MICROPHONE (#544).
- *
- * The real `Composer` is mounted and the real composer registry is the write
- * path, because every claim here is about that seam: interim words have to
- * arrive in the draft React owns and be REPLACED there as Deepgram revises
- * them, through the editor's own writes. A test that called the writer
- * directly would pass with the button wired to nothing — `lib/dictation/
- * interim.test.ts` is that test, and this is the one that holds the wiring.
- *
- * WHAT IS FAKED IS THE BROWSER, NOT THE FEATURE. `MediaRecorder`,
- * `getUserMedia` and `WebSocket` do not exist in happy-dom, and the token route
- * is on the other side of a fetch. Those three are stubbed; the hook, the
- * reducer, the registry and the composer are the real ones.
- */
+// The real Composer and registry; only MediaRecorder, getUserMedia, WebSocket and fetch are faked.
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";

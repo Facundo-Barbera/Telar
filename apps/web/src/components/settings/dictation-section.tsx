@@ -95,8 +95,7 @@
 import { useState } from "react";
 import type { DictationProviderId } from "@telar/engine-client";
 import { BookMarkedIcon, KeyRoundIcon, LanguagesIcon, MicIcon, MicOffIcon } from "lucide-react";
-import { useDictationSettings } from "@/lib/dictation/settings";
-import { DICTATION_AUTOMATIC } from "@/lib/dictation/automatic";
+import { DICTATION_AUTOMATIC, useDictationSettings } from "@/features/dictation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";

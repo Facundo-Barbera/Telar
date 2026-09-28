@@ -8,9 +8,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { activeComposer } from "@/lib/composer-registry";
 import { useCommandHandlers } from "@/lib/use-command-keys";
-import type { DictationBox } from "./interim";
-import { registerDictation, toggleActiveDictation } from "./registry";
-import { useDictationSettings } from "./settings";
+import type { DictationBox } from "../interim";
+import { registerDictation, toggleActiveDictation } from "../registry";
+import { useDictationSettings } from "../settings";
 import { useDictation, useMicrophoneUnavailable, type DictationState } from "./use-dictation";
 
 export type ComposerDictation = DictationState & {
