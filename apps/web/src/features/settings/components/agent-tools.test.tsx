@@ -8,7 +8,8 @@ import { typeInto } from "@/test/type-into";
 import { BrowserLoginsSection } from "@/features/browser/panes/browser-logins-section";
 import { McpSection } from "@/features/agent-tools/components/mcp-section";
 import { OrientationSection } from "@/features/agent-tools/components/orientation-section";
-import { ComputerUseProviders, computerUseHint, computerUseState, grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS, PermissionsSection } from "@/features/providers/components/permissions-section";
+import { ComputerUseProviders, computerUseHint, computerUseState, PermissionsSection } from "@/features/providers/components/permissions-section";
+import { grantFollowUp, GRANT_POLL_MS, GRANT_WAIT_MS } from "@/features/providers/hooks/use-computer-use";
 
 installTestDom();
 

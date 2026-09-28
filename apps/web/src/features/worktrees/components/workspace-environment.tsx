@@ -16,6 +16,7 @@ import type { GitOverview, GitReadFailure, GitRefEntry, ProjectAvailability, Ses
 import { createEngineApi } from "@/platform/engine";
 import { Popover, PopoverContent, PopoverTrigger } from "@/ui/popover";
 import { cn } from "@/ui/utils";
+import { usePoll } from "@/ui/hooks/use-poll";
 
 const api = createEngineApi();
 
@@ -279,6 +280,110 @@ function WhereThisLands({
   );
 }
 
+function AwayNotice({ away, projectName }: { away: Exclude<ProjectAvailability, "available">; projectName?: string | undefined }) {
+  return (
+    <p className="flex items-start gap-2 border-b border-border/40 px-3 py-2 text-2xs text-muted-foreground">
+      <HardDriveIcon className="mt-px size-3.5 shrink-0" />
+      <span>
+        {away === "unmounted" ? (
+          `The drive holding ${projectName ?? "this project"} is not connected, so nothing can run here yet. Plug it back in — the conversation, its history and its settings are all still here.`
+        ) : (
+          <>
+            The folder for <strong className="font-medium text-foreground">{projectName ?? "this project"}</strong> is not
+            on this machine any more, so nothing can run here.
+          </>
+        )}
+      </span>
+    </p>
+  );
+}
+
+function BranchPopover({
+  git,
+  branch,
+  away,
+  reachable,
+  modeLabel,
+  onOpenChanges,
+}: {
+  git?: GitOverview | undefined;
+  branch?: string | undefined;
+  away?: Exclude<ProjectAvailability, "available"> | undefined;
+  reachable: boolean;
+  modeLabel: string;
+  onOpenChanges?: (() => void) | undefined;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            aria-label={away ? "Drive" : "Branch"}
+            title={away ? "This project's disk is not readable right now" : "Where this session's work lands"}
+            className={CONTROL}
+          />
+        }
+      >
+        {away ? <HardDriveIcon className="size-3.5 shrink-0" /> : <GitBranchIcon className="size-3.5 shrink-0" />}
+        <span className="min-w-0 truncate font-mono">
+          {away === "unmounted" ? "drive away" : away === "missing" ? "folder gone" : (branch ?? "no branch")}
+        </span>
+        <ChevronDownIcon className="size-3 shrink-0" />
+      </PopoverTrigger>
+      <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
+        <p className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Branch</p>
+        <div className="rounded-xl bg-muted/35 p-1">
+          {branch && (
+            <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+              <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate font-mono text-sm">{branch}</span>
+              {git && (git.ahead !== undefined || git.behind !== undefined) && (
+                <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
+                  ↑{git.ahead ?? 0} ↓{git.behind ?? 0}
+                </span>
+              )}
+            </div>
+          )}
+          {git?.repository && (
+            <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
+              <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm">{modeLabel}</span>
+              {git.worktrees && (
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        {(!reachable || away || (git && !git.repository)) && (
+          <p className="px-2 pt-2 text-2xs text-muted-foreground">
+            {!reachable
+              ? "The engine did not answer — this may be out of date."
+              : away === "unmounted"
+                ? "The drive holding this project is not connected, so nothing above was read from it. Plug it back in and this comes back as it was — the project keeps its id, its conversations and its settings."
+                : away === "missing"
+                  ? "This project's folder is not on this machine any more, so nothing above was read from it."
+                  : "Not a git repository."}
+          </p>
+        )}
+        {onOpenChanges && (
+          <button
+            type="button"
+            onClick={onOpenChanges}
+            className="mt-2 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <GitCommitHorizontalIcon className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 truncate">Files this session changed</span>
+            <span className="ml-auto shrink-0 text-xs text-muted-foreground">Open panel</span>
+          </button>
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export function EnvironmentStrip({
   projectId,
   projectName,
@@ -315,21 +420,7 @@ export function EnvironmentStrip({
   return (
     <div className="mx-3 -mt-px">
       <div className="overflow-hidden rounded-b-2xl border border-t-0 border-border/80 bg-card/95 shadow-1 backdrop-blur-xl">
-        {away && (
-          <p className="flex items-start gap-2 border-b border-border/40 px-3 py-2 text-2xs text-muted-foreground">
-            <HardDriveIcon className="mt-px size-3.5 shrink-0" />
-            <span>
-              {away === "unmounted" ? (
-                `The drive holding ${projectName ?? "this project"} is not connected, so nothing can run here yet. Plug it back in — the conversation, its history and its settings are all still here.`
-              ) : (
-                <>
-                  The folder for <strong className="font-medium text-foreground">{projectName ?? "this project"}</strong> is not
-                  on this machine any more, so nothing can run here.
-                </>
-              )}
-            </span>
-          </p>
-        )}
+        {away && <AwayNotice away={away} projectName={projectName} />}
         <div className="flex min-h-8 w-full items-center gap-1 px-2 text-2xs text-muted-foreground">
         {choosing && onEnvMode ? (
           <WhereThisLands
@@ -358,73 +449,7 @@ export function EnvironmentStrip({
 
             <StripRule />
 
-            <Popover>
-              <PopoverTrigger
-                render={
-                  <button
-                    type="button"
-                    aria-label={away ? "Drive" : "Branch"}
-                    title={away ? "This project's disk is not readable right now" : "Where this session's work lands"}
-                    className={CONTROL}
-                  />
-                }
-              >
-                {away ? <HardDriveIcon className="size-3.5 shrink-0" /> : <GitBranchIcon className="size-3.5 shrink-0" />}
-                <span className="min-w-0 truncate font-mono">
-                  {away === "unmounted" ? "drive away" : away === "missing" ? "folder gone" : (branch ?? "no branch")}
-                </span>
-                <ChevronDownIcon className="size-3 shrink-0" />
-              </PopoverTrigger>
-              <PopoverContent side="top" align="start" sideOffset={8} className="w-[min(24rem,calc(100vw-2rem))] gap-0 rounded-2xl p-2">
-                <p className="px-2 pb-1 pt-1 text-2xs font-medium uppercase tracking-[0.14em] text-muted-foreground">Branch</p>
-                <div className="rounded-xl bg-muted/35 p-1">
-                  {branch && (
-                    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-                      <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate font-mono text-sm">{branch}</span>
-                      {git && (git.ahead !== undefined || git.behind !== undefined) && (
-                        <span className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums">
-                          ↑{git.ahead ?? 0} ↓{git.behind ?? 0}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                  {git?.repository && (
-                    <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-                      <FolderGitIcon className="size-4 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate text-sm">{modeLabel}</span>
-                      {git.worktrees && (
-                        <span className="shrink-0 text-xs text-muted-foreground">
-                          {git.worktrees.length} worktree{git.worktrees.length === 1 ? "" : "s"}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-                {(!reachable || away || (git && !git.repository)) && (
-                  <p className="px-2 pt-2 text-2xs text-muted-foreground">
-                    {!reachable
-                      ? "The engine did not answer — this may be out of date."
-                      : away === "unmounted"
-                        ? "The drive holding this project is not connected, so nothing above was read from it. Plug it back in and this comes back as it was — the project keeps its id, its conversations and its settings."
-                        : away === "missing"
-                          ? "This project's folder is not on this machine any more, so nothing above was read from it."
-                          : "Not a git repository."}
-                  </p>
-                )}
-                {onOpenChanges && (
-                  <button
-                    type="button"
-                    onClick={onOpenChanges}
-                    className="mt-2 flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-sm transition-colors outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <GitCommitHorizontalIcon className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 truncate">Files this session changed</span>
-                    <span className="ml-auto shrink-0 text-xs text-muted-foreground">Open panel</span>
-                  </button>
-                )}
-              </PopoverContent>
-            </Popover>
+            <BranchPopover git={git} branch={branch} away={away} reachable={reachable} modeLabel={modeLabel} onOpenChanges={onOpenChanges} />
           </>
         )}
 
@@ -458,14 +483,7 @@ export function WorkspaceEnvironment({
     }
   }, [projectId, onAvailability]);
 
-  useEffect(() => {
-    const first = window.setTimeout(() => void load(), 0);
-    const timer = window.setInterval(() => void load(), REFRESH_MS);
-    return () => {
-      window.clearTimeout(first);
-      window.clearInterval(timer);
-    };
-  }, [load]);
+  usePoll(load, REFRESH_MS, { key: load });
 
   return <EnvironmentStrip {...props} {...(git ? { git } : {})} reachable={reachable} onRetry={load} />;
 }

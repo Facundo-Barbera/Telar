@@ -121,33 +121,7 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
           <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-2.5 py-2 text-xs leading-relaxed text-destructive">{failure}</p>
         )}
         {last && last.diagnostics.length > 0 && (
-          <ul className="flex flex-col gap-1">
-            {last.diagnostics.map((diagnostic, index) => (
-              <li key={index}>
-                <button
-                  type="button"
-                  disabled={!diagnostic.file || !onOpenFile}
-                  onClick={() => diagnostic.file && onOpenFile?.(diagnostic.file)}
-                  className={cn(
-                    "flex w-full items-start gap-2 rounded-md border border-border px-2.5 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    diagnostic.file && onOpenFile && "hover:bg-muted/50",
-                  )}
-                >
-                  <TriangleAlertIcon
-                    className={cn("mt-0.5 size-3 shrink-0", diagnostic.severity === "error" ? "text-destructive" : "text-warning")}
-                    aria-label={severityLabel(diagnostic)}
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-xs leading-snug text-foreground">{diagnostic.message}</span>
-                    <span className="block truncate text-2xs text-muted-foreground">
-                      {diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}` : severityLabel(diagnostic)}
-                      {diagnostic.suggestion ? ` — ${diagnostic.suggestion}` : ""}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
+          <DiagnosticList diagnostics={last.diagnostics} onOpenFile={onOpenFile} />
         )}
         {last && last.diagnostics.length === 0 && last.status === "ok" && (
           <p className="text-xs text-muted-foreground">Clean compile — no errors, no warnings.</p>
@@ -176,5 +150,37 @@ export function LatexSurface({ sessionId, active, onOpenFile }: { sessionId?: st
         )}
       </div>
     </div>
+  );
+}
+
+function DiagnosticList({ diagnostics, onOpenFile }: { diagnostics: LatexDiagnostic[]; onOpenFile?: ((path: string) => void) | undefined }) {
+  return (
+    <ul className="flex flex-col gap-1">
+      {diagnostics.map((diagnostic, index) => (
+        <li key={index}>
+          <button
+            type="button"
+            disabled={!diagnostic.file || !onOpenFile}
+            onClick={() => diagnostic.file && onOpenFile?.(diagnostic.file)}
+            className={cn(
+              "flex w-full items-start gap-2 rounded-md border border-border px-2.5 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              diagnostic.file && onOpenFile && "hover:bg-muted/50",
+            )}
+          >
+            <TriangleAlertIcon
+              className={cn("mt-0.5 size-3 shrink-0", diagnostic.severity === "error" ? "text-destructive" : "text-warning")}
+              aria-label={severityLabel(diagnostic)}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs leading-snug text-foreground">{diagnostic.message}</span>
+              <span className="block truncate text-2xs text-muted-foreground">
+                {diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ""}` : severityLabel(diagnostic)}
+                {diagnostic.suggestion ? ` — ${diagnostic.suggestion}` : ""}
+              </span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }

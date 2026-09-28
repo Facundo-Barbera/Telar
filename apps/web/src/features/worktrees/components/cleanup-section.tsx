@@ -39,13 +39,50 @@ function reason(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback;
 }
 
+function RetentionRow() {
+  const [retention, setRetention] = useState<RetentionPolicy>();
+  const [retentionError, setRetentionError] = useState<string>();
+
+  useEffect(() => {
+    const task = window.setTimeout(() => {
+      api
+        .retention()
+        .then((answer) => setRetention(answer.retention))
+        .catch(() => undefined);
+    }, 0);
+    return () => window.clearTimeout(task);
+  }, []);
+
+  const retentionOff = async () => {
+    setRetentionError(undefined);
+    try {
+      setRetention((await api.setRetention({ idleAfterDays: null })).retention);
+    } catch (cause) {
+      setRetentionError(reason(cause, "That could not be turned off."));
+    }
+  };
+
+  if (!retention?.idleAfterDays) return null;
+  return (
+    <Row
+      icon={HistoryIcon}
+      label="Turn journal retention"
+      hint={`Journals of conversations idle ${retention.idleAfterDays} days are moved to ${retention.exportTo ?? "an export folder"}.`}
+      {...(retentionError ? { error: retentionError } : {})}
+      control={
+        <Button size="sm" variant="outline" onClick={() => void retentionOff()}>
+          Turn off
+        </Button>
+      }
+    />
+  );
+}
+
 export function CleanupSection() {
   const [state, setState] = useState<CleanupState>();
   const [running, setRunning] = useState(false);
   const [ran, setRan] = useState(false);
   const [error, setError] = useState<{ key: keyof CleanupPolicy | "run"; message: string }>();
-  const [retention, setRetention] = useState<RetentionPolicy>();
-  const [retentionError, setRetentionError] = useState<string>();
   const [showList, setShowList] = useState(false);
 
   useEffect(() => {
@@ -54,10 +91,6 @@ export function CleanupSection() {
         .cleanup()
         .then((answer) => setState(answer.cleanup))
         .catch((cause) => setError({ key: "run", message: reason(cause, "The engine did not answer.") }));
-      api
-        .retention()
-        .then((answer) => setRetention(answer.retention))
-        .catch(() => undefined);
     }, 0);
     return () => window.clearTimeout(task);
   }, []);
@@ -82,15 +115,6 @@ export function CleanupSection() {
       setError({ key: "run", message: reason(cause, "The cleanup did not run.") });
     } finally {
       setRunning(false);
-    }
-  };
-
-  const retentionOff = async () => {
-    setRetentionError(undefined);
-    try {
-      setRetention((await api.setRetention({ idleAfterDays: null })).retention);
-    } catch (cause) {
-      setRetentionError(reason(cause, "That could not be turned off."));
     }
   };
 
@@ -163,19 +187,7 @@ export function CleanupSection() {
             />
           }
         />
-        {retention?.idleAfterDays ? (
-          <Row
-            icon={HistoryIcon}
-            label="Turn journal retention"
-            hint={`Journals of conversations idle ${retention.idleAfterDays} days are moved to ${retention.exportTo ?? "an export folder"}.`}
-            {...(retentionError ? { error: retentionError } : {})}
-            control={
-              <Button size="sm" variant="outline" onClick={() => void retentionOff()}>
-                Turn off
-              </Button>
-            }
-          />
-        ) : null}
+        <RetentionRow />
       </SettingsGroup>
 
       <div className="mb-6 flex items-center gap-3 px-4 text-xs text-muted-foreground">

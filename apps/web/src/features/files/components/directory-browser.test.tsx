@@ -6,7 +6,8 @@ import { rememberedDirectoryKey } from "../directory-keys";
 import { EngineApiError } from "@/platform/engine";
 import type { DirectoryListing } from "@telar/engine-client";
 import { buttonLabelled, click, flush, installTestDom, mount } from "@/test/dom";
-import { DirectoryBrowser, type DirectoryLister } from "./directory-browser";
+import { DirectoryBrowser } from "./directory-browser";
+import type { DirectoryLister } from "../hooks/use-directory-listing";
 
 installTestDom();
 

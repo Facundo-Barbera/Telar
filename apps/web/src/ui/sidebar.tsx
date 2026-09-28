@@ -3,14 +3,15 @@
 import * as React from "react"
 
 import { useIsMobile } from "@/ui/hooks/use-mobile"
+import { setSidebarCollapsed, useSidebarPrefs } from "@/ui/sidebar-width"
 import {
-  clampSidebarWidth,
-  flushPendingSidebarWidth,
-  setSidebarCollapsed,
-  setSidebarWidth,
-  SIDEBAR_RESIZE_MIN_WIDTH,
-  useSidebarPrefs,
-} from "@/ui/sidebar-width"
+  resizeSidebarByKey,
+  useSidebarRailResize,
+  useSidebarResizable,
+  type SidebarResizable,
+  type SidebarResizableOptions,
+  type SidebarWidthProposal,
+} from "@/ui/sidebar-resize"
 import { cn } from "@/ui/utils"
 import { Button } from "@/ui/button"
 import {
@@ -27,31 +28,6 @@ const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7
 const SIDEBAR_WIDTH = "16rem"
 const SIDEBAR_WIDTH_MOBILE = "18rem"
 const SIDEBAR_WIDTH_ICON = "3rem"
-
-type SidebarResizableOptions = {
-  maxWidth?: number
-  minWidth?: number
-  onResize?: (width: number) => void
-  shouldAcceptWidth?: (proposal: SidebarWidthProposal) => boolean
-  storageKey?: string
-}
-
-type SidebarWidthProposal = {
-  currentWidth: number
-  nextWidth: number
-  rail: HTMLButtonElement
-  side: "left" | "right"
-  sidebarRoot: HTMLElement
-  wrapper: HTMLElement
-}
-
-type SidebarResizable = {
-  maxWidth: number
-  minWidth: number
-  onResize?: (width: number) => void
-  shouldAcceptWidth?: (proposal: SidebarWidthProposal) => boolean
-  storageKey: string | null
-}
 
 type SidebarContextProps = {
   state: "expanded" | "collapsed"
@@ -178,64 +154,16 @@ function Sidebar({
   const context = useSidebar()
   const { isMobile, state, openMobile, setOpenMobile } = context
 
-  const options = typeof resizable === "boolean" ? {} : resizable
-  const {
-    maxWidth: optionMaxWidth,
-    minWidth: optionMinWidth,
-    onResize: optionOnResize,
-    shouldAcceptWidth: optionShouldAcceptWidth,
-    storageKey: optionStorageKey,
-  } = options
-  const resizableEnabled = Boolean(resizable)
-  const resolvedResizable = React.useMemo<SidebarResizable | null>(() => {
-    if (isMobile || collapsible === "none" || !resizableEnabled) {
-      return null
-    }
-    return {
-      maxWidth: optionMaxWidth ?? Number.POSITIVE_INFINITY,
-      minWidth: optionMinWidth ?? SIDEBAR_RESIZE_MIN_WIDTH,
-      storageKey: optionStorageKey ?? null,
-      ...(optionOnResize ? { onResize: optionOnResize } : {}),
-      ...(optionShouldAcceptWidth
-        ? { shouldAcceptWidth: optionShouldAcceptWidth }
-        : {}),
-    }
-  }, [
-    collapsible,
+  const { resolvedResizable, widthStyle } = useSidebarResizable({
+    resizable,
     isMobile,
-    optionMaxWidth,
-    optionMinWidth,
-    optionOnResize,
-    optionShouldAcceptWidth,
-    optionStorageKey,
-    resizableEnabled,
-  ])
+    collapsible,
+  })
 
   const instanceContext = React.useMemo<SidebarContextProps>(
     () => ({ ...context, side, resizable: resolvedResizable }),
     [context, side, resolvedResizable]
   )
-
-  const prefs = useSidebarPrefs(resolvedResizable?.storageKey ?? null)
-  const width =
-    resolvedResizable && prefs.width !== null
-      ? clampSidebarWidth(
-          prefs.width,
-          resolvedResizable.minWidth,
-          resolvedResizable.maxWidth
-        )
-      : null
-  const widthStyle =
-    width === null
-      ? undefined
-      : ({ "--sidebar-width": `${width}px` } as React.CSSProperties)
-
-  const restoreReported = React.useRef(false)
-  React.useEffect(() => {
-    if (restoreReported.current || width === null) return
-    restoreReported.current = true
-    resolvedResizable?.onResize?.(width)
-  }, [resolvedResizable, width])
 
   if (collapsible === "none") {
     return (
@@ -355,21 +283,6 @@ function SidebarTrigger({
   )
 }
 
-type SidebarDragState = {
-  moved: boolean
-  pendingWidth: number
-  pointerId: number
-  rafId: number | null
-  rail: HTMLButtonElement
-  side: "left" | "right"
-  sidebarRoot: HTMLElement
-  startWidth: number
-  startX: number
-  transitionTargets: HTMLElement[]
-  width: number
-  wrapper: HTMLElement
-}
-
 function SidebarRail({
   className,
   onClick,
@@ -381,177 +294,35 @@ function SidebarRail({
   ...props
 }: React.ComponentProps<"button">) {
   const { isMobile, open, resizable, side, toggleSidebar } = useSidebar()
-  const dragRef = React.useRef<SidebarDragState | null>(null)
-  const suppressClickRef = React.useRef(false)
-
   const canResize = resizable !== null && open
-
-  const applyPendingWidth = React.useCallback(
-    (drag: SidebarDragState) => {
-      if (!resizable) return
-      const nextWidth = flushPendingSidebarWidth(
-        drag.width,
-        drag.pendingWidth,
-        resizable.minWidth,
-        resizable.maxWidth,
-        (candidate) =>
-          resizable.shouldAcceptWidth?.({
-            currentWidth: drag.width,
-            nextWidth: candidate,
-            rail: drag.rail,
-            side: drag.side,
-            sidebarRoot: drag.sidebarRoot,
-            wrapper: drag.wrapper,
-          }) ?? true
-      )
-      if (nextWidth === drag.width) return
-      drag.sidebarRoot.style.setProperty("--sidebar-width", `${nextWidth}px`)
-      drag.width = nextWidth
-    },
-    [resizable]
-  )
-
-  const endDrag = React.useCallback(
-    (pointerId: number) => {
-      const drag = dragRef.current
-      if (!drag || drag.pointerId !== pointerId) return
-      if (drag.rafId !== null) {
-        window.cancelAnimationFrame(drag.rafId)
-        drag.rafId = null
-      }
-      applyPendingWidth(drag)
-      for (const element of drag.transitionTargets) {
-        element.style.removeProperty("transition-duration")
-      }
-      dragRef.current = null
-      if (resizable?.storageKey) {
-        setSidebarWidth(resizable.storageKey, drag.width)
-      }
-      resizable?.onResize?.(drag.width)
-      if (drag.rail.hasPointerCapture(pointerId)) {
-        drag.rail.releasePointerCapture(pointerId)
-      }
-      document.body.style.removeProperty("cursor")
-      document.body.style.removeProperty("user-select")
-    },
-    [applyPendingWidth, resizable]
-  )
-
-  React.useEffect(() => {
-    return () => {
-      const drag = dragRef.current
-      if (!drag) return
-      if (drag.rafId !== null) {
-        window.cancelAnimationFrame(drag.rafId)
-      }
-      for (const element of drag.transitionTargets) {
-        element.style.removeProperty("transition-duration")
-      }
-      dragRef.current = null
-      document.body.style.removeProperty("cursor")
-      document.body.style.removeProperty("user-select")
-    }
-  }, [])
+  const resize = useSidebarRailResize({ resizable, side, canResize })
 
   const handlePointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
     onPointerDown?.(event)
     if (event.defaultPrevented) return
-    suppressClickRef.current = false
-    if (!canResize || !resizable || event.button !== 0) return
-    const rail = event.currentTarget
-    const wrapper = rail.closest<HTMLElement>("[data-slot='sidebar-wrapper']")
-    const sidebarRoot = rail.closest<HTMLElement>("[data-slot='sidebar']")
-    if (!wrapper || !sidebarRoot) return
-    const container = sidebarRoot.querySelector<HTMLElement>(
-      "[data-slot='sidebar-container']"
-    )
-    if (!container) return
-
-    const initialWidth = clampSidebarWidth(
-      container.getBoundingClientRect().width,
-      resizable.minWidth,
-      resizable.maxWidth
-    )
-    const transitionTargets = [
-      sidebarRoot.querySelector<HTMLElement>("[data-slot='sidebar-gap']"),
-      container,
-    ].filter((element): element is HTMLElement => element !== null)
-    for (const element of transitionTargets) {
-      element.style.setProperty("transition-duration", "0ms")
-    }
-
-    event.preventDefault()
-    event.stopPropagation()
-    dragRef.current = {
-      moved: false,
-      pendingWidth: initialWidth,
-      pointerId: event.pointerId,
-      rafId: null,
-      rail,
-      side,
-      sidebarRoot,
-      startWidth: initialWidth,
-      startX: event.clientX,
-      transitionTargets,
-      width: initialWidth,
-      wrapper,
-    }
-    sidebarRoot.style.setProperty("--sidebar-width", `${initialWidth}px`)
-    rail.setPointerCapture(event.pointerId)
-    document.body.style.cursor = "col-resize"
-    document.body.style.userSelect = "none"
+    resize.beginDrag(event)
   }
 
   const handlePointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
     onPointerMove?.(event)
     if (event.defaultPrevented) return
-    const drag = dragRef.current
-    if (!drag || !resizable || drag.pointerId !== event.pointerId) return
-
-    const delta =
-      drag.side === "right"
-        ? drag.startX - event.clientX
-        : event.clientX - drag.startX
-    if (Math.abs(delta) > 2) {
-      drag.moved = true
-    }
-    drag.pendingWidth = drag.startWidth + delta
-
-    if (drag.rafId !== null) return
-    drag.rafId = window.requestAnimationFrame(() => {
-      const active = dragRef.current
-      if (!active) return
-      active.rafId = null
-      applyPendingWidth(active)
-    })
-  }
-
-  const finishDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
-    const drag = dragRef.current
-    if (!drag || drag.pointerId !== event.pointerId) return
-    suppressClickRef.current = drag.moved
-    endDrag(event.pointerId)
+    resize.moveDrag(event)
   }
 
   const handlePointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
     onPointerUp?.(event)
-    finishDrag(event)
+    resize.finishDrag(event)
   }
 
   const handlePointerCancel = (event: React.PointerEvent<HTMLButtonElement>) => {
     onPointerCancel?.(event)
-    finishDrag(event)
+    resize.finishDrag(event)
   }
 
   const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
     onClick?.(event)
     if (event.defaultPrevented) return
-    if (suppressClickRef.current) {
-      suppressClickRef.current = false
-      event.preventDefault()
-      return
-    }
-    if (canResize) {
+    if (resize.takeSuppressedClick() || canResize) {
       event.preventDefault()
       return
     }
@@ -561,36 +332,7 @@ function SidebarRail({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
     onKeyDown?.(event)
     if (event.defaultPrevented || !canResize || !resizable) return
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return
-    const rail = event.currentTarget
-    const wrapper = rail.closest<HTMLElement>("[data-slot='sidebar-wrapper']")
-    const sidebarRoot = rail.closest<HTMLElement>("[data-slot='sidebar']")
-    const container = sidebarRoot?.querySelector<HTMLElement>(
-      "[data-slot='sidebar-container']"
-    )
-    if (!wrapper || !sidebarRoot || !container) return
-    event.preventDefault()
-    const currentWidth = container.getBoundingClientRect().width
-    const visualDelta = event.key === "ArrowRight" ? 16 : -16
-    const proposedWidth = currentWidth + (side === "right" ? -visualDelta : visualDelta)
-    const width = flushPendingSidebarWidth(
-      currentWidth,
-      proposedWidth,
-      resizable.minWidth,
-      resizable.maxWidth,
-      (candidate) =>
-        resizable.shouldAcceptWidth?.({
-          currentWidth,
-          nextWidth: candidate,
-          rail,
-          side,
-          sidebarRoot,
-          wrapper,
-        }) ?? true
-    )
-    sidebarRoot.style.setProperty("--sidebar-width", `${width}px`)
-    if (resizable.storageKey) setSidebarWidth(resizable.storageKey, width)
-    resizable.onResize?.(width)
+    resizeSidebarByKey(event, resizable, side)
   }
 
   if (isMobile) return null

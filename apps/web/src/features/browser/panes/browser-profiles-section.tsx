@@ -32,6 +32,119 @@ function profileGlyph(profile: BrowserProfile) {
   };
 }
 
+type ProfilesBridge = NonNullable<ReturnType<typeof desktopBrowserProfiles>>;
+
+function ProfileRow({
+  profile,
+  profiles,
+  bridge,
+  busy,
+  error,
+  renaming,
+  onRenaming,
+  onError,
+  act,
+}: {
+  profile: BrowserProfile;
+  profiles: BrowserProfile[];
+  bridge: ProfilesBridge;
+  busy: boolean;
+  error: string | undefined;
+  renaming: boolean;
+  onRenaming: (next: boolean) => void;
+  onError: (message: string) => void;
+  act: (write: () => Promise<{ profiles: BrowserProfile[] }>) => void;
+}) {
+  return (
+
+    <Row
+      {...(error ? { error } : {})}
+      icon={profileGlyph(profile)}
+      label={
+        <span className="flex items-center gap-2">
+          <span className="truncate">{profile.label}</span>
+          {profile.isDefault && profile.label.trim().toLowerCase() !== "default" && <Badge variant="secondary">Default</Badge>}
+          {profile.account && <span className="truncate font-mono text-3xs text-muted-foreground">{profile.account}</span>}
+        </span>
+      }
+      hint={describeProfileUse(profile)}
+      control={
+        <div className="flex items-center gap-1">
+          <ProfileIconPicker
+            profile={profile.label}
+            {...(profile.icon ? { icon: profile.icon } : {})}
+            disabled={busy}
+            onPick={(icon) => act(() => bridge.updateProfile({ profileId: profile.id, icon }))}
+          />
+          <ProfileColorPicker
+            profile={profile.label}
+            {...(profile.color ? { color: profile.color } : {})}
+            disabled={busy}
+            onPick={(color) => act(() => bridge.updateProfile({ profileId: profile.id, color }))}
+          />
+          {!profile.isDefault && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              title="Every project that has not picked a profile browses here from now on. Projects already assigned somewhere are not moved."
+              onClick={() => act(() => bridge.setDefaultProfile(profile.id))}
+            >
+              Make default
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => onRenaming(!renaming)}>
+            {renaming ? "Done" : "Rename"}
+          </Button>
+          {bridge.deleteProfile && (
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={busy || Boolean(whyUndeletable(profile))}
+              {...(whyUndeletable(profile) ? { "aria-describedby": `profile-undeletable-${profile.id}` } : {})}
+              title={whyUndeletable(profile) ?? "Forget this profile. Its cookies stay on disk."}
+              className="text-destructive hover:text-destructive"
+              onClick={() => {
+                if (!window.confirm(confirmProfileDeletion(profile, profiles))) return;
+                act(() => bridge.deleteProfile!(profile.id));
+              }}
+            >
+              Delete
+            </Button>
+          )}
+        </div>
+      }
+    >
+      {bridge.deleteProfile && whyUndeletable(profile) && (
+        <p id={`profile-undeletable-${profile.id}`} className="mt-1 text-xs leading-snug text-muted-foreground/80">
+          {whyUndeletable(profile)}
+        </p>
+      )}
+      {renaming && (
+        <form
+          className="mt-2 flex items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const label = String(new FormData(event.currentTarget).get("label") ?? "");
+            const problem = profileNameProblem(label, profiles, profile.id);
+            if (problem) {
+              onError(problem);
+              return;
+            }
+            onRenaming(false);
+            act(() => bridge.updateProfile({ profileId: profile.id, label: label.trim() }));
+          }}
+        >
+          <Input name="label" defaultValue={profile.label} aria-label={`Rename ${profile.label}`} className="h-8 max-w-56" />
+          <Button type="submit" size="sm" variant="secondary">
+            Save
+          </Button>
+        </form>
+      )}
+    </Row>
+  );
+}
+
 export function BrowserProfilesSection() {
   const [profiles, setProfiles] = useState<BrowserProfile[]>();
   const [error, setError] = useState<{ message: string; at?: string }>();
@@ -98,92 +211,18 @@ export function BrowserProfilesSection() {
         )}
         {profiles === undefined && !error && <Spinner className="size-4" />}
         {profiles?.map((profile) => (
-          <Row
+          <ProfileRow
             key={profile.id}
-            {...(error?.at === profile.id ? { error: error.message } : {})}
-            icon={profileGlyph(profile)}
-            label={
-              <span className="flex items-center gap-2">
-                <span className="truncate">{profile.label}</span>
-                {profile.isDefault && profile.label.trim().toLowerCase() !== "default" && <Badge variant="secondary">Default</Badge>}
-                {profile.account && <span className="truncate font-mono text-3xs text-muted-foreground">{profile.account}</span>}
-              </span>
-            }
-            hint={describeProfileUse(profile)}
-            control={
-              <div className="flex items-center gap-1">
-                <ProfileIconPicker
-                  profile={profile.label}
-                  {...(profile.icon ? { icon: profile.icon } : {})}
-                  disabled={busy === profile.id}
-                  onPick={(icon) => void act(profile.id, () => bridge.updateProfile({ profileId: profile.id, icon }))}
-                />
-                <ProfileColorPicker
-                  profile={profile.label}
-                  {...(profile.color ? { color: profile.color } : {})}
-                  disabled={busy === profile.id}
-                  onPick={(color) => void act(profile.id, () => bridge.updateProfile({ profileId: profile.id, color }))}
-                />
-                {!profile.isDefault && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy === profile.id}
-                    title="Every project that has not picked a profile browses here from now on. Projects already assigned somewhere are not moved."
-                    onClick={() => void act(profile.id, () => bridge.setDefaultProfile(profile.id))}
-                  >
-                    Make default
-                  </Button>
-                )}
-                <Button size="sm" variant="ghost" onClick={() => setRenaming(renaming === profile.id ? undefined : profile.id)}>
-                  {renaming === profile.id ? "Done" : "Rename"}
-                </Button>
-                {bridge.deleteProfile && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={busy === profile.id || Boolean(whyUndeletable(profile))}
-                    {...(whyUndeletable(profile) ? { "aria-describedby": `profile-undeletable-${profile.id}` } : {})}
-                    title={whyUndeletable(profile) ?? "Forget this profile. Its cookies stay on disk."}
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => {
-                      if (!window.confirm(confirmProfileDeletion(profile, profiles ?? []))) return;
-                      void act(profile.id, () => bridge.deleteProfile!(profile.id));
-                    }}
-                  >
-                    Delete
-                  </Button>
-                )}
-              </div>
-            }
-          >
-            {bridge.deleteProfile && whyUndeletable(profile) && (
-              <p id={`profile-undeletable-${profile.id}`} className="mt-1 text-xs leading-snug text-muted-foreground/80">
-                {whyUndeletable(profile)}
-              </p>
-            )}
-            {renaming === profile.id && (
-              <form
-                className="mt-2 flex items-center gap-2"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  const label = String(new FormData(event.currentTarget).get("label") ?? "");
-                  const problem = profileNameProblem(label, profiles ?? [], profile.id);
-                  if (problem) {
-                    setError({ message: problem, at: profile.id });
-                    return;
-                  }
-                  setRenaming(undefined);
-                  void act(profile.id, () => bridge.updateProfile({ profileId: profile.id, label: label.trim() }));
-                }}
-              >
-                <Input name="label" defaultValue={profile.label} aria-label={`Rename ${profile.label}`} className="h-8 max-w-56" />
-                <Button type="submit" size="sm" variant="secondary">
-                  Save
-                </Button>
-              </form>
-            )}
-          </Row>
+            profile={profile}
+            profiles={profiles}
+            bridge={bridge}
+            busy={busy === profile.id}
+            error={error?.at === profile.id ? error.message : undefined}
+            renaming={renaming === profile.id}
+            onRenaming={(next) => setRenaming(next ? profile.id : undefined)}
+            onError={(message) => setError({ message, at: profile.id })}
+            act={(write) => void act(profile.id, write)}
+          />
         ))}
       </SettingsGroup>
       <SitePermissionsGroup />

@@ -8,7 +8,7 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
-import { publishableEnv } from "./provider-instance-card";
+import { publishableEnv } from "./provider-instance-fields";
 
 test("a fresh empty row is not a change", () => {
   expect(publishableEnv([{ name: "", value: "", sensitive: false }])).toEqual([]);

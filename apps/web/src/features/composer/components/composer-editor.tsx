@@ -3,7 +3,7 @@
 // The draft is a string and chips are a drawing of it: serialize() returns exactly what will be sent.
 // React owns nothing inside the editable; paint() fills it, and typing never repaints, so the caret and undo survive.
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState, type ForwardedRef, type RefObject } from "react";
 import { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "../chip";
 import { replaceTextRange, segmentDraft } from "../tokens";
 import { insertReference, type TelarReference } from "../drag-reference";
@@ -399,107 +399,55 @@ export type ComposerEditorHandle = {
   insertAtCaret: (text: string) => string;
 };
 
-export const ComposerEditor = forwardRef<
-  ComposerEditorHandle,
-  {
-    value: string;
-    onChange: (value: string) => void;
-    /** Fires BEFORE this component's own handling, and a handler that calls
-     *  `preventDefault` keeps the key. That is how the parent claims Enter. */
-    onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
-    /** The caret moved without the text changing — arrow keys, a click. The
-     *  completion menu needs it, because moving out of a `@word` closes it. */
-    onSelectionChange?: () => void;
-    /** Pasted files become attachments, exactly as they did in the textarea. */
-    onPasteFiles?: (files: File[]) => void;
-    /** The caret entered this box. The composer registry's "most recently
-     *  focused" is this event and nothing else — see lib/composer-registry.ts. */
-    onFocus?: () => void;
-    onBlur?: () => void;
-    placeholder?: string;
-    disabled?: boolean;
-    id?: string;
-    /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Stable for
-     *  external clients, beside `data-slot`. */
-    "data-composer"?: "session";
-    /** One line tall — the composer's reading-back shape. A class swap on the
-     *  same node, so the caret and the undo stack survive the change. */
-    compact?: boolean;
-    className?: string;
-  }
->(function ComposerEditor(
-  { value, onChange, onKeyDown, onSelectionChange, onPasteFiles, onFocus, onBlur, placeholder, disabled, id, "data-composer": dataComposer, compact, className },
-  ref,
+type Run = { start: number; end: number };
+
+function useDraftSync(
+  value: string,
+  root: RefObject<HTMLDivElement | null>,
+  paintedRef: RefObject<string>,
+  interimRef: RefObject<Run | null>,
+  setEmpty: (empty: boolean) => void,
 ) {
-  const root = useRef<HTMLDivElement>(null);
-  /** The text the DOM currently shows. The guard that stops our own echo from
-   *  repainting the box mid-keystroke. */
-  const painted = useRef("");
   const mounted = useRef(false);
-  const [empty, setEmpty] = useState(true);
-  /**
-   * THE RUN STILL BEING REVISED (#561). A ref rather than state for the reason
-   * everything else in this file is imperative: it is a property of the DRAWING,
-   * every paint already reads it, and a state update per interim frame would
-   * re-render the composer several times a second.
-   */
-  const interim = useRef<{ start: number; end: number }>(null);
-  /** Whether the microphone is open, which is what tints the caret. State, not
-   *  a ref: it changes twice per dictation and it is a class on the element
-   *  React does own. */
-  const [listening, setListening] = useState(false);
-
-  const commit = useCallback(
-    (text: string) => {
-      painted.current = text;
-      setEmpty(text.length === 0);
-      onChange(text);
-    },
-    [onChange],
-  );
-
-  /** Repaint, report, and put the caret where the gesture left it. */
-  const rewrite = useCallback(
-    (text: string, caret: number) => {
-      const box = root.current;
-      if (!box) return;
-      paint(box, text, interim.current ?? undefined);
-      commit(text);
-      box.focus();
-      placeCaret(box, caret);
-      revealCaret(box);
-    },
-    [commit],
-  );
-
   useEffect(() => {
     const box = root.current;
     if (!box) return;
     if (!mounted.current) {
       mounted.current = true;
-      paint(box, value, interim.current ?? undefined);
-      painted.current = value;
+      paint(box, value, interimRef.current ?? undefined);
+      paintedRef.current = value;
       setEmpty(value.length === 0);
       return;
     }
-    if (value === painted.current) return;
-    // The parent replaced the whole draft — cleared after a send, or recalled a
-    // queued line. A replacement puts the caret at the end; an edit would have
-    // come through `onInput` and never reached here.
-    //
-    // AND IT DROPS THE INTERIM RUN. Offsets into a draft that has been replaced
-    // wholesale describe nothing, and a dimmed span left over one would grey
-    // out whatever text now happens to sit at those numbers — the dictation
-    // writer drops its own span on the same evidence (see `interim.ts`).
-    interim.current = null;
+    if (value === paintedRef.current) return;
+    // The parent replaced the whole draft: the caret goes to the end, and the
+    // interim run is dropped because its offsets no longer describe this text.
+    interimRef.current = null;
     paint(box, value);
-    painted.current = value;
+    paintedRef.current = value;
     setEmpty(value.length === 0);
     if (document.activeElement !== box) return;
     placeCaret(box, value.length);
     revealCaret(box);
-  }, [value]);
+  }, [value, root, paintedRef, interimRef, setEmpty]);
+}
 
+function useEditorHandle(
+  ref: ForwardedRef<ComposerEditorHandle>,
+  {
+    root,
+    painted,
+    interim,
+    setListening,
+    rewrite,
+  }: {
+    root: RefObject<HTMLDivElement | null>;
+    painted: RefObject<string>;
+    interim: RefObject<Run | null>;
+    setListening: (listening: boolean) => void;
+    rewrite: (text: string, caret: number) => void;
+  },
+) {
   useImperativeHandle(
     ref,
     () => ({
@@ -547,8 +495,99 @@ export const ComposerEditor = forwardRef<
         return next.draft;
       },
     }),
-    [rewrite],
+    [root, painted, interim, setListening, rewrite],
   );
+}
+
+function EditorPlaceholder({ text, compact }: { text: string; compact: boolean | undefined }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "pointer-events-none absolute left-3 select-none text-[0.9375rem] leading-6 text-muted-foreground",
+        compact ? "top-2.5 right-3 truncate" : "top-3",
+      )}
+    >
+      {text}
+    </span>
+  );
+}
+
+export const ComposerEditor = forwardRef<
+  ComposerEditorHandle,
+  {
+    value: string;
+    onChange: (value: string) => void;
+    /** Fires BEFORE this component's own handling, and a handler that calls
+     *  `preventDefault` keeps the key. That is how the parent claims Enter. */
+    onKeyDown?: (event: React.KeyboardEvent<HTMLDivElement>) => void;
+    /** The caret moved without the text changing — arrow keys, a click. The
+     *  completion menu needs it, because moving out of a `@word` closes it. */
+    onSelectionChange?: () => void;
+    /** Pasted files become attachments, exactly as they did in the textarea. */
+    onPasteFiles?: (files: File[]) => void;
+    /** The caret entered this box. The composer registry's "most recently
+     *  focused" is this event and nothing else — see lib/composer-registry.ts. */
+    onFocus?: () => void;
+    onBlur?: () => void;
+    placeholder?: string;
+    disabled?: boolean;
+    id?: string;
+    /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Stable for
+     *  external clients, beside `data-slot`. */
+    "data-composer"?: "session";
+    /** One line tall — the composer's reading-back shape. A class swap on the
+     *  same node, so the caret and the undo stack survive the change. */
+    compact?: boolean;
+    className?: string;
+  }
+>(function ComposerEditor(
+  { value, onChange, onKeyDown, onSelectionChange, onPasteFiles, onFocus, onBlur, placeholder, disabled, id, "data-composer": dataComposer, compact, className },
+  ref,
+) {
+  const root = useRef<HTMLDivElement>(null);
+  /** The text the DOM currently shows. The guard that stops our own echo from
+   *  repainting the box mid-keystroke. */
+  const painted = useRef("");
+  const [empty, setEmpty] = useState(true);
+  /**
+   * THE RUN STILL BEING REVISED (#561). A ref rather than state for the reason
+   * everything else in this file is imperative: it is a property of the DRAWING,
+   * every paint already reads it, and a state update per interim frame would
+   * re-render the composer several times a second.
+   */
+  const interim = useRef<{ start: number; end: number }>(null);
+  /** Whether the microphone is open, which is what tints the caret. State, not
+   *  a ref: it changes twice per dictation and it is a class on the element
+   *  React does own. */
+  const [listening, setListening] = useState(false);
+
+  const commit = useCallback(
+    (text: string) => {
+      painted.current = text;
+      setEmpty(text.length === 0);
+      onChange(text);
+    },
+    [onChange],
+  );
+
+  /** Repaint, report, and put the caret where the gesture left it. */
+  const rewrite = useCallback(
+    (text: string, caret: number) => {
+      const box = root.current;
+      if (!box) return;
+      paint(box, text, interim.current ?? undefined);
+      commit(text);
+      box.focus();
+      placeCaret(box, caret);
+      revealCaret(box);
+    },
+    [commit],
+  );
+
+  useDraftSync(value, root, painted, interim, setEmpty);
+
+  useEditorHandle(ref, { root, painted, interim, setListening, rewrite });
 
   return (
     <div className={cn("relative w-full", className)}>
@@ -638,17 +677,7 @@ export const ComposerEditor = forwardRef<
           rewrite(next.text, next.cursor);
         }}
       />
-      {empty && placeholder ? (
-        <span
-          aria-hidden
-          className={cn(
-            "pointer-events-none absolute left-3 select-none text-[0.9375rem] leading-6 text-muted-foreground",
-            compact ? "top-2.5 right-3 truncate" : "top-3",
-          )}
-        >
-          {placeholder}
-        </span>
-      ) : null}
+      {empty && placeholder ? <EditorPlaceholder text={placeholder} compact={compact} /> : null}
     </div>
   );
 });

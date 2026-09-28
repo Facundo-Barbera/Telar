@@ -116,76 +116,111 @@ export function ComposerQuestionDrawer({
           <div className="px-3">
             <p className="text-sm leading-snug">{field.label}</p>
             <div className="mt-2 flex flex-col gap-1">
-              {field.choices.map((choice, at) => {
-                const selected = (draft.selected[field.key] ?? []).includes(choice);
-                const digit = at < 9 && (
-                  <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-3xs text-muted-foreground">{at + 1}</kbd>
-                );
-                return (
-                  <button
-                    key={choice}
-                    type="button"
-                    disabled={sending}
-                    // A multi row is a toggle and says so; a single row picks
-                    // one of a set, which `aria-pressed` would misdescribe.
-                    {...(field.multiple ? { "aria-pressed": selected } : {})}
-                    onClick={() => pick(choice)}
-                    className={cn(
-                      "flex items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                      selected ? "border-warning/60 bg-warning/10" : "border-border/60 hover:bg-muted/60",
-                    )}
-                  >
-                    {/* The box leads on a multi, and is drawn EMPTY as well as
-                        filled: the affordance has to be legible before the
-                        first pick, which a mark that only appears once
-                        something is chosen never is. */}
-                    {field.multiple &&
-                      (selected ? (
-                        <SquareCheckIcon className="size-3.5 shrink-0 text-warning" />
-                      ) : (
-                        <SquareIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                      ))}
-                    <span className="min-w-0 flex-1 truncate">{choice}</span>
-                    {field.multiple ? digit : selected ? <CheckIcon className="size-3.5 shrink-0 text-warning" /> : digit}
-                  </button>
-                );
-              })}
+              {field.choices.map((choice, at) => (
+                <QuestionChoice
+                  key={choice}
+                  choice={choice}
+                  at={at}
+                  multiple={Boolean(field.multiple)}
+                  selected={(draft.selected[field.key] ?? []).includes(choice)}
+                  sending={sending}
+                  onPick={() => pick(choice)}
+                />
+              ))}
             </div>
-            <div className="mt-2 flex items-center gap-2">
-              {draft.index > 0 && (
-                <button
-                  type="button"
-                  onClick={() => onDraft(back(draft))}
-                  className="rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  Previous
-                </button>
-              )}
-              {/* ON A MULTI THE HINT KEEPS SAYING "Pick any" AFTER THE FIRST
-                  PICK. Without auto-advance the only thing telling the human
-                  more are allowed is this line, and swapping it for a bare
-                  "Enter continues" the moment one lands would read as "that
-                  was the answer" — the exact misreading the checkbox is there
-                  to prevent. */}
-              <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
-                {canAdvance(fields, draft)
-                  ? `${field.multiple ? "Pick any, " : ""}${isLastQuestion(fields, draft) ? "Enter submits" : "Enter continues"}`
-                  : field.multiple
-                    ? "Pick any, or type your own"
-                    : "Pick one, or type your own"}
-              </span>
-              <button
-                type="button"
-                disabled={sending}
-                onClick={onCancelTurn}
-                className="shrink-0 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                Cancel the turn
-              </button>
-            </div>
+            <QuestionFooter fields={fields} draft={draft} field={field} sending={sending} onDraft={onDraft} onCancelTurn={onCancelTurn} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function QuestionChoice({
+  choice,
+  at,
+  multiple,
+  selected,
+  sending,
+  onPick,
+}: {
+  choice: string;
+  at: number;
+  multiple: boolean;
+  selected: boolean;
+  sending: boolean;
+  onPick: () => void;
+}) {
+  const digit = at < 9 && <kbd className="shrink-0 rounded border border-border/60 px-1 font-mono text-3xs text-muted-foreground">{at + 1}</kbd>;
+  return (
+    <button
+      type="button"
+      disabled={sending}
+      // A multi row is a toggle and says so; a single row picks
+      // one of a set, which `aria-pressed` would misdescribe.
+      {...(multiple ? { "aria-pressed": selected } : {})}
+      onClick={onPick}
+      className={cn(
+        "flex items-center gap-2.5 rounded-lg border px-2.5 py-1.5 text-left text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        selected ? "border-warning/60 bg-warning/10" : "border-border/60 hover:bg-muted/60",
+      )}
+    >
+      {/* A multi's box is drawn empty as well as filled, so the affordance is legible before the first pick. */}
+      {multiple &&
+        (selected ? (
+          <SquareCheckIcon className="size-3.5 shrink-0 text-warning" />
+        ) : (
+          <SquareIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        ))}
+      <span className="min-w-0 flex-1 truncate">{choice}</span>
+      {multiple ? digit : selected ? <CheckIcon className="size-3.5 shrink-0 text-warning" /> : digit}
+    </button>
+  );
+}
+
+function QuestionFooter({
+  fields,
+  draft,
+  field,
+  sending,
+  onDraft,
+  onCancelTurn,
+}: {
+  fields: QuestionField[];
+  draft: QuestionDraft;
+  field: QuestionField;
+  sending: boolean;
+  onDraft: (next: QuestionDraft) => void;
+  onCancelTurn: () => void;
+}) {
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      {draft.index > 0 && (
+        <button
+          type="button"
+          onClick={() => onDraft(back(draft))}
+          className="rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Previous
+        </button>
+      )}
+      {/* On a multi the hint keeps saying "Pick any" after the first pick: it
+          is the only thing telling the human more are allowed. */}
+      <span className="min-w-0 flex-1 truncate text-2xs text-muted-foreground">
+        {canAdvance(fields, draft)
+          ? `${field.multiple ? "Pick any, " : ""}${isLastQuestion(fields, draft) ? "Enter submits" : "Enter continues"}`
+          : field.multiple
+            ? "Pick any, or type your own"
+            : "Pick one, or type your own"}
+      </span>
+      <button
+        type="button"
+        disabled={sending}
+        onClick={onCancelTurn}
+        className="shrink-0 rounded-md px-1.5 py-0.5 text-2xs text-muted-foreground transition-colors outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Cancel the turn
+      </button>
     </div>
   );
 }

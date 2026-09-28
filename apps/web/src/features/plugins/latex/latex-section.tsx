@@ -122,10 +122,6 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
     }
   };
 
-  const currentPath = config?.toolchain?.path;
-  const tectonic = data?.toolchain.tectonic;
-  const texlive = data?.toolchain.texlive ?? [];
-  const currentTexlive = texlive.find((dist) => dist.binDir === currentPath);
   const askAgentToSetUp = () => {
     writeDraft(
       undefined,
@@ -186,70 +182,126 @@ export function LatexSection({ project, onChange }: { project: Project; onChange
         )}
       </SettingsGroup>
 
-      <SettingsGroup
-        title="Distributions"
-        description="What compiles this project."
-        action={
-          <Button variant="ghost" size="sm" disabled={loading} onClick={() => void refresh()}>
-            <RefreshCwIcon className={cn("size-3", loading && "animate-spin")} /> Detect again
-          </Button>
-        }
-      >
-        <div className="flex flex-col gap-2 py-3">
-          {!data && loading && <span className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" /> Probing TeX programs…</span>}
-          {data && (
-            <DistributionCard
-              name={inheritedDistribution(machine, data.toolchain)}
-              detail="This Mac's default, set on the Plugins pane."
-              inUse={enabled && !config?.toolchain}
-              saving={saving}
-              onUse={() => void save({ enabled: true, ...(config?.mainFile ? { mainFile: config.mainFile } : {}) })}
-            />
-          )}
-          {data && (
-            <DistributionCard
-              name="Tectonic"
-              detail={tectonic ? `${tectonic.path} — packages download automatically on first use` : "A single self-contained engine. Packages download automatically — no tlmgr, no 5 GB install."}
-              version={tectonic?.version}
-              inUse={enabled && config?.toolchain?.kind === "tectonic"}
-              saving={saving}
-              onUse={tectonic ? () => use({ kind: "tectonic", path: tectonic.path }) : undefined}
-              onInstall={tectonic ? undefined : () => void bootstrap("tectonic")}
-            />
-          )}
-          {texlive.map((dist) => (
-            <DistributionCard
-              key={dist.binDir}
-              name={`${FLAVOUR_LABEL[dist.flavour]}${dist.year ? ` ${dist.year}` : ""}`}
-              detail={`${dist.binDir} — ${(["pdflatex", "lualatex", "xelatex"] as const).filter((engine) => dist[engine]).join(", ") || "no engines found"}${dist.tlmgr ? ", tlmgr" : ", no tlmgr"}`}
-              version={dist.latexmk ? `latexmk ${dist.latexmk.version}` : undefined}
-              inUse={enabled && config?.toolchain?.kind === "texlive" && config.toolchain.path === dist.binDir}
-              saving={saving}
-              onUse={() => use({ kind: "texlive", path: dist.binDir })}
-            />
-          ))}
-          {data && !data.toolchain.texlive.some((dist) => dist.flavour === "tinytex") && (
-            <DistributionCard
-              name="TinyTeX"
-              detail="A ~150 MB user-owned TeX Live with a writable tlmgr — the managed choice when Tectonic's engine is not enough."
-              saving={saving}
-              onInstall={() => void bootstrap("tinytex")}
-            />
-          )}
-        </div>
-      </SettingsGroup>
+      <DistributionsGroup
+        data={data}
+        loading={loading}
+        machine={machine}
+        config={config}
+        saving={saving}
+        onRefresh={() => void refresh()}
+        onSave={(next) => void save(next)}
+        onUse={use}
+        onBootstrap={(what) => void bootstrap(what)}
+      />
 
       {job && <JobLog className="mb-7" handle={job} io={LATEX_IO} onDone={() => void refresh()} onDismiss={() => setJob(undefined)} />}
 
       {enabled && config?.toolchain && (
-        <SettingsGroup
-          title="TeX packages"
-          description={config.toolchain.kind === "tectonic" ? "Tectonic fetches packages automatically the first time a document uses them." : `What tlmgr manages in ${currentTexlive ? FLAVOUR_LABEL[currentTexlive.flavour] : "the configured TeX Live"}.`}
-        >
-          {config.toolchain.kind === "texlive" && <TexPackagesPanel projectId={project.id} onJob={setJob} />}
-        </SettingsGroup>
+        <TexPackagesGroup projectId={project.id} toolchain={config.toolchain} data={data} onJob={setJob} />
       )}
     </>
+  );
+}
+
+function TexPackagesGroup({
+  projectId,
+  toolchain,
+  data,
+  onJob,
+}: {
+  projectId: string;
+  toolchain: NonNullable<LatexConfig["toolchain"]>;
+  data: LatexDistributions | undefined;
+  onJob: (handle: JobHandle) => void;
+}) {
+  const currentTexlive = data?.toolchain.texlive.find((dist) => dist.binDir === toolchain.path);
+  return (
+    <SettingsGroup
+      title="TeX packages"
+      description={toolchain.kind === "tectonic" ? "Tectonic fetches packages automatically the first time a document uses them." : `What tlmgr manages in ${currentTexlive ? FLAVOUR_LABEL[currentTexlive.flavour] : "the configured TeX Live"}.`}
+    >
+      {toolchain.kind === "texlive" && <TexPackagesPanel projectId={projectId} onJob={onJob} />}
+    </SettingsGroup>
+  );
+}
+
+function DistributionsGroup({
+  data,
+  loading,
+  machine,
+  config,
+  saving,
+  onRefresh,
+  onSave,
+  onUse,
+  onBootstrap,
+}: {
+  data: LatexDistributions | undefined;
+  loading: boolean;
+  machine: ProjectPlugins | undefined;
+  config: LatexConfig | undefined;
+  saving: boolean;
+  onRefresh: () => void;
+  onSave: (next: LatexConfig) => void;
+  onUse: (choice: LatexToolchainChoice) => void;
+  onBootstrap: (what: "tectonic" | "tinytex") => void;
+}) {
+  const enabled = config?.enabled === true;
+  const tectonic = data?.toolchain.tectonic;
+  const texlive = data?.toolchain.texlive ?? [];
+  return (
+    <SettingsGroup
+      title="Distributions"
+      description="What compiles this project."
+      action={
+        <Button variant="ghost" size="sm" disabled={loading} onClick={onRefresh}>
+          <RefreshCwIcon className={cn("size-3", loading && "animate-spin")} /> Detect again
+        </Button>
+      }
+    >
+      <div className="flex flex-col gap-2 py-3">
+        {!data && loading && <span className="flex items-center gap-2 text-xs text-muted-foreground"><Spinner className="size-3" /> Probing TeX programs…</span>}
+        {data && (
+          <DistributionCard
+            name={inheritedDistribution(machine, data.toolchain)}
+            detail="This Mac's default, set on the Plugins pane."
+            inUse={enabled && !config?.toolchain}
+            saving={saving}
+            onUse={() => onSave({ enabled: true, ...(config?.mainFile ? { mainFile: config.mainFile } : {}) })}
+          />
+        )}
+        {data && (
+          <DistributionCard
+            name="Tectonic"
+            detail={tectonic ? `${tectonic.path} — packages download automatically on first use` : "A single self-contained engine. Packages download automatically — no tlmgr, no 5 GB install."}
+            version={tectonic?.version}
+            inUse={enabled && config?.toolchain?.kind === "tectonic"}
+            saving={saving}
+            onUse={tectonic ? () => onUse({ kind: "tectonic", path: tectonic.path }) : undefined}
+            onInstall={tectonic ? undefined : () => onBootstrap("tectonic")}
+          />
+        )}
+        {texlive.map((dist) => (
+          <DistributionCard
+            key={dist.binDir}
+            name={`${FLAVOUR_LABEL[dist.flavour]}${dist.year ? ` ${dist.year}` : ""}`}
+            detail={`${dist.binDir} — ${(["pdflatex", "lualatex", "xelatex"] as const).filter((engine) => dist[engine]).join(", ") || "no engines found"}${dist.tlmgr ? ", tlmgr" : ", no tlmgr"}`}
+            version={dist.latexmk ? `latexmk ${dist.latexmk.version}` : undefined}
+            inUse={enabled && config?.toolchain?.kind === "texlive" && config.toolchain.path === dist.binDir}
+            saving={saving}
+            onUse={() => onUse({ kind: "texlive", path: dist.binDir })}
+          />
+        ))}
+        {data && !data.toolchain.texlive.some((dist) => dist.flavour === "tinytex") && (
+          <DistributionCard
+            name="TinyTeX"
+            detail="A ~150 MB user-owned TeX Live with a writable tlmgr — the managed choice when Tectonic's engine is not enough."
+            saving={saving}
+            onInstall={() => onBootstrap("tinytex")}
+          />
+        )}
+      </div>
+    </SettingsGroup>
   );
 }
 

@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
-import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderUpdateRun } from "@telar/engine-client";
+import type { ProviderDriverKind } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { cn } from "@/ui/utils";
-import { displayNameOf, DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, sortInstances, suggestInstanceId } from "../provider-instances";
+import { DRIVER_LABEL, DRIVERS, isDefaultInstance, isValidInstanceId, signInCommand, suggestInstanceId } from "../provider-instances";
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
 import { Input } from "@/ui/input";
@@ -19,7 +19,8 @@ import {
   DialogTitle,
 } from "@/ui/dialog";
 import { ProviderIcon } from "./provider-icon";
-import { ProviderInstanceCard, type InstancePatch } from "./provider-instance-card";
+import { ProviderInstanceCard } from "./provider-instance-card";
+import { binaryKey, useProviderInstances, type UpdateReport } from "../hooks/use-provider-instances";
 import { announceProviderInstancesChanged } from "../provider-instance-cache";
 import { Row, SettingsGroup } from "@/features/settings";
 
@@ -163,106 +164,34 @@ function AddInstanceDialog({
   );
 }
 
+
+function UpdateReportCard({ report }: { report: UpdateReport }) {
+  return (
+    <div className="mb-6 space-y-1.5 rounded-lg border border-border/70 bg-muted/20 p-3">
+      <div className="flex items-center gap-2">
+        <span className={cn("size-2 shrink-0 rounded-full", report.run?.ok ? "bg-success" : "bg-destructive")} />
+        <span className="text-xs font-medium text-foreground">
+          {report.label} — {report.error ?? report.run?.message}
+        </span>
+      </div>
+      {report.run && <code className="block truncate font-mono text-2xs text-muted-foreground">{report.run.command}</code>}
+      {report.run?.output && (
+        <details className="text-2xs text-muted-foreground">
+          <summary className="cursor-pointer select-none text-muted-foreground/80 hover:text-foreground">Installer output</summary>
+          <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-3xs leading-snug">
+            {report.run.output}
+          </pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export function ProvidersSection() {
-  const [instances, setInstances] = useState<ProviderInstance[]>();
-  const [probes, setProbes] = useState<ProviderProbe[]>([]);
-  const [unreachable, setUnreachable] = useState(false);
+  const providers = useProviderInstances();
+  const { instances, probes, inheritance, updating, errors, rechecking, updateReport, setInherited } = providers;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
-  const [errors, setErrors] = useState<Record<string, string | null>>({});
   const [adding, setAdding] = useState(false);
-  const [rechecking, setRechecking] = useState(false);
-  const [inheritance, setInheritance] = useState<Record<string, string[] | undefined>>({});
-  const [updating, setUpdating] = useState<string | null>(null);
-  const [updateReport, setUpdateReport] = useState<{ label: string; run?: ProviderUpdateRun; error?: string } | null>(null);
-
-  const binaryKey = (instance: ProviderInstance): string => `${instance.driver} ${instance.binaryPath ?? ""}`;
-
-  const load = useCallback(async (refresh = false) => {
-    try {
-      const answer = await api.providerInstances(refresh ? { refresh: true } : {});
-      setInstances(sortInstances(answer.providerInstances));
-      setProbes(answer.probes);
-      setUnreachable(false);
-    } catch {
-      setUnreachable(true);
-    }
-  }, []);
-
-  useEffect(() => {
-    const task = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(task);
-  }, [load]);
-
-  const patch = async (instance: ProviderInstance, next: InstancePatch) => {
-    setErrors((current) => ({ ...current, [instance.id]: null }));
-    try {
-      const answer = await api.saveProviderInstance({ id: instance.id, ...next });
-      if (answer.stoppedInheriting?.length) {
-        setInheritance((current) => ({ ...current, [instance.id]: answer.stoppedInheriting }));
-      }
-    } catch (cause) {
-      setErrors((current) => ({
-        ...current,
-        [instance.id]: cause instanceof EngineApiError ? cause.message : "That change was not saved.",
-      }));
-    }
-    await load();
-    announceProviderInstancesChanged();
-  };
-
-  const carryOver = async (instance: ProviderInstance, names: readonly string[]) => {
-    setErrors((current) => ({ ...current, [instance.id]: null }));
-    try {
-      await api.saveProviderInstance({ id: instance.id, carryOverInherited: [...names] });
-      setInheritance((current) => ({ ...current, [instance.id]: undefined }));
-    } catch (cause) {
-      setErrors((current) => ({
-        ...current,
-        [instance.id]: cause instanceof EngineApiError ? cause.message : "Those variables could not be carried over.",
-      }));
-    }
-    await load();
-    announceProviderInstancesChanged();
-  };
-
-  const remove = async (instance: ProviderInstance) => {
-    if (!window.confirm(`Remove "${instance.displayName || instance.id}"? Its login on disk is left untouched, and sessions fall back to the built-in slot.`)) return;
-    try {
-      await api.removeProviderInstance(instance.id);
-    } catch (cause) {
-      setErrors((current) => ({
-        ...current,
-        [instance.id]: cause instanceof EngineApiError ? cause.message : "That login could not be removed.",
-      }));
-    }
-    await load();
-    announceProviderInstancesChanged();
-  };
-
-  const recheck = async () => {
-    setRechecking(true);
-    await load(true);
-    setRechecking(false);
-  };
-
-  const runUpdate = async (instance: ProviderInstance) => {
-    const label = displayNameOf(instance);
-    setUpdating(binaryKey(instance));
-    setUpdateReport(null);
-    try {
-      const answer = await api.updateProviderCli(instance.id);
-      setInstances(sortInstances(answer.providerInstances));
-      setProbes(answer.probes);
-      setUpdateReport({ label, run: answer.result });
-    } catch (cause) {
-      setUpdateReport({
-        label,
-        error: cause instanceof EngineApiError ? cause.message : "That update could not be run.",
-      });
-    } finally {
-      setUpdating(null);
-    }
-  };
 
   const probeFor = (id: string) => probes.find((probe) => probe.instanceId === id);
   const missing = probes.filter((probe) => !probe.installed);
@@ -270,7 +199,7 @@ export function ProvidersSection() {
   return (
     <>
       <SettingsGroup title="Logins" description="Each row is one configured login.">
-        {unreachable ? (
+        {providers.unreachable ? (
           <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
         ) : instances === undefined ? (
           <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
@@ -283,18 +212,18 @@ export function ProvidersSection() {
               signInCommand={signInCommand(instance)}
               expanded={Boolean(expanded[instance.id])}
               onExpandedChange={(next) => setExpanded((current) => ({ ...current, [instance.id]: next }))}
-              onPatch={(next) => void patch(instance, next)}
+              onPatch={(next) => void providers.patch(instance, next)}
               {...(inheritance[instance.id]?.length
                 ? {
                     inheritance: {
                       names: inheritance[instance.id]!,
-                      onCarryOver: () => void carryOver(instance, inheritance[instance.id]!),
-                      onDismiss: () => setInheritance((current) => ({ ...current, [instance.id]: undefined })),
+                      onCarryOver: () => void providers.carryOver(instance, inheritance[instance.id]!),
+                      onDismiss: () => setInherited(instance.id, undefined),
                     },
                   }
                 : {})}
-              {...(isDefaultInstance(instance) ? {} : { onRemove: () => void remove(instance) })}
-              onUpdateCli={() => void runUpdate(instance)}
+              {...(isDefaultInstance(instance) ? {} : { onRemove: () => void providers.remove(instance) })}
+              onUpdateCli={() => void providers.runUpdate(instance)}
               updating={updating === binaryKey(instance)}
               error={errors[instance.id] ?? null}
             />
@@ -307,31 +236,13 @@ export function ProvidersSection() {
           <PlusIcon />
           Add a login
         </Button>
-        <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void recheck()}>
+        <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
           <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
           Re-check
         </Button>
       </div>
 
-      {updateReport && (
-        <div className="mb-6 space-y-1.5 rounded-lg border border-border/70 bg-muted/20 p-3">
-          <div className="flex items-center gap-2">
-            <span className={cn("size-2 shrink-0 rounded-full", updateReport.run?.ok ? "bg-success" : "bg-destructive")} />
-            <span className="text-xs font-medium text-foreground">
-              {updateReport.label} — {updateReport.error ?? updateReport.run?.message}
-            </span>
-          </div>
-          {updateReport.run && <code className="block truncate font-mono text-2xs text-muted-foreground">{updateReport.run.command}</code>}
-          {updateReport.run?.output && (
-            <details className="text-2xs text-muted-foreground">
-              <summary className="cursor-pointer select-none text-muted-foreground/80 hover:text-foreground">Installer output</summary>
-              <pre className="mt-1.5 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 font-mono text-3xs leading-snug">
-                {updateReport.run.output}
-              </pre>
-            </details>
-          )}
-        </div>
-      )}
+      {updateReport && <UpdateReportCard report={updateReport} />}
 
       {missing.length > 0 && (
         <SettingsGroup title="Not on this machine">
@@ -352,10 +263,10 @@ export function ProvidersSection() {
         taken={(instances ?? []).map((instance) => instance.id)}
         onAdded={(added) => {
           if (added.stoppedInheriting?.length) {
-            setInheritance((current) => ({ ...current, [added.id]: added.stoppedInheriting }));
+            setInherited(added.id, added.stoppedInheriting);
             setExpanded((current) => ({ ...current, [added.id]: true }));
           }
-          void load();
+          void providers.load();
           announceProviderInstancesChanged();
         }}
       />
