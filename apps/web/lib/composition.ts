@@ -56,9 +56,8 @@ import {
   type ThemeHalf,
   type ThemeToken,
 } from "@telar/engine-client";
-import { notifyBackdropCss, setBackdropCss, type BackdropCss } from "./backdrop";
+import { setBackdropCss, type BackdropCss } from "./backdrop";
 import { halfFor } from "./palette-from-image";
-import { forgetLegacyAppearance, migrateLegacyAppearance } from "./legacy-appearance";
 import { composeState, SCENE_PRESETS } from "./scene-composer";
 import { repairInk, STATE_INK, TINT_FLOOR, TINT_TONES, tintCost, type TintTone } from "./tint-separation";
 
@@ -133,8 +132,8 @@ function declarations(half: ThemeHalf, tokens: readonly ThemeToken[]): string {
  *
  * HERE RATHER THAN AT EACH ARRIVAL, because every path that can reach an
  * arbitrary `--card` — a VS Code import, a hand override, a Look file somebody
- * else made, the legacy read-forward — funnels through `halfFor` and this
- * compiler. One rule instead of four, DERIVED on every compile and never
+ * else made — funnels through `halfFor` and this
+ * compiler. One rule instead of three, DERIVED on every compile and never
  * stored, so it cannot go stale, cannot be exported into a Look file, and
  * disappears the instant the card goes back.
  *
@@ -308,50 +307,9 @@ let cache: { raw: string; value: StoredComposition } | undefined;
  */
 const DEFAULT_STORED: StoredComposition = { composition: DEFAULT_COMPOSITION, images: {} };
 
-/**
- * THE ONE-SHOT MIGRATION, and why it lives on the read rather than on a boot
- * step. Every install that predates the composition has a theme pair and a
- * backdrop in five other keys, and the composition key is simply absent. An
- * absent key is therefore not "the default composition" — it is "nobody has
- * read the old one forward yet", and the first read is where it happens.
- *
- * IT PERSISTS BUT DOES NOT NOTIFY. This runs inside a snapshot read, and a
- * snapshot read that told React the store had changed would re-enter itself
- * forever. Persisting primes the cache, so the very next read takes the
- * ordinary path and hands back the same object — which is all the subscribers
- * need. `migrated` guards the attempt so a machine with nothing to migrate
- * pays one look at localStorage and never tries again.
- */
-let migrated = false;
-
-function migrateIn(): StoredComposition {
-  if (migrated) return DEFAULT_STORED;
-  migrated = true;
-  const legacy = migrateLegacyAppearance();
-  if (!legacy) return DEFAULT_STORED;
-  // The old keys are dropped only once the new value is actually stored — a
-  // migration that cleared first and then failed the quota would lose the look
-  // it was rescuing.
-  if (!persist(legacy.composition, legacy.images)) return DEFAULT_STORED;
-  forgetLegacyAppearance();
-  // QUIETLY, THEN LOUDLY. The caches have to be on disk before the effects that
-  // replay them run, so they are written here; the SUBSCRIBERS are told after
-  // the render, because telling them from inside a snapshot read is a store
-  // update during another component's render. Everything reading this store
-  // already gets the migrated value from the return below — the notification is
-  // for the backdrop store, which was read before this one and answered from a
-  // key that did not exist yet.
-  writeDerived(legacy.composition, cache!.value.images, true);
-  queueMicrotask(() => {
-    notifyBackdropCss();
-    notify();
-  });
-  return cache!.value;
-}
-
 function readStored(): StoredComposition {
   const raw = readKey(COMPOSITION_KEY);
-  if (raw === null) return migrateIn();
+  if (raw === null) return DEFAULT_STORED;
   const imagesRaw = readKey(COMPOSITION_IMAGES_KEY);
   const key = `${raw}\n${imagesRaw ?? ""}`;
   if (!cache || cache.raw !== key) {
@@ -377,7 +335,7 @@ export function currentComposition(): StoredComposition {
 
 /**
  * STORE IT AND PRIME THE CACHE — the half of a write that touches no
- * subscriber, so the migration above can use it from inside a snapshot read.
+ * subscriber.
  *
  * Returns false when the write did not fit: the layer images are the only thing
  * here big enough to meet the quota, and a half-saved composition is worse than
@@ -432,15 +390,14 @@ export function writeComposition(composition: Composition, images: Record<string
 }
 
 /** The two pre-paint caches. Separate from the write above so a caller that
- *  only needs to REcompile — the preset table changed, say — can. `quiet` is
- *  the migration's, and only the migration's: see `migrateIn`. */
-export function writeDerived(composition: Composition, images: Record<string, string>, quiet = false): void {
+ *  only needs to REcompile — the preset table changed, say — can. */
+export function writeDerived(composition: Composition, images: Record<string, string>): void {
   try {
     window.localStorage.setItem(THEME_CSS_KEY, compileComposition(composition));
   } catch {
     // Derived: one repaint after hydration, never a wrong colour.
   }
-  setBackdropCss(composeComposition(composition, images), quiet);
+  setBackdropCss(composeComposition(composition, images));
 }
 
 /**

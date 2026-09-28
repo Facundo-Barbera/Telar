@@ -51,13 +51,6 @@ export {
   type BackdropLayers,
 } from "@telar/engine-client";
 
-/**
- * A NEW KEY, BECAUSE THE VALUE'S MEANING CHANGED. `telar-backdrop-css` held one
- * shared set of lists for both colour schemes; this holds a set per state. An
- * old value read as a new one would paint a scene with the wrong sizing for one
- * frame — so the old key keeps its old meaning until the composition migration
- * has read it and removed it (lib/legacy-appearance.ts).
- */
 export const BACKDROP_CSS_KEY = "telar-backdrop-compiled";
 
 /**
@@ -147,13 +140,8 @@ function readBackdropCss(): BackdropCss | null {
 /**
  * Write the compiled backdrop, or clear it. Called by the composition's apply
  * and by nothing else — this cache has exactly one author.
- *
- * `quiet` stores without telling anybody, for the one caller that runs inside a
- * snapshot READ: the composition's one-shot migration. Notifying from there
- * would be a store update during another component's render. It queues
- * `notifyBackdropCss` for after the render instead.
  */
-export function setBackdropCss(css: BackdropCss | null, quiet = false): void {
+export function setBackdropCss(css: BackdropCss | null): void {
   try {
     if (css === null) window.localStorage.removeItem(BACKDROP_CSS_KEY);
     else window.localStorage.setItem(BACKDROP_CSS_KEY, JSON.stringify(css));
@@ -162,10 +150,6 @@ export function setBackdropCss(css: BackdropCss | null, quiet = false): void {
     // next launch simply starts from the composition rather than the cache.
   }
   cache = undefined;
-  if (!quiet) notifyBackdropCss();
-}
-
-export function notifyBackdropCss(): void {
   for (const listener of listeners) listener();
 }
 

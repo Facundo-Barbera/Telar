@@ -12,8 +12,7 @@
  * pick any more — lib/composition.ts holds a base per colour state and DERIVES
  * these sixteen from it, compiles the stylesheet, and owns the cache. The
  * defaults that used to be built-in themes are built-in Looks
- * (lib/built-in-looks.ts); the old keys are read forward once
- * (lib/legacy-appearance.ts) and then dropped.
+ * (lib/built-in-looks.ts).
  *
  * WHAT STAYED IS WHAT WAS NEVER ABOUT THE LIBRARY: the names of the tokens, a
  * phrase saying where each one paints, and `cssColorToHex` / `hexToCssColor` —

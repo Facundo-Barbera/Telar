@@ -121,11 +121,3 @@ export const BUILT_IN_LOOKS: readonly Look[] = RECIPES.map(build).filter((look):
 export function isBuiltInLook(look: Look): boolean {
   return look.id.startsWith(BUILT_IN_PREFIX);
 }
-
-/** The composition a built-in wears, by the id the OLD theme library used —
- *  the one thing the live migration needs from this table (see
- *  lib/legacy-appearance.ts). Undefined for a custom theme, which migrates
- *  through its own stored halves instead. */
-export function builtInComposition(themeId: string): Composition | undefined {
-  return BUILT_IN_LOOKS.find((look) => look.id === `${BUILT_IN_PREFIX}${themeId}`)?.composition;
-}
