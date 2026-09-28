@@ -47,7 +47,6 @@ import {
   type SessionSettledBy,
   type PluginPatch,
   type LatexConfig,
-  Turn as TurnSchema,
   TurnObservation as TurnObservationSchema,
   WorkerTurnFailureCode as WorkerTurnFailureCodeSchema,
   type BrowserSnapshot,
@@ -140,8 +139,8 @@ import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, 
 import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
 import { dataScienceBlock, latexBlock, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, awaitsRateLimitSweep, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, sessionQueueFile, sessionQueueIndexFile, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
-import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, heldDelivery, ITEM_TITLE_CHARS, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, type OutlineRow, outlineRow, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, wakeNotification, WHY_CHARS, withoutWakesFrom } from "./domains/turns";
+import { ACTIVE_TURN_STATES, type AttachmentInput, awaitsRateLimitSweep, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
+import { heldDelivery, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
 import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
@@ -389,68 +388,9 @@ const MAX_TEXT_LENGTH = 200_000;
  * The same five seconds `projectGitAsync`'s own HEAD read already uses.
  */
 const ANCHOR_PROBE_MS = 5_000;
-/**
- * A turn that is not yet history: waiting, running, or mid-promotion. The
- * snapshot window keeps every one of these on the first page whatever the
- * limit — the queue strip and the send path read turns, and an unsettled
- * turn hidden behind a page would be a message the composer did not know
- * it had. `steered` is terminal (its words live inside the run it joined).
- */
-const ACTIVE_TURN_STATES = new Set<Turn["state"]>(["queued", "claimed", "running", "steering"]);
 
-/**
- * HOW MANY SETTLED REQUESTS A SNAPSHOT CARRIES (#245).
- *
- * Windowing the key by turn was most of the fix, but it left the shape that
- * produced the complaint reachable: one long agentic turn can open thousands of
- * approvals, and every one of them rode a window that turn was in — 1,066,437
- * bytes per read on the dogfood store, re-read once a second by every open
- * cockpit. Nothing renders a settled request beyond the handful above the
- * composer, so the tail is the answer and the rest is the history that
- * `requests()` still serves in full.
- *
- * AN OPEN REQUEST IS NEVER DROPPED, whatever this number is: an unanswered
- * question is the one thing on this key a client must act on, and a snapshot
- * that omitted it would be a question nobody could answer.
- */
-const SNAPSHOT_SETTLED_REQUESTS = 50;
 
-function boundedRequests(all: EngineRequest[], chosen?: Set<string>): EngineRequest[] {
-  const carried = chosen === undefined ? all : all.filter((request) => chosen.has(request.runId) || request.state === "open");
-  const settled = carried.filter((request) => request.state !== "open");
-  if (settled.length <= SNAPSHOT_SETTLED_REQUESTS) return carried;
-  const dropped = new Set(settled.slice(0, settled.length - SNAPSHOT_SETTLED_REQUESTS));
-  return carried.filter((request) => !dropped.has(request));
-}
 
-/**
- * WHICH ROWS A WINDOW HOLDS, decided from ids and states alone.
- *
- * Shared by the indexed read and the whole-document fallback so the two cannot
- * answer differently — the index exists to make the read cheap, not to change
- * what a page contains.
- */
-function planWindow(
-  rows: Array<{ key: string; tag?: string }>,
-  window: { limit: number; before?: string },
-): { chosen: Set<string>; page: { before: string | null; more: boolean; total: number } } {
-  let end = rows.length;
-  if (window.before !== undefined) {
-    end = rows.findIndex((row) => row.key === window.before);
-    if (end === -1) throw new EngineStateError("not_found", "page cursor names no turn in this session");
-  }
-  const active = (row: { tag?: string }): boolean => ACTIVE_TURN_STATES.has(row.tag as Turn["state"]);
-  const settled = rows.slice(0, end).filter((row) => !active(row));
-  const start = Math.max(0, settled.length - window.limit);
-  const paged = settled.slice(start);
-  // The active tail is never paged out — but only on the FIRST page; an older
-  // page is history and must not repeat rows the client already has.
-  const unsettled = window.before === undefined ? rows.filter(active) : [];
-  return {
-    chosen: new Set([...paged, ...unsettled].map((row) => row.key)),
-    page: { before: start > 0 ? (paged[0]?.key ?? null) : null, more: start > 0, total: rows.length },
-  };
-}
 
 /**
  * A SECOND TELAR MEETING A LIVE LOCK IS NOT A CRASH — issue #894.
@@ -810,6 +750,7 @@ export class EngineStore {
   private readonly worktrees: WorktreeMaintenance;
   private readonly remounts: ProjectRemounts;
   private readonly attachments: SessionAttachments;
+  private readonly queries: SessionQueries;
   private readonly catalogues: ModelCatalogues;
   private readonly records: SessionRecords;
   private readonly sessionItems: SessionItems;
@@ -1780,7 +1721,7 @@ export class EngineStore {
     } = this.leafStores(options));
     ({
       records: this.records, items: this.sessionItems, requests: this.sessionRequests, tasks: this.sessionTasks, mailbox: this.mailbox,
-      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes, attachments: this.attachments,
+      activity: this.activity, index: this.sessionIndex, queues: this.sessionQueues, prefixes: this.prefixes, attachments: this.attachments, queries: this.queries,
     } = createSessionModules(this.kernel, {
       readQueue: (sessionId) => this.readQueue(sessionId),
       readEvents: (sessionId) => this.readEvents(sessionId),
@@ -3574,365 +3515,49 @@ export class EngineStore {
     return structuredClone(this.readQueue(sessionId).turns);
   }
 
-  /**
-   * The newest `limit` turns, keyset by sequence so appends underneath cannot shift the window.
-   * A session with no summary rows yet answers an empty page rather than folding events.
-   */
-  turnOutline(sessionId: string, window: { limit: number; before?: number }): {
-    turns: OutlineRow[];
-    total: number;
-    more: boolean;
-    next?: number;
-  } {
-    this.assertSessionExists(sessionId);
-    const store = this.kernel.executionStore;
-    const read = store.outlineRows(sessionId, window.before, window.limit + 1);
-    const page = boundedOutline(read.map(outlineRow), window.limit);
-    const more = page.length < read.length;
-    return {
-      turns: page,
-      total: store.turnSummaryCount(sessionId),
-      more,
-      ...(more ? { next: page.at(-1)!.sequence } : {}),
-    };
+  turnOutline(...args: Parameters<SessionQueries["turnOutline"]>): ReturnType<SessionQueries["turnOutline"]> {
+    return this.queries.turnOutline(...args);
   }
 
-  /**
-   * WHAT ONE RUN DID, AS A LIST TO CHOOSE FROM — `{index, id, title, status,
-   * bytes}` per item, and nothing else.
-   *
-   * `bytes` IS THE POINT OF THE ROUTE. An agent picking a step to read should
-   * know what it is about to spend before it spends it; without the number the
-   * only way to find the big item is to fetch all of them, which is the cost
-   * this is here to avoid.
-   *
-   * ONE INDEXED SPAN, not the session's timeline: the items index is keyed by
-   * run, so this reads the bytes belonging to this turn and parses those.
-   */
-  runItems(sessionId: string, runId: string): Array<{ index: number; id: string; title: string; status: Item["status"]; bytes: number }> {
-    this.assertSessionExists(sessionId);
-    return this.runItemsInOrder(sessionId, runId).map((item, index) => ({
-      index,
-      id: item.id,
-      title: firstLine(item.title ?? item.detail.type, ITEM_TITLE_CHARS),
-      status: item.status,
-      bytes: Buffer.byteLength(JSON.stringify(item.detail), "utf8"),
-    }));
+  runItems(...args: Parameters<SessionQueries["runItems"]>): ReturnType<SessionQueries["runItems"]> {
+    return this.queries.runItems(...args);
   }
 
-  /**
-   * ONE STEP, WHOLE — up to `maxChars` of it, with the marker that says how much
-   * was left.
-   *
-   * ADDRESSED BY POSITION, not by id alone, because the list above is what a
-   * caller has just read and "the twelfth thing it did" is how an agent refers to
-   * a step. An id is accepted too: an item named in a journal page is a thing a
-   * caller already holds, and making it look up an index first would be a round
-   * trip to translate a name into a number.
-   *
-   * THE DETAIL IS THE `text` AND IS NOT ALSO THE ITEM. Returning the whole `Item`
-   * beside the clamped text carried `detail` twice, once bounded and once not —
-   * which made this the one route here whose answer a caller could not predict.
-   * The envelope is the scalars a reader identifies the step by; everything the
-   * step actually SAID is in `text`, under `maxChars`, with its marker.
-   */
-  runItem(sessionId: string, runId: string, step: number | string, maxChars: number): {
-    index: number;
-    id: string;
-    title: string;
-    status: Item["status"];
-    startedAt: number;
-    completedAt?: number;
-    taskId?: string;
-    text: string;
-    totalChars: number;
-    more: boolean;
-  } {
-    this.assertSessionExists(sessionId);
-    const items = this.runItemsInOrder(sessionId, runId);
-    const index = typeof step === "number" ? step : items.findIndex((item) => item.id === step);
-    const item = index >= 0 ? items[index] : undefined;
-    if (!item) throw new EngineStateError("not_found", "that run has no such step");
-    const text = JSON.stringify(item.detail, null, 2);
-    return {
-      index,
-      id: item.id,
-      title: firstLine(item.title ?? item.detail.type, ITEM_TITLE_CHARS),
-      status: item.status,
-      startedAt: item.startedAt,
-      ...(item.completedAt === undefined ? {} : { completedAt: item.completedAt }),
-      ...(item.taskId === undefined ? {} : { taskId: item.taskId }),
-      text: text.length <= maxChars ? text : `${text.slice(0, maxChars)}\n[… ${text.length - maxChars} more characters]`,
-      totalChars: text.length,
-      more: text.length > maxChars,
-    };
+  runItem(...args: Parameters<SessionQueries["runItem"]>): ReturnType<SessionQueries["runItem"]> {
+    return this.queries.runItem(...args);
   }
 
-  /**
-   * DOES THIS SESSION EXIST — without folding it to find out.
-   *
-   * `getSession` is the usual answer and it is the wrong one here: it calls
-   * `withActivity`, which parses `queue.json` WHOLE to derive an activity none
-   * of these routes report. On the dogfood store's largest session that is
-   * 1.66 MB and 24 ms — a hundred times the read it was guarding, paid to
-   * produce a 404 that never comes. The index row answers the same question by
-   * primary key.
-   */
-  private assertSessionExists(sessionId: string): void {
-    if (!this.kernel.executionStore.sessionRow(sessionId)) throw new EngineStateError("not_found", "session does not exist");
+  turnAnswer(...args: Parameters<SessionQueries["turnAnswer"]>): ReturnType<SessionQueries["turnAnswer"]> {
+    return this.queries.turnAnswer(...args);
   }
 
-  /**
-   * ONE TURN, BY THE QUEUE'S OWN INDEX — `windowedTurns`' read, narrowed to a
-   * single run.
-   *
-   * `/answer` needs `resultText`, which lives on the turn and nowhere else; it
-   * must not cost the whole queue to reach. Without an index (a queue written
-   * before #419, or edited behind the store's back) this is the parse it has
-   * always been — slower, never wrong.
-   */
-  private turnByIndex(sessionId: string, runId: string): Turn | undefined {
-    const file = sessionQueueFile(this.paths, sessionId);
-    const index = this.kernel.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
-    if (!index) return this.readQueue(sessionId).turns.find((turn) => turn.runId === runId);
-    const wanted = index.rows.filter((row) => row.key === runId);
-    if (wanted.length === 0) return undefined;
-    const parsed = TurnSchema.array().safeParse(this.kernel.readIndexedRows(file, wanted));
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid session queue");
-    return parsed.data.find((turn) => turn.runId === runId);
+  grepSession(...args: Parameters<SessionQueries["grepSession"]>): ReturnType<SessionQueries["grepSession"]> {
+    return this.queries.grepSession(...args);
   }
 
-  /** A run's items in the order they started — the order `index` counts in, and
-   *  the only one stable enough for a caller to name a step by. */
-  private runItemsInOrder(sessionId: string, runId: string): Item[] {
-    return this.sessionItems.forRuns(sessionId, new Set([runId])).sort((a, b) => a.startedAt - b.startedAt);
+  findSessions(...args: Parameters<SessionQueries["findSessions"]>): ReturnType<SessionQueries["findSessions"]> {
+    return this.queries.findSessions(...args);
   }
 
-  /**
-   * THE ANSWER, AND ONLY THE ANSWER — sliced, with its true length beside it.
-   *
-   * The most common read an orchestrator makes, which is why it is its own verb
-   * rather than a field of something larger: "what did it conclude" should not
-   * cost a transcript. The text is on the turn already (`resultText`), so this is
-   * one indexed span of `queue.json` and no journal at all.
-   *
-   * THE DEFAULT RUN IS THE LATEST TURN THAT LEFT TEXT, chosen from the
-   * projection. Not simply the latest completed one: a turn can complete having
-   * said nothing, and defaulting to it would answer an empty string to a caller
-   * who asked what the session had concluded.
-   */
-  turnAnswer(sessionId: string, options: { runId?: string; from: number; limit: number }): {
-    runId: string;
-    sequence: number;
-    text: string;
-    from: number;
-    totalChars: number;
-    more: boolean;
-    next?: number;
-  } {
-    this.assertSessionExists(sessionId);
-    const store = this.kernel.executionStore;
-    const summary = options.runId === undefined
-      ? store.latestAnsweredTurn(sessionId)
-      : store.turnSummary(sessionId, options.runId);
-    const runId = options.runId ?? summary?.runId;
-    if (runId === undefined) throw new EngineStateError("not_found", TURN_ANSWER_NONE);
-    const turn = this.turnByIndex(sessionId, runId);
-    if (!turn) throw new EngineStateError("not_found", TURN_ANSWER_NO_SUCH_RUN);
-    const answer = turn.resultText ?? "";
-    const from = Math.min(Math.max(0, options.from), answer.length);
-    const text = answer.slice(from, from + options.limit);
-    const more = from + text.length < answer.length;
-    return {
-      runId,
-      sequence: turn.sequence,
-      text,
-      from,
-      totalChars: answer.length,
-      more,
-      ...(more ? { next: from + text.length } : {}),
-    };
+  snapshotWindow(...args: Parameters<SessionQueries["snapshotWindow"]>): ReturnType<SessionQueries["snapshotWindow"]> {
+    return this.queries.snapshotWindow(...args);
   }
 
-  /**
-   * WHERE A PHRASE APPEARS IN ONE CONVERSATION — the journal, newest first.
-   *
-   * THE ONE READ HERE THAT TOUCHES EVENTS, and the only one that could: a
-   * projection small enough to be worth keeping cannot answer "where did it
-   * mention index.lock". What makes it affordable is that the scan happens in
-   * sqlite and only the matching page reaches JavaScript — see `grepEvents`.
-   *
-   * SUBSTRING, NOT A REGULAR EXPRESSION. `LIKE` is what sqlite can scan without
-   * a user-defined function, a pattern compiled from a caller's text is a way to
-   * hand the daemon an exponential backtrack, and "the phrase I remember seeing"
-   * is what the verb is for.
-   */
-  grepSession(sessionId: string, pattern: string, window: { limit: number; before?: number }): {
-    matches: Array<{ id: number; at: number; type: string; runId?: string; context: string }>;
-    more: boolean;
-    next?: number;
-  } {
-    this.assertSessionExists(sessionId);
-    const store = this.kernel.executionStore;
-    const read = store.grepEvents(sessionId, pattern, window.before, window.limit + 1);
-    const rows = read.length > window.limit ? read.slice(0, window.limit) : read;
-    const more = read.length > window.limit;
-    const needle = pattern.toLowerCase();
-    const matches = rows.map((row) => {
-      const at = row.value.toLowerCase().indexOf(needle);
-      let event: { at?: number; type?: string; runId?: string } = {};
-      try { event = JSON.parse(row.value) as typeof event; } catch {}
-      return {
-        id: row.id,
-        at: Number(event.at ?? 0),
-        type: String(event.type ?? "unknown"),
-        ...(event.runId === undefined ? {} : { runId: String(event.runId) }),
-        context: context(row.value, at < 0 ? 0 : at, GREP_CONTEXT_CHARS),
-      };
-    });
-    return { matches, more, ...(more ? { next: rows.at(-1)!.id } : {}) };
-  }
-
-  /**
-   * WHICH CONVERSATION WAS THIS — lexical, across every session on the engine.
-   *
-   * LEXICAL AND NOTHING ELSE. The issue is explicit that semantic ranking waits
-   * for an embedding provider that is already configured, and there is none: a
-   * new dependency to answer "which session was about the appearance rework"
-   * would cost more than the question is worth. FTS5 when this sqlite has it,
-   * a bounded `LIKE` over the same rows when it does not — `searchIndex` says
-   * which, and the route reports it so a reader is never guessing.
-   *
-   * THE FILTERS ARE APPLIED TO ROWS, NEVER TO DOCUMENTS. `projectId`, `settled`
-   * and `since` all read the #493 index, so narrowing a search costs nothing —
-   * which is what lets the scan cap be generous enough to survive them.
-   *
-   * EVERY HIT QUOTES ITSELF. A `why` line is the difference between a list an
-   * agent can choose from and one it has to open to evaluate.
-   */
-  findSessions(query: { q: string; projectId?: string; settled?: boolean; since?: number; limit: number }): {
-    sessions: Array<{ id: string; title?: string; projectId?: string; activity: string; updatedAt: number; runId?: string; why: string }>;
-    index: "fts5" | "like";
-    more: boolean;
-  } {
-    const store = this.kernel.executionStore;
-    const terms = query.q.split(/\s+/).map((term) => term.trim()).filter(Boolean);
-    const hits = store.searchTurnText(terms, FIND_SCAN);
-    const at = { now: this.now(), autoSettleAfterHours: this.getInboxPolicy().autoSettleAfterHours };
-    const chosen = new Map<string, { id: string; title?: string; projectId?: string; activity: string; updatedAt: number; runId?: string; why: string }>();
-    let more = false;
-    for (const hit of hits) {
-      if (chosen.has(hit.sessionId)) continue;
-      const row = store.sessionRow(hit.sessionId);
-      if (!row) continue;
-      if (query.projectId !== undefined && row.projectId !== query.projectId) continue;
-      if (query.since !== undefined && row.updatedAt < query.since) continue;
-      if (query.settled !== undefined) {
-        const shelved = row.state !== "active" || rowIsShelved(row, at);
-        if (shelved !== query.settled) continue;
-      }
-      if (chosen.size >= query.limit) { more = true; break; }
-      const line = hit.text.split("\n").find((candidate) => terms.some((term) => candidate.toLowerCase().includes(term.toLowerCase()))) ?? hit.text;
-      chosen.set(hit.sessionId, {
-        id: row.id,
-        ...(row.title === undefined ? {} : { title: row.title }),
-        ...(row.projectId === undefined ? {} : { projectId: row.projectId }),
-        activity: row.activity,
-        updatedAt: row.updatedAt,
-        ...(hit.runId ? { runId: hit.runId } : {}),
-        why: firstLine(line, WHY_CHARS),
-      });
-    }
-    return { sessions: [...chosen.values()], index: store.searchIndex, more };
-  }
-
-  /**
-   * THE NEWEST `limit` TURNS, and everything filed under them — t3code's
-   * windowed thread snapshot. A 70-turn session is megabytes of settled
-   * items a reader opening on its tail will never scroll to; the window is
-   * what makes opening cost what the tail costs, and `before` is how the
-   * reader asks for the page above it.
-   *
-   * Every UNSETTLED turn rides along regardless of the window: the queue
-   * strip, "is this session working", and the send path all read turns, and
-   * a queued message hidden behind a page would be a message the composer
-   * did not know it had. `page.before` is the oldest settled turn in the
-   * window; `null` once the page reaches the session's first turn.
-   *
-   * Pages are read by turn position in queue order (append order), so the
-   * cursor is just a runId — no timestamp ties, no index.
-   *
-   * REQUESTS FOLLOW THEIR TURNS TOO, plus every OPEN one wherever it sits.
-   * They were the one key that ignored the window: on the dogfood store the
-   * largest session's snapshot carried 549 requests / 315 KB, of which 44
-   * belonged to the window and zero were unresolved — 292 KB, re-read every
-   * second per open cockpit, that nothing could render. An open request rides
-   * along regardless of the page because an unanswered question on a paged-out
-   * turn must still reach the composer, and it rides along on EVERY page
-   * because a client replaces the key rather than merging it
-   * (`SessionSyncEngine.swift`). The settled ones are bounded on top of the
-   * window — see `SNAPSHOT_SETTLED_REQUESTS`, which is the half of #245 the
-   * window alone did not reach.
-   *
-   * AND IT IS READ FROM THE TAIL, not filtered out of the whole history: see
-   * `windowedTurns` and `windowedItems` (#419).
-   */
-  snapshotWindow(sessionId: string, window: { limit: number; before?: string }): {
-    turns: Turn[];
-    items: Item[];
-    tasks: Task[];
-    requests: EngineRequest[];
-    page: { before: string | null; more: boolean; total: number };
-  } {
-    this.records.require(sessionId);
-    const plan = this.windowedTurns(sessionId, window);
-    const chosen = new Set(plan.turns.map((turn) => turn.runId));
-    return structuredClone({
-      turns: plan.turns,
-      items: this.sessionItems.forRuns(sessionId, chosen),
-      tasks: [...this.sessionTasks.read(sessionId).values()].filter((task) => chosen.has(task.runId)),
-      requests: boundedRequests([...this.sessionRequests.read(sessionId).values()], chosen),
-      page: plan.page,
-    });
-  }
-
-  /**
-   * The window's turns, from the tail of the queue rather than the whole of it.
-   *
-   * THE INDEX DECIDES WITHOUT READING. Which turns a window holds needs only
-   * each turn's id and state, in order, and `queue.index.json` carries exactly
-   * those — so the choosing is free and the reading is one span. Without an
-   * index (a queue written by an older engine, or edited behind the store's
-   * back) this is the fold it has always been, over a document parsed whole.
-   */
-  private windowedTurns(sessionId: string, window: { limit: number; before?: string }): { turns: Turn[]; page: { before: string | null; more: boolean; total: number } } {
-    const file = sessionQueueFile(this.paths, sessionId);
-    const index = this.kernel.documentIndex(file, sessionQueueIndexFile(this.paths, sessionId));
-    if (!index) {
-      // `readQueue` accounts for itself now (#547), so the explicit call that
-      // used to be here would double this read.
-      const all = this.readQueue(sessionId).turns;
-      const plan = planWindow(all.map((turn) => ({ key: turn.runId, tag: turn.state })), window);
-      return { turns: all.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
-    }
-    const plan = planWindow(index.rows, window);
-    const span = this.kernel.readIndexedRows(file, index.rows.filter((row) => plan.chosen.has(row.key)));
-    const parsed = TurnSchema.array().safeParse(span);
-    if (!parsed.success) throw new EngineStateError("invalid_request", "invalid session queue");
-    return { turns: parsed.data.filter((turn) => plan.chosen.has(turn.runId)), page: plan.page };
-  }
-
-  /**
-   * The requests a snapshot carries when the caller asked for no window.
-   *
-   * Bounded for the same reason the windowed key is (#245) — see
-   * `boundedRequests`. `requests()` stays whole: a tool asking what a session
-   * has ever been asked is a different question from what a transcript renders.
-   */
   snapshotRequests(sessionId: string): EngineRequest[] {
-    this.records.require(sessionId);
-    return structuredClone(boundedRequests([...this.sessionRequests.read(sessionId).values()]));
+    return this.queries.snapshotRequests(sessionId);
   }
+
+
+
+
+
+
+
+
+
+
+
+
 
   items(sessionId: string): Item[] {
     this.records.require(sessionId);

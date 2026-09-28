@@ -8,6 +8,7 @@ import { SessionQueues, type SessionQueue } from "./queue";
 import { SessionRecords } from "./records";
 import { SessionRequests } from "./requests";
 import { SessionIndex } from "./session-index";
+import { SessionQueries } from "./queries";
 import { SessionTasks } from "./tasks";
 
 /** What the sessions modules still ask of the store around them. */
@@ -52,5 +53,10 @@ export function createSessionModules(kernel: Kernel, host: SessionHost) {
   });
   const prefixes = new OpenPrefixes(kernel, host.readEvents);
   const attachments = new SessionAttachments(kernel, (sessionId) => void records.require(sessionId));
-  return { records, items, requests, tasks, mailbox, activity, index, queues, prefixes, attachments };
+  const queries = new SessionQueries(kernel, {
+    records, items, tasks, requests,
+    readQueue: host.readQueue,
+    autoSettleAfterHours: host.autoSettleAfterHours,
+  });
+  return { records, items, requests, tasks, mailbox, activity, index, queues, prefixes, attachments, queries };
 }
