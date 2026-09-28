@@ -2,7 +2,7 @@
 
 /**
  * "NAME THIS PROFILE" — the one create form for browser profiles, shared by
- * Settings → Integrations and the browser panel's profile picker.
+ * Settings → Browser and the browser panel's profile picker.
  *
  * WHY A SHARED PROMPT AND NOT TWO FORMS. A profile's name is now required (the
  * registry no longer invents one), and "required" has to mean the same thing in

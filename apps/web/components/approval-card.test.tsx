@@ -87,3 +87,28 @@ describe("the kinds it must not disturb", () => {
     expect(html.match(/role="switch"/g) ?? []).toHaveLength(2);
   });
 });
+
+test("a login approval points to Settings → Browser to revoke what it remembers", () => {
+  const html = renderToStaticMarkup(
+    <ApprovalCard
+      request={
+        {
+          id: "req_2",
+          detail: {
+            kind: "secret_access",
+            secret: {
+              origin: "https://example.com",
+              fields: [{ kind: "password" }],
+              candidates: [{ id: "item_1", title: "Example", domain: "example.com" }],
+              profile: { id: "work", label: "Work" },
+            },
+          },
+        } as EngineRequest
+      }
+      sending={false}
+      onDecide={() => {}}
+    />,
+  );
+  expect(html).toContain("Revoke in Settings → Browser.");
+  expect(html).not.toContain("Agent tools");
+});
