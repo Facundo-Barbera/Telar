@@ -25,5 +25,4 @@ final class MemoryVault: TokenVault, @unchecked Sendable {
     func read(account: String) -> String? { storage[account] }
     func write(_ token: String, account: String) { storage[account] = token }
     func delete(account: String) { storage[account] = nil }
-    var accounts: [String] { storage.keys.sorted() }
 }

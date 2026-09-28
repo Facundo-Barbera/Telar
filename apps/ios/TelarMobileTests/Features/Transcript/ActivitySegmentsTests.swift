@@ -39,12 +39,9 @@ import Testing
         JournalItem(item: makeItem(id, type: type), streamedText: "", openedBy: 0)
     }
 
-    private func shape(_ order: [TurnRenderEntry]) -> [String] {
-        order.map { entry in
-            switch entry {
-            case .boundary(let item): item.id
-            case .work(let items): items.map(\.id).joined()
-            }
+    private func shape(_ responses: [TurnResponse]) -> [String] {
+        responses.flatMap { response in
+            (response.boundary.map { [$0.id] } ?? []) + (response.items.isEmpty ? [] : [response.items.map(\.id).joined()])
         }
     }
 
@@ -75,33 +72,27 @@ import Testing
     }
 
     @Test func twoSteersEachIntroduceTheirOwnWork() {
-        let order = turnRenderOrder([
+        let responses = splitAtMessageBoundaries([
             row("A", "command_execution"),
             row("s1", "user_message"),
             row("B", "command_execution"),
             row("s2", "user_message"),
             row("C", "command_execution"),
         ])
-        #expect(shape(order) == ["A", "s1", "B", "s2", "C"])
-
-        for (index, entry) in order.enumerated() where index > 0 {
-            guard case .work = entry else { continue }
-            if case .work = order[index - 1] { Issue.record("two work entries in a row at \(index)") }
-        }
+        #expect(shape(responses) == ["A", "s1", "B", "s2", "C"])
     }
 
     @Test func consecutiveSteersEachKeepTheirOwnPlace() {
-        let order = turnRenderOrder([
+        let responses = splitAtMessageBoundaries([
             row("s1", "user_message"),
             row("s2", "user_message"),
             row("A", "command_execution"),
         ])
-        #expect(shape(order) == ["s1", "s2", "A"])
-        #expect(!order.contains { if case .work(let items) = $0 { return items.isEmpty } else { return false } })
+        #expect(shape(responses) == ["s1", "s2", "A"])
     }
 
     @Test func aTrailingSteerWithNoWorkAfterItIsStillEmitted() {
-        #expect(shape(turnRenderOrder([row("A", "command_execution"), row("s1", "user_message")])) == ["A", "s1"])
+        #expect(shape(splitAtMessageBoundaries([row("A", "command_execution"), row("s1", "user_message")])) == ["A", "s1"])
     }
 
     @Test func liveAndSettledCutInTheSamePlace() {

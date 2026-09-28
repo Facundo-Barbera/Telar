@@ -309,140 +309,8 @@ struct NewSessionDraftView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            TextField("Title — optional, taken from your message", text: $title)
-                .font(.system(Theme.subhead))
-                .foregroundStyle(Theme.text)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 10)
-            Rectangle().fill(Theme.borderSubtle).frame(height: 1)
-                .padding(.horizontal, 20)
-
-            ComposerTextView(
-                text: $prompt,
-                placeholder: "Describe a coding task in \(project.name)",
-                focused: $focused,
-                fontSize: 18,
-                maxLines: nil,
-                onPaste: { intake($0) }
-            )
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .contentShape(Rectangle())
-                .onTapGesture { focused = true }
-
-                .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
-                    intake(providers)
-                    return true
-                }
-                .overlay {
-                    if dropping {
-                        RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
-                            .strokeBorder(Theme.accent, lineWidth: 2)
-                            .padding(.horizontal, 12)
-                    }
-                }
-
-            VStack(spacing: 0) {
-                Rectangle().fill(Theme.border).frame(height: 1)
-                if let error {
-                    Text(error)
-                        .font(.system(Theme.footnote))
-                        .foregroundStyle(Theme.statusRed)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                }
-                if let intakeNote {
-                    Text(intakeNote)
-                        .font(.system(Theme.footnote))
-                        .foregroundStyle(Theme.textMuted)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                }
-                if !draftAttachments.isEmpty {
-                    attachmentStrip
-                        .padding(.horizontal, 20)
-                        .padding(.top, 8)
-                }
-                HStack(spacing: 8) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
-                                Image(systemName: "plus")
-                                    .foregroundStyle(Theme.text)
-                                    .scaledGlyphBox(44, glyph: 16)
-                                    .background(Theme.subtle)
-                                    .clipShape(Circle())
-                                    .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
-                            }
-                            .accessibilityLabel("Attach photos")
-                            StashButton(
-                                hasDraft: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                                onStash: {
-                                    let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: [])) {
-                                        prompt = ""
-                                    } else {
-                                        error = "There was no room to stash this. Nothing was taken from the box."
-                                    }
-                                },
-                                onOpen: { showingStash = true }
-                            )
-                            ModelPillView(
-                                catalogues: catalogues,
-                                choice: choice,
-                                driversSwitchable: true,
-                                onChange: { choice = $0 }
-                            )
-                            chip(icon: "slider.horizontal.3",
-                                 label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
-                                ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
-                                    Button { runtimeMode = mode } label: { menuRow(label, selected: mode == runtimeMode) }
-                                }
-                            }
-                            workspaceChip
-                            if let hostName {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "desktopcomputer").font(.system(Theme.subhead))
-                                    Text(hostName)
-                                        .font(.system(Theme.subhead, weight: .semibold))
-                                        .lineLimit(1)
-                                }
-                                .foregroundStyle(Theme.textMuted)
-                                .padding(.horizontal, 14)
-                                .scaledHeight(44, relativeTo: .subheadline)
-                                .background(Theme.subtle)
-                                .clipShape(Capsule())
-                                .overlay(Capsule().strokeBorder(Theme.borderSubtle, lineWidth: 1))
-                            }
-                        }
-                        .padding(.horizontal, 6)
-                    }
-                    Button {
-                        Task { await start() }
-                    } label: {
-                        if submitting {
-                            ProgressView()
-                                .scaledSquare(44)
-                                .background(Theme.subtleStrong)
-                                .clipShape(Circle())
-                        } else {
-                            Image(systemName: "arrow.up")
-                                .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
-                                .scaledGlyphBox(44, glyph: 16, weight: .semibold)
-                                .background(canStart ? Theme.primaryFill : Theme.subtleStrong)
-                                .clipShape(Circle())
-                        }
-                    }
-                    .disabled(!canStart)
-                    .accessibilityLabel(submitting ? "Starting task" : "Start task")
-                    .padding(.trailing, 6)
-                }
-                .padding(.top, 8)
-                .padding(.bottom, 8)
-            }
+            promptEditor
+            footer
         }
         .background(Theme.sheet)
         .onAppear {
@@ -511,6 +379,145 @@ struct NewSessionDraftView: View {
         }
     }
 
+    @ViewBuilder private var promptEditor: some View {
+        TextField("Title — optional, taken from your message", text: $title)
+            .font(.system(Theme.subhead))
+            .foregroundStyle(Theme.text)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+        Rectangle().fill(Theme.borderSubtle).frame(height: 1)
+            .padding(.horizontal, 20)
+
+        ComposerTextView(
+            text: $prompt,
+            placeholder: "Describe a coding task in \(project.name)",
+            focused: $focused,
+            fontSize: 18,
+            maxLines: nil,
+            onPaste: { intake($0) }
+        )
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .contentShape(Rectangle())
+            .onTapGesture { focused = true }
+
+            .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
+                intake(providers)
+                return true
+            }
+            .overlay {
+                if dropping {
+                    RoundedRectangle(cornerRadius: Theme.radiusCard, style: .continuous)
+                        .strokeBorder(Theme.accent, lineWidth: 2)
+                        .padding(.horizontal, 12)
+                }
+            }
+    }
+
+    private var footer: some View {
+        VStack(spacing: 0) {
+            Rectangle().fill(Theme.border).frame(height: 1)
+            if let error {
+                Text(error)
+                    .font(.system(Theme.footnote))
+                    .foregroundStyle(Theme.statusRed)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+            }
+            if let intakeNote {
+                Text(intakeNote)
+                    .font(.system(Theme.footnote))
+                    .foregroundStyle(Theme.textMuted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+            }
+            if !draftAttachments.isEmpty {
+                attachmentStrip
+                    .padding(.horizontal, 20)
+                    .padding(.top, 8)
+            }
+            HStack(spacing: 8) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        PhotosPicker(selection: $pickedPhotos, maxSelectionCount: 8, matching: .images) {
+                            Image(systemName: "plus")
+                                .foregroundStyle(Theme.text)
+                                .scaledGlyphBox(44, glyph: 16)
+                                .background(Theme.subtle)
+                                .clipShape(Circle())
+                                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+                        }
+                        .accessibilityLabel("Attach photos")
+                        StashButton(
+                            hasDraft: !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                            onStash: {
+                                let text = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: [])) {
+                                    prompt = ""
+                                } else {
+                                    error = "There was no room to stash this. Nothing was taken from the box."
+                                }
+                            },
+                            onOpen: { showingStash = true }
+                        )
+                        ModelPillView(
+                            catalogues: catalogues,
+                            choice: choice,
+                            driversSwitchable: true,
+                            onChange: { choice = $0 }
+                        )
+                        chip(icon: "slider.horizontal.3",
+                             label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration") {
+                            ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
+                                Button { runtimeMode = mode } label: { composerMenuRow(label, selected: mode == runtimeMode) }
+                            }
+                        }
+                        workspaceChip
+                        if let hostName {
+                            HStack(spacing: 8) {
+                                Image(systemName: "desktopcomputer").font(.system(Theme.subhead))
+                                Text(hostName)
+                                    .font(.system(Theme.subhead, weight: .semibold))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(Theme.textMuted)
+                            .padding(.horizontal, 14)
+                            .scaledHeight(44, relativeTo: .subheadline)
+                            .background(Theme.subtle)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().strokeBorder(Theme.borderSubtle, lineWidth: 1))
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                }
+                Button {
+                    Task { await start() }
+                } label: {
+                    if submitting {
+                        ProgressView()
+                            .scaledSquare(44)
+                            .background(Theme.subtleStrong)
+                            .clipShape(Circle())
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .foregroundStyle(canStart ? Theme.primaryGlyph : Theme.textMuted)
+                            .scaledGlyphBox(44, glyph: 16, weight: .semibold)
+                            .background(canStart ? Theme.primaryFill : Theme.subtleStrong)
+                            .clipShape(Circle())
+                    }
+                }
+                .disabled(!canStart)
+                .accessibilityLabel(submitting ? "Starting task" : "Start task")
+                .padding(.trailing, 6)
+            }
+            .padding(.top, 8)
+            .padding(.bottom, 8)
+        }
+    }
+
     private func intake(_ providers: [NSItemProvider]) {
         Task {
             let (files, refusals) = await composerFiles(from: providers)
@@ -551,8 +558,8 @@ struct NewSessionDraftView: View {
     private var workspaceChip: some View {
         chip(icon: "point.topleft.down.curvedto.point.bottomright.up", label: workspaceLabel) {
             Section("Mode") {
-                Button { envMode = "worktree" } label: { menuRow("New worktree", selected: envMode == "worktree") }
-                Button { envMode = "local"; baseRef = nil } label: { menuRow("Current checkout", selected: envMode == "local") }
+                Button { envMode = "worktree" } label: { composerMenuRow("New worktree", selected: envMode == "worktree") }
+                Button { envMode = "local"; baseRef = nil } label: { composerMenuRow("Current checkout", selected: envMode == "local") }
             }
             if envMode == "worktree" {
                 Button {
@@ -573,14 +580,6 @@ struct NewSessionDraftView: View {
     private func loadCatalogues() async {
         for driver in ["claude", "codex", "opencode"] where catalogues[driver] == nil {
             catalogues[driver] = try? await api.models(driver: driver)
-        }
-    }
-
-    @ViewBuilder private func menuRow(_ label: String, selected: Bool) -> some View {
-        if selected {
-            Label(label, systemImage: "checkmark")
-        } else {
-            Text(label)
         }
     }
 

@@ -96,8 +96,6 @@ struct Project: Decodable, Identifiable, Equatable {
         }
     }
 
-    func pluginEnabled(_ id: PluginID) -> Bool { enabledPlugins.contains(id) }
-
     var enabledPlugins: Set<PluginID> {
         if let plugins { return Set(plugins.entries.filter { $0.value.enabled }.keys.map { PluginID($0) }) }
         var legacy = Set<PluginID>()
