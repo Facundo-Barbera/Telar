@@ -581,3 +581,17 @@ describe("the model-visible prefix", () => {
     expect(second.browserHeaders).toEqual({ Authorization: "Bearer token-bb" });
   });
 });
+
+test("Telar's in-process server outlasts a delegated wait", async () => {
+  let servers: Record<string, { timeout?: number }> | undefined;
+  const driver = createClaudeDriver(async () => ({
+    tool: (name: string) => ({ name }),
+    createSdkMcpServer: (input: { name: string }) => ({ type: "sdk", name: input.name }),
+    async *query(input: { options: { mcpServers?: Record<string, { timeout?: number }> } }) {
+      servers = input.options.mcpServers;
+      yield { type: "result", subtype: "success" };
+    },
+  }) as never);
+  await run(driver, { sessions: {} }).result;
+  expect(servers?.[TELAR_MCP_SERVER]).toMatchObject({ type: "sdk", timeout: 660_000 });
+});

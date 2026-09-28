@@ -160,7 +160,7 @@ test("the `telar` wall rides the same overlay, beside the browser's, token on st
   expect(sent("thread/start").config).toEqual({
     mcp_servers: {
       "telar-browser": { url: browser.url, http_headers: { Authorization: "Bearer tok_browser" } },
-      telar: { url: telar.url, http_headers: { Authorization: "Bearer tok_telar_xyz" } },
+      telar: { url: telar.url, http_headers: { Authorization: "Bearer tok_telar_xyz" }, tool_timeout_sec: 660 },
     },
   });
   const argv = sent("@argv").argv as string[];
@@ -172,7 +172,7 @@ test("the `telar` wall stands alone too — a Codex session without a browser st
   const telar = { url: "http://127.0.0.1:5678/v2/telar/mcp", token: "tok_only", generation: "g1" };
   await runTurn("plain", { telarSocketLease: telar }).result;
   expect(sent("thread/start").config).toEqual({
-    mcp_servers: { telar: { url: telar.url, http_headers: { Authorization: "Bearer tok_only" } } },
+    mcp_servers: { telar: { url: telar.url, http_headers: { Authorization: "Bearer tok_only" }, tool_timeout_sec: 660 } },
   });
 });
 

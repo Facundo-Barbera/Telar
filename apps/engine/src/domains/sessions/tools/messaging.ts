@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { z } from "zod";
 import type { Session } from "@telar/engine-client";
 import { err, failure, fillWithin, json, type ToolFactory } from "../../agent-tools";
+import { delegationAnswer, WAIT, waitForDelegation } from "./wait";
 import { CREATE, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
 
 const runIdFor = (tool: string, toolCallId: string | undefined): string =>
@@ -85,6 +86,7 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
         intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default) passive, for progress mid-task; task assigns work; result is your FINAL answer — send it last; blocker asks for intervention. After any of these reaches a subscriber, your run completing does not wake them again."),
         input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
         corrects: z.string().min(1).optional().describe("The runId of your earlier message to them that this one corrects: unread, it is replaced; already read, this one arrives at once."),
+        wait: WAIT,
       },
       async (args, context) => {
         const sessionId = String(args.sessionId ?? "");
@@ -92,8 +94,13 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
         const corrects = typeof args.corrects === "string" && args.corrects.length > 0 ? args.corrects : undefined;
         const intent = args.intent === "task" || args.intent === "result" || args.intent === "blocker" ? args.intent : "report";
         const runId = runIdFor("sessions_send", context?.toolCallId);
+        const wait = typeof args.wait === "number" ? args.wait : undefined;
+        if (wait !== undefined && intent !== "task") return err("wait applies only to intent: task — the one that asks for a result.");
         try {
           const { turn } = await capability.send(sessionId, { runId, input: text, intent, ...(corrects ? { corrects } : {}) });
+          if (wait !== undefined) {
+            return json({ sessionId, runId: turn.runId, ...delegationAnswer(await waitForDelegation(capability, sessionId, wait)) });
+          }
           return json({
             sessionId,
             runId: turn.runId,
@@ -134,10 +141,12 @@ function createTool(tool: ToolFactory, capability: SessionsCapability): unknown 
         .optional()
         .describe("Omit unless the user asked for one."),
       task: z.string().min(1).optional().describe("A brief to assign at once, as sessions_send intent task would. It cannot see this conversation."),
+      wait: WAIT,
     },
     async (args, context) => {
       const projectId = String(args.projectId ?? "");
       const envMode = args.envMode === "worktree" ? "worktree" : "local";
+      if (typeof args.wait === "number" && (typeof args.task !== "string" || !args.task)) return err("wait needs a task: there is nothing to wait for.");
       let session: Session;
       try {
         session = await capability.create({
@@ -161,6 +170,9 @@ function createTool(tool: ToolFactory, capability: SessionsCapability): unknown 
       if (typeof args.task !== "string" || !args.task) return json(answer);
       try {
         const { turn } = await capability.send(session.id, { runId: runIdFor("sessions_create", context?.toolCallId), input: args.task, intent: "task" });
+        if (typeof args.wait === "number") {
+          return json({ ...answer, runId: turn.runId, ...delegationAnswer(await waitForDelegation(capability, session.id, args.wait)) });
+        }
         return json({
           ...answer,
           runId: turn.runId,

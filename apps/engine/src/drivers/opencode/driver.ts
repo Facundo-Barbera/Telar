@@ -4,6 +4,7 @@ import { openCodeFailure, openCodeFailureText } from "./errors";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AssistantMessage, Message, SessionStatus, Part, PermissionRequest, QuestionRequest, Config } from "@opencode-ai/sdk/v2";
 import { TELAR_MCP_SERVER, TELAR_BROWSER_MCP_SERVER, type ItemDetail, type TurnObservation, type UserInputField } from "@telar/engine-client";
+import { TELAR_TOOL_CALL_TIMEOUT_MS } from "../../domains/agent-tools";
 import { normalizeOutcome, type DriverRun, type TurnDriver } from "../contract";
 import { startOpenCodeRuntime, type OpenCodeRuntime } from "./runtime";
 
@@ -24,7 +25,7 @@ export function mcpConfiguration(input: DriverRun): NonNullable<Config["mcp"]> {
     [TELAR_MCP_SERVER, input.telarSocketLease],
     [TELAR_BROWSER_MCP_SERVER, input.browserSocket],
   ] as const) {
-    if (socket) mcp[name] = { type: "remote", url: socket.url, headers: { Authorization: `Bearer ${socket.token}` }, oauth: false };
+    if (socket) mcp[name] = { type: "remote", url: socket.url, headers: { Authorization: `Bearer ${socket.token}` }, oauth: false, timeout: TELAR_TOOL_CALL_TIMEOUT_MS };
   }
   return mcp;
 }

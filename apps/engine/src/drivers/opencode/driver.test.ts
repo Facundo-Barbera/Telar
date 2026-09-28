@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { createOpencodeClient, type QuestionInfo } from "@opencode-ai/sdk/v2";
 import { TurnObservation, type TurnObservation as Observation } from "@telar/engine-client";
-import { createOpenCodeDriver } from "./driver";
+import { createOpenCodeDriver, mcpConfiguration } from "./driver";
 import type { DriverRun } from "../contract";
 
 const BRANCH_OPTIONS = [{ label: "main", description: "Main branch" }, { label: "dev", description: "Development" }];
@@ -282,4 +282,11 @@ test("a notification's part is marked synthetic; a person's is not", async () =>
   const typed = human.calls.find((c) => c.path.endsWith("/prompt_async"))?.body.parts as Array<Record<string, unknown>>;
   expect(typed[0]).toEqual({ type: "text", text: "hello" });
   human.driver.dispose?.();
+});
+
+test("Telar's own servers get a call budget long enough for a delegated wait, not OpenCode's 5 s default", () => {
+  const socket = { url: "http://127.0.0.1:1/v2/telar/mcp", token: "tok" };
+  const config = mcpConfiguration({ telarSocketLease: { ...socket, generation: "g1" }, browserSocket: socket } as DriverRun);
+  expect(config.telar).toMatchObject({ type: "remote", timeout: 660_000 });
+  expect(config["telar-browser"]).toMatchObject({ type: "remote", timeout: 660_000 });
 });

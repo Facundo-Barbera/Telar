@@ -3,7 +3,7 @@ export { advertiseLeanSchemas, collectTools, connectCard, ensureSecretFile, hand
 export { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "./orchestrate-skill";
 export { mcpOAuthRoutes } from "./routes";
 export { collectTelarWall, type TelarCapabilities, type TelarSocketLease, TelarToolSocket, telarWall, toSdkTools } from "./telar-socket";
-export { clampLimit, err, failure, fillWithin, json, MAX_ANSWER_CHARS, ok, type ToolFactory } from "./tool-kit";
+export { clampLimit, DELEGATION_WAIT_MAX_SECONDS, err, failure, fillWithin, json, MAX_ANSWER_CHARS, ok, TELAR_TOOL_CALL_TIMEOUT_MS, type ToolFactory } from "./tool-kit";
 export { McpOAuthStore } from "./mcp-oauth-store";
 export { McpServers } from "./mcp-servers";
 export { mcpSocketRoute } from "./socket-routes";
