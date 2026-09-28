@@ -120,13 +120,7 @@ It fails when:
 
 It needs the merge base, so fetch first (`git fetch origin main`). To compare against another branch, set `COMMENT_RATCHET_BASE=origin/<branch>`.
 
-`scripts/comment-baseline.json` records each workspace's count and is not a gate. When a workspace drops below its baseline, `check:source` prints a note. Only then run:
-
-```sh
-bun run comments:baseline
-```
-
-Commit the rewritten file in the same PR as the deletions that lowered the count. Don't rewrite it to make room for new comments. That doesn't help anyway, since the gate compares against the merge base.
+There is no baseline file to update: the merge base is the baseline.
 
 ## Local desktop install (unsigned)
 

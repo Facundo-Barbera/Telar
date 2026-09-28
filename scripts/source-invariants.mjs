@@ -2238,11 +2238,7 @@ const CHECKS = [
   {
     name: "comment-ratchet",
     protects: "no change raises a workspace's comment-line count over its merge base, and no change adds a comment over 6 lines",
-    run() {
-      const { failures, notices } = commentRatchet(ROOT);
-      for (const notice of notices) console.log(`note  ${notice}`);
-      return failures;
-    },
+    run: () => commentRatchet(ROOT),
   },
 ];
 

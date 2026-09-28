@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
 export const WORKSPACES = [
@@ -13,7 +13,6 @@ export const WORKSPACES = [
   "workers/updates-proxy",
 ];
 export const MAX_NEW_BLOCK_LINES = 6;
-export const BASELINE_FILE = "scripts/comment-baseline.json";
 
 const LANGUAGES = {
   ".ts": "js", ".tsx": "js", ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
@@ -172,17 +171,13 @@ export function newCommentRuns(comments, added, max = MAX_NEW_BLOCK_LINES) {
   return runs.filter(([first, last]) => last - first + 1 > max);
 }
 
-/** Fails a workspace whose comment count rose over the merge base; notes one below the committed baseline. */
-export function countFindings(current, atBase, baseline) {
-  const failures = [];
-  const notices = [];
-  for (const [workspace, count] of Object.entries(current)) {
-    const before = atBase[workspace] ?? 0;
-    const limit = baseline[workspace];
-    if (count > before) failures.push(`${workspace}: this change adds ${count - before} comment lines (${before} → ${count}). Delete comments rather than adding them.`);
-    else if (limit === undefined || count < limit) notices.push(`${workspace}: ${count} comment lines, below the baseline of ${limit ?? "none"}. Run \`bun run comments:baseline\` to lock that in.`);
-  }
-  return { failures, notices };
+export function countFailures(current, atBase) {
+  return Object.entries(current)
+    .filter(([workspace, count]) => count > (atBase[workspace] ?? 0))
+    .map(([workspace, count]) => {
+      const before = atBase[workspace] ?? 0;
+      return `${workspace}: this change adds ${count - before} comment lines (${before} → ${count}). Delete comments rather than adding them.`;
+    });
 }
 
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 256 * 1024 * 1024 });
@@ -241,21 +236,13 @@ export function newBlockFailures(root, base) {
 
 export function commentRatchet(root, baseRef = process.env.COMMENT_RATCHET_BASE || "origin/main") {
   const base = mergeBaseOf(root, baseRef);
-  if (!base) return { failures: [`cannot find the merge base with ${baseRef}; fetch it (in CI, check out with fetch-depth: 0).`], notices: [] };
-  const baseline = JSON.parse(readFileSync(join(root, BASELINE_FILE), "utf8"));
-  const { failures, notices } = countFindings(workspaceCounts(root), countsAt(root, base), baseline);
-  return { failures: [...failures, ...newBlockFailures(root, base)], notices };
+  if (!base) return [`cannot find the merge base with ${baseRef}; fetch it (in CI, check out with fetch-depth: 0).`];
+  return [...countFailures(workspaceCounts(root), countsAt(root, base)), ...newBlockFailures(root, base)];
 }
 
 if (import.meta.main) {
   const root = git(process.cwd(), ["rev-parse", "--show-toplevel"]).trim();
-  if (process.argv.includes("--write-baseline")) {
-    writeFileSync(join(root, BASELINE_FILE), `${JSON.stringify(workspaceCounts(root), null, 2)}\n`);
-    console.log(`wrote ${BASELINE_FILE}`);
-  } else {
-    const { failures, notices } = commentRatchet(root);
-    for (const notice of notices) console.log(notice);
-    for (const failure of failures) console.error(failure);
-    process.exit(failures.length > 0 ? 1 : 0);
-  }
+  const failures = commentRatchet(root);
+  for (const failure of failures) console.error(failure);
+  process.exit(failures.length > 0 ? 1 : 0);
 }
