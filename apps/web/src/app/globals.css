@@ -246,7 +246,7 @@
 
   /* THE EIGHT KIND HUES — what a THING IS, not how it is doing.
 
-     A TypeScript file, a pull request, a stylesheet: `lib/file-kinds.ts` and
+     A TypeScript file, a pull request, a stylesheet: `features/files/file-kinds.ts` and
      `lib/glyph-paths.ts` colour these so a chip is recognisable before it is
      read. Both files used to reach for raw Tailwind ramps
      (`text-sky-600 dark:text-sky-400`) — a fixed sRGB pair that cannot follow a

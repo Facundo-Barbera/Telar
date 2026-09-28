@@ -6,7 +6,7 @@ import type { RememberedLogin } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine/index";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

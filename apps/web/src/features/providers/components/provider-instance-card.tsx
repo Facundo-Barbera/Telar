@@ -18,7 +18,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible";
-import { Tabs } from "@/components/settings/settings-shell";
+import { Tabs } from "@/features/settings";
 import { ProviderModelsTab } from "./provider-models-tab";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";

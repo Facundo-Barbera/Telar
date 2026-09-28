@@ -5,7 +5,7 @@ import { hearing } from "../level";
 import { microphoneOptions, microphoneStatus } from "../devices";
 import { useAudioInputs, useMicrophoneTest, useMicrophoneUnavailable } from "../hooks/use-microphone";
 import { Button } from "@/components/ui/button";
-import { Dropdown, Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 import { cn } from "@/lib/utils";
 
 export function DictationMicrophoneSection() {

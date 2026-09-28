@@ -24,7 +24,7 @@ import {
   type GradientType,
 } from "../../gradient-starters";
 import type { CompositionMode } from "../../composition";
-import { Segmented } from "@/components/settings/settings-shell";
+import { Segmented } from "@/features/settings";
 import { HexField } from "./hex-field";
 
 type EyeDropperApi = { open: (options?: { signal?: AbortSignal }) => Promise<{ sRGBHex: string }> };

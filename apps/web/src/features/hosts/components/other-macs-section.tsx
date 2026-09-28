@@ -7,7 +7,7 @@ import type { PublicHost } from "@telar/engine-client";
 import { forgetRows, readSidebarCache, writeSidebarCache, snapshotStore } from "@/features/sessions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

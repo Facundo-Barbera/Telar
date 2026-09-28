@@ -5,9 +5,9 @@ import type { WorktreeMoveResult, WorktreesRoot } from "@telar/engine-client";
 import { FolderGitIcon, MoveRightIcon } from "lucide-react";
 import { chooseDirectory } from "@/lib/choose-directory";
 import { createEngineApi } from "@/platform/engine/index";
-import { REMOVABLE_DRIVE_WARNING } from "@/lib/desktop-store";
+import { REMOVABLE_DRIVE_WARNING } from "@/features/storage";
 import { Button } from "@/components/ui/button";
-import { Row } from "@/components/settings/settings-shell";
+import { Row } from "@/features/settings";
 
 const api = createEngineApi();
 

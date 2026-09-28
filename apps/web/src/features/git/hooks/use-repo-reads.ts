@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { GitRefEntry } from "@telar/engine-client";
-import type { DiffScopeKind } from "@/lib/diff-scope";
+import type { DiffScopeKind } from "../diff-scope";
 import { api } from "../api";
 
 /** The project's refs, read once and only when the branch scope needs a base to choose. */

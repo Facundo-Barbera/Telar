@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { ExternalLinkIcon } from "lucide-react";
 import type { GitHubLineCommentInput, GitHubLineCommentResult, GitHubPullAnchor } from "@telar/engine-client";
 
-import type { DiffScopeKind } from "@/lib/diff-scope";
+import type { DiffScopeKind } from "../diff-scope";
 import { anchorPullLines, applyLineComment, type AnchorAnswer, type LineCommentEntry, type PullLineAnchor, type SelectedLines } from "../pull-anchor";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";

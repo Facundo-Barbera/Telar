@@ -2,7 +2,7 @@
 
 import { LayersIcon } from "lucide-react";
 import { DEFAULT_DEPTH, type Depth } from "../appearance";
-import { Dropdown, Row } from "@/components/settings/settings-shell";
+import { Dropdown, Row } from "@/features/settings";
 
 const OPTIONS: { value: Depth; label: string; text: string }[] = [
   { value: "flat", label: "Flat — hairlines only", text: "Flat" },

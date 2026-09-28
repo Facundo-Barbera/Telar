@@ -21,7 +21,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorktreesRoot } from "@telar/engine-client";
-import { SettingsGroup } from "@/components/settings/settings-shell";
+import { SettingsGroup } from "@/features/settings/components/settings-shell";
 import { WorktreesRootRows, worktreesRootHint } from "./worktrees-root-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

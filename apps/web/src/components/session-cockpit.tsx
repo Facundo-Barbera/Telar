@@ -67,7 +67,17 @@ import { openUrlInSessionBrowser, parseForgeLink, sameRepository } from "@/lib/s
 import { WorkspaceInspector } from "./session/workspace-inspector";
 import { SessionSchedules } from "@/features/schedules";
 import { RunHeaderControl } from "@/features/terminal";
-import { OpenWorkspaceButton } from "./session/open-workspace-button";
+import {
+  OpenWorkspaceButton,
+  editorFileForPath,
+  emptyEditor,
+  openInEditor,
+  readEditor,
+  writeEditor,
+  clearEditor,
+  type EditorState,
+  type OpenIntent,
+} from "@/features/files";
 import { PromptText } from "./session/prompt-text";
 import { agentSenderLabel, AgentMessageBubble, ConversationMessage } from "./session/conversation-message";
 import {
@@ -91,17 +101,7 @@ import {
   type PanelTabState,
 } from "@/features/panel";
 import { closeTerminalTab, createRunApi, foldTerminalParams, freshTerminals, revealTerminal, type RunView } from "@/features/terminal";
-import {
-  editorFileForPath,
-  emptyEditor,
-  openInEditor,
-  readEditor,
-  writeEditor,
-  clearEditor,
-  type EditorState,
-  type OpenIntent,
-} from "@/lib/editor-workspace";
-import { forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
+import { forgeParams, openForge, readForgeOpen } from "@/features/github";
 import { ApprovalCard } from "./approval-card";
 import { MainSidebarTrigger, useMainIsLeftmost } from "@/components/ui/main-sidebar-trigger";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";

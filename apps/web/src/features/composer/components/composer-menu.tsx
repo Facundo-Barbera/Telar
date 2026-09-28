@@ -5,7 +5,7 @@
 import { Fragment } from "react";
 import { BotIcon, DownloadIcon, FolderIcon, GaugeIcon, GitBranchIcon, Minimize2Icon, NotebookPenIcon, ShieldCheckIcon, SparklesIcon, SquareIcon, WandSparklesIcon } from "lucide-react";
 import type { Completion, CompletionGlyph } from "../completions";
-import { FileKindIcon } from "@/components/session/file-icon";
+import { FileKindIcon } from "@/features/files";
 import { cn } from "@/lib/utils";
 
 const COMMAND_GLYPHS: Partial<Record<CompletionGlyph, typeof BotIcon>> = {

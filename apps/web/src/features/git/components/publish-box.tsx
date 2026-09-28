@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowUpFromLineIcon, GitPullRequestArrowIcon, TriangleAlertIcon } from "lucide-react";
-import { PULL_CREATE_REFUSAL, PUSH_REFUSAL } from "@/lib/github-forge";
+import { PULL_CREATE_REFUSAL, PUSH_REFUSAL } from "@/features/github";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { usePublish, type PublishVerbs } from "../hooks/use-publish";

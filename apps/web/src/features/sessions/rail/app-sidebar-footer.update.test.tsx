@@ -11,7 +11,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "b
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { UpdateStatus } from "@/lib/desktop-updates";
+import type { UpdateStatus } from "@/features/updates/desktop-updates";
 
 GlobalRegistrator.register({ url: "http://localhost/sessions" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,7 +23,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { AppSidebarFooterRow } = await import("./app-sidebar-footer");
-const { restartDialogCopy, countWorkingSessions } = await import("@/lib/desktop-updates");
+const { restartDialogCopy, countWorkingSessions } = await import("@/features/updates/desktop-updates");
 const { ProgressRing } = await import("@/components/ui/progress-ring");
 
 const realFetch = globalThis.fetch;

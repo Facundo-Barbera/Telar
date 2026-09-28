@@ -21,7 +21,7 @@ import {
 import { ProviderIcon } from "./provider-icon";
 import { ProviderInstanceCard, type InstancePatch } from "./provider-instance-card";
 import { announceProviderInstancesChanged } from "../provider-instance-cache";
-import { Row, SettingsGroup } from "@/components/settings/settings-shell";
+import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 

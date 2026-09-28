@@ -12,7 +12,7 @@ import {
 } from "../directory-keys";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { LOCAL_HOST_ID } from "@/lib/hosts/client";
-import { workspaceOpener } from "@/lib/workspace-open";
+import { workspaceOpener } from "../workspace-open";
 import { cn } from "@/lib/utils";
 
 const api = createEngineApi();

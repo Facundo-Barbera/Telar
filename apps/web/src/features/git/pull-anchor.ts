@@ -1,8 +1,8 @@
 import type { DiffHunkRange, GitHubLineCommentInput, GitHubLineCommentRefusal, GitHubLineCommentResult, GitHubLineSide, GitHubPullAnchor } from "@telar/engine-client";
 
-import type { DiffScopeKind } from "@/lib/diff-scope";
+import type { DiffScopeKind } from "./diff-scope";
 import type { LineSide } from "@/lib/drag-reference";
-import { THREAD_REFUSAL } from "@/lib/github-forge";
+import { THREAD_REFUSAL } from "@/features/github";
 
 export type SelectedLines = { start: number; end: number; startSide: LineSide; endSide: LineSide };
 export type PullLineAnchor = Omit<GitHubLineCommentInput, "body">;

@@ -2,8 +2,8 @@
 
 import { GitBranchIcon, ListFilterIcon, RotateCwIcon, XIcon } from "lucide-react";
 import type { GitRefEntry, SessionDiff } from "@telar/engine-client";
-import type { DiffTab } from "@/lib/diff-scope";
-import type { DiffTurn } from "@/lib/diff-turns";
+import type { DiffTab } from "../diff-scope";
+import type { DiffTurn } from "../diff-turns";
 import { cn } from "@/lib/utils";
 import { DiffScopePicker } from "./diff-scope-picker";
 

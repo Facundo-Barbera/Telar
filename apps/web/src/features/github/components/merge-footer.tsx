@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
-import { MERGE_REFUSAL, mergeReadiness } from "@/lib/github-forge";
+import { MERGE_REFUSAL, mergeReadiness } from "../github-forge";
 import { cn } from "@/lib/utils";
 import { METHOD_LABEL } from "../model";
 

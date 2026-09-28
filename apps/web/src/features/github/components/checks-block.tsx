@@ -7,7 +7,7 @@ import { PanelDivider } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { checkReference, failingChecksReference, startReferenceDrag } from "@/lib/drag-reference";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
-import { checkHeadline, checkSummary } from "@/lib/github-forge";
+import { checkHeadline, checkSummary } from "../github-forge";
 import { cn } from "@/lib/utils";
 import { checkRunning, hasFailed, isNotable, type CheckLogState } from "../model";
 

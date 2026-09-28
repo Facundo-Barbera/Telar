@@ -2,8 +2,8 @@
 
 import { useCallback } from "react";
 import type { DiffBaseOption, GitFileChange, GitFilePatch } from "@telar/engine-client";
-import type { DiffScopeKind } from "@/lib/diff-scope";
-import type { DiffTurn } from "@/lib/diff-turns";
+import type { DiffScopeKind } from "../diff-scope";
+import type { DiffTurn } from "../diff-turns";
 import { api } from "../api";
 import { journalPatch, patchRequestFor } from "../model";
 import type { DiffView } from "./use-diff-view";

@@ -9,7 +9,7 @@ import { PanelDivider } from "@/components/ui/panel";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { fmtAgo } from "@/lib/format";
-import { applyThreadReply, applyThreadResolve, hunkTail, PENDING_REPLY_URL, threadAnchor, threadsByFile } from "@/lib/github-forge";
+import { applyThreadReply, applyThreadResolve, hunkTail, PENDING_REPLY_URL, threadAnchor, threadsByFile } from "../github-forge";
 import { cn } from "@/lib/utils";
 import { exactTime } from "../model";
 import { GitHubAvatar } from "./github-avatar";

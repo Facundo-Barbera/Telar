@@ -5,7 +5,7 @@ import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, t
 import { createEngineApi } from "@/platform/engine/index";
 import { useModelCatalogueGeneration } from "../model-catalogue-cache";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "@/components/settings/settings-shell";
+import { Dropdown, Row, SettingsGroup, ToggleRow, useRestoreDefaults } from "@/features/settings";
 
 const api = createEngineApi();
 

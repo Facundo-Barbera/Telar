@@ -20,7 +20,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { OpenWorkspaceButton } from "./open-workspace-button";
+import { OpenWorkspaceButton } from "@/features/files/components/open-workspace-button";
 import { WorkspaceInspector } from "./workspace-inspector";
 import { RailToggle } from "@/features/panel";
 import { RunHeaderControl } from "@/features/terminal";
