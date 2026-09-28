@@ -11,7 +11,6 @@ export const MAX_FUNCTION_LINES = 150;
 export const ALLOWED = {
   "apps/engine/src/state.ts": "the store monolith; the kernel extraction is taking it apart",
   "apps/engine/test/state.test.ts": "tests state.ts; shrinks with it",
-  "apps/web/src/features/dictation/components/dictation-button.test.tsx": "test file awaiting a split",
 };
 
 const SCRIPT_KINDS = { ".ts": ts.ScriptKind.TS, ".tsx": ts.ScriptKind.TSX, ".js": ts.ScriptKind.JS, ".jsx": ts.ScriptKind.JSX, ".mjs": ts.ScriptKind.JS, ".cjs": ts.ScriptKind.JS };
