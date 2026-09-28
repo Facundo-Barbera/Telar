@@ -15,8 +15,6 @@ describe("the browser viewport vocabulary", () => {
   });
 
   test("the shared table is grouped, and the older names still resolve", () => {
-    // The host requires this same file; the hand-written key union in
-    // viewport-presets.d.ts must not drift from the table.
     const keys: ViewportPresetEntryKey[] = [
       "iphone-se", "iphone-12-pro", "iphone-14-pro-max", "pixel-7", "galaxy-s8-plus",
       "ipad-mini", "ipad-air", "ipad-pro", "surface-pro-7",
@@ -58,7 +56,6 @@ describe("the browser viewport vocabulary", () => {
         const fit = fitViewport(viewport, stage);
         expect(fit.x + fit.width).toBeLessThanOrEqual(stage.width);
         expect(fit.y + fit.height).toBeLessThanOrEqual(stage.height);
-        // Centred: the two margins on an axis differ by at most a pixel.
         expect(Math.abs(stage.width - fit.width - 2 * fit.x)).toBeLessThanOrEqual(1);
         expect(Math.abs(stage.height - fit.height - 2 * fit.y)).toBeLessThanOrEqual(1);
         expect(Math.abs(fit.height - viewport.height * fit.scale)).toBeLessThanOrEqual(0.5);
@@ -68,8 +65,6 @@ describe("the browser viewport vocabulary", () => {
 
   test("a picked zoom shows the page at that scale, but never past fit", () => {
     expect(fitViewport({ width: 390, height: 844 }, { width: 1000, height: 900 }, 0.5)).toEqual({ scale: 0.5, x: 402, y: 239, width: 195, height: 422 });
-    // 100% of a page larger than the stage is not something the native view
-    // can show, so it stays at fit — and the toolbar offers it disabled.
     expect(fitViewport({ width: 1280, height: 800 }, { width: 640, height: 400 }, 1).scale).toBe(0.5);
     expect(zoomFits(1, { width: 1280, height: 800 }, { width: 640, height: 400 })).toBe(false);
     expect(zoomFits(0.5, { width: 1280, height: 800 }, { width: 640, height: 400 })).toBe(true);
@@ -77,8 +72,6 @@ describe("the browser viewport vocabulary", () => {
   });
 });
 
-/** Where the grabbed edge lands on screen for a size, measured from the
- *  page's centre — the inverse the drag solves for. */
 function edgeOf(size: { width: number; height: number }, stage: { width: number; height: number }) {
   const fit = fitViewport(size, stage);
   return { x: fit.width / 2, y: fit.height / 2 };
@@ -105,7 +98,6 @@ describe("the resize rails' math", () => {
   });
 
   test("a page scaled down by its OTHER axis still follows the pointer, at the scale it is shown at", () => {
-    // 1600 tall in an 800 stage: shown at 0.5, so 300px on screen is 600 CSS.
     const next = resizeToEdge({ width: 600, height: 1600 }, "east", { x: 150, y: 0 }, stage);
     expect(next).toEqual({ width: 600, height: 1600 });
     const wider = resizeToEdge({ width: 600, height: 1600 }, "east", { x: 200, y: 0 }, stage);
@@ -127,8 +119,6 @@ describe("the resize rails' math", () => {
     const east = resizeToEdge(start, "east", { x: 150, y: 0 }, stage, true);
     expect(east).toEqual({ width: 300, height: 600 });
     expect(edgeOf(east, stage).x).toBe(150);
-    // The height reaches the stage first (at 400×800), so past it the edge
-    // stops following while the size keeps its shape.
     const past = resizeToEdge(start, "east", { x: 250, y: 0 }, stage, true);
     expect(past.width / past.height).toBe(0.5);
     expect(edgeOf(past, stage).x).toBe(200);
@@ -178,12 +168,10 @@ describe("the size fields' keys and the ratio lock", () => {
   });
 });
 
-/** The fields commit on submit and blur, so only a complete draft is a size. */
 describe("the device toolbar's size fields", () => {
   test("two whole numbers are a size, clamped like every other way in", () => {
     expect(sizeFromFields("1024", "768")).toEqual({ width: 1024, height: 768 });
     expect(sizeFromFields("  390 ", "844")).toEqual({ width: 390, height: 844 });
-    // The host's own limits, so the toolbar cannot ask for what it refuses.
     expect(sizeFromFields("10", "10")).toEqual({ width: 200, height: 200 });
     expect(sizeFromFields("99999", "99999")).toEqual({ width: 5000, height: 5000 });
   });
@@ -195,7 +183,6 @@ describe("the device toolbar's size fields", () => {
   });
 
   test("and neither is anything that is not digits", () => {
-    // `Number` would take every one of these; a size somebody typed is digits.
     expect(sizeFromFields("1e3", "768")).toBeUndefined();
     expect(sizeFromFields("0x10", "768")).toBeUndefined();
     expect(sizeFromFields("-100", "768")).toBeUndefined();

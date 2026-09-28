@@ -1,29 +1,5 @@
 "use client";
 
-/**
- * "NAME THIS PROFILE" — the one create form for browser profiles, shared by
- * Settings → Browser and the browser panel's profile picker.
- *
- * WHY A SHARED PROMPT AND NOT TWO FORMS. A profile's name is now required (the
- * registry no longer invents one), and "required" has to mean the same thing in
- * both places or the panel becomes the door that lets an unnamed identity in.
- * Keeping the field, the validation and the wording in one component is what makes
- * that true rather than intended.
- *
- * TWO WAYS IN, ON PURPOSE:
- *   - `<NewBrowserProfileDialog>` for a caller that already has somewhere to hang
- *     open state — the settings pane, which has a button beside a list;
- *   - `promptForNewBrowserProfile()` for a caller that has an event handler and
- *     wants a profile back — a menu item in the panel's picker. It mounts this
- *     same dialog in a root of its own and resolves to the created profile, or
- *     null if the person closed it.
- *
- * THE NATIVE VIEW IS THE CALLER'S PROBLEM, and it has to be said out loud: in the
- * browser panel a WebContentsView is composited ABOVE the renderer's DOM, so a
- * dialog opened while a page is showing is behind that page. Whoever calls from
- * the panel hides or shrinks the view first — this component cannot know which.
- */
-
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -35,10 +11,7 @@ import {
 } from "@/lib/desktop-browser-profiles";
 
 export type NewProfileOptions = {
-  /** A session's scope key: the new profile becomes that session's, which is
-   *  nearly always why someone creates one from the panel. */
   scopeKey?: string;
-  /** Also assign the session's PROJECT to it, so every later session joins. */
   assignProject?: boolean;
 };
 
@@ -52,7 +25,6 @@ export function NewBrowserProfileDialog({
 }: NewProfileOptions & {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Every profile that already exists — only used to refuse a duplicate name. */
   existing: BrowserProfile[];
   onCreated?: (profile: BrowserProfile) => void;
 }) {
@@ -138,8 +110,6 @@ export function NewBrowserProfileDialog({
               className="font-mono text-xs"
               onChange={(event) => setAccount(event.target.value)}
             />
-            {/* Said here rather than discovered later: this field is a note to
-                yourself, and nothing in Telar checks a session against it. */}
             <span className="text-xs text-muted-foreground">Who you mean to be signed in as here. A reminder, not a check.</span>
           </label>
           {error && <p className="text-xs text-destructive">{error}</p>}

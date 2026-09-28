@@ -16,8 +16,6 @@ describe("makeScopeGuard", () => {
   test("an old-session async result is DROPPED, the current one is APPLIED", async () => {
     const guard = makeScopeGuard();
     const applied: string[] = [];
-    // Simulate two overlapping reads with the guard's exact usage. The old
-    // one resolves AFTER the scope changed (a bump), so it must not apply.
     const read = async (label: string, delayMs: number) => {
       const gen = guard.capture();
       await new Promise((r) => setTimeout(r, delayMs));
@@ -27,8 +25,6 @@ describe("makeScopeGuard", () => {
     guard.bump(); // user navigates to scope B
     const fastNew = read("new-session", 5); // started under scope B
     await Promise.all([slowOld, fastNew]);
-    // The slow old-session read resolved last but is discarded; only the
-    // current scope's result was delivered.
     expect(applied).toEqual(["new-session"]);
   });
 
@@ -43,7 +39,6 @@ describe("makeScopeGuard", () => {
     const pending = bindNow(gen);
     guard.bump(); // scope changed mid-bind
     await expect(pending).rejects.toThrow("stale");
-    // A bind fully within one scope resolves normally.
     const gen2 = guard.capture();
     await expect(bindNow(gen2)).resolves.toBe("bound");
   });
