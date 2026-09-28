@@ -255,8 +255,7 @@ if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
   # update into an installed app.
   codesign --verify --deep --strict "$BUILT_APP"
   # The helper is signed apart from Telar (see computer-use-helper.mjs), so
-  # prove it carries the SAME team: a mismatch fails notarization at best and,
-  # for an un-notarized nightly, ships a helper macOS will not trust.
+  # prove it carries the same team, or notarization fails.
   HELPER_NAME="$(NODE_OPTIONS= bun -e 'process.stdout.write(require(process.argv[1]).appName)' "$SNAP/apps/desktop/src/main/computer-use-helper.json")"
   HELPER_APP="$BUILT_APP/Contents/Helpers/$HELPER_NAME.app"
   team_of() { codesign -dv "$1" 2>&1 | sed -n 's/^TeamIdentifier=//p'; }
@@ -265,20 +264,8 @@ if codesign -dv "$BUILT_APP" >/dev/null 2>&1; then
     exit 1
   fi
   log "computer-use helper signed by the same team as Telar"
-  # GATEKEEPER ACCEPTANCE, only when the build was actually notarized.
-  #
-  # `spctl --assess` asks "would macOS let a user open this if they downloaded
-  # it", and for a Developer ID app the answer is NO until it has been
-  # notarized — it exits 3 with `source=Unnotarized Developer ID`. So running it
-  # unconditionally asserts a property an un-notarized build cannot have, and
-  # the nightly channel deliberately does not notarize (see nightly-desktop.yml:
-  # notarization was 57% of the build and is billed at a 10x multiplier).
-  #
-  # That is exactly how this broke: the nightly signed fine, correctly skipped
-  # notarization, produced its zip and blockmap, and then failed here on a check
-  # that could never have passed. Notarization is inferred the same way
-  # electron-builder infers it — from the App Store Connect credentials being
-  # present — so the two can never disagree about whether it happened.
+  # spctl rejects a Developer ID app until it is notarized, and electron-builder
+  # notarizes exactly when these credentials are set, so assess under the same test.
   if [ -n "${APPLE_API_KEY:-}" ] && [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ]; then
     spctl -a -vvv --type execute "$BUILT_APP"
   else
