@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { until } from "../../../test/wait";
 import { createClaudeDriver, recorder, run } from "../../../test/claude-harness";
+import { TELAR_BROWSER_MCP_SERVER, TELAR_MCP_SERVER } from "@telar/engine-client";
+import { toolInputSchema } from "../../domains/agent-tools";
+import { TELAR_ORIENTATION } from "../../domains/sessions";
 
 // ── the session runtime: one live query per session ──────────────────────────
 
@@ -535,3 +538,46 @@ describe("the session runtime", () => {
     // A session with no live runtime is an honest false, not a throw.
     expect(await driver.stopTask?.("session_unknown", "whatever")).toBe(false);
   });
+
+describe("the model-visible prefix", () => {
+  const capture = async (sessionId: string, cwd: string, browserToken: string) => {
+    let options: { systemPrompt?: unknown; mcpServers?: Record<string, { tools?: unknown[]; headers?: unknown }> } = {};
+    const driver = createClaudeDriver(async () => ({
+      tool: (name: string, description: string, shape: Record<string, unknown>) => ({ name, description, inputSchema: toolInputSchema(shape) }),
+      createSdkMcpServer: (input: { tools: unknown[] }) => ({ tools: input.tools }),
+      async *query(input: { options: typeof options }) {
+        options = input.options;
+        yield { type: "result", subtype: "success" };
+      },
+    }) as never);
+    await run(driver, {
+      sessionId,
+      cwd,
+      orientation: TELAR_ORIENTATION,
+      browserSocket: { url: `http://127.0.0.1:${browserToken.length}/v2/browser/mcp`, token: browserToken },
+      sessions: {},
+      notes: {},
+      prompts: {},
+      display: {},
+      run: {},
+    }).result;
+    const servers = options.mcpServers ?? {};
+    return {
+      visible: JSON.stringify({
+        system: options.systemPrompt,
+        servers: Object.keys(servers),
+        tools: servers[TELAR_MCP_SERVER]?.tools,
+      }),
+      browserHeaders: servers[TELAR_BROWSER_MCP_SERVER]?.headers,
+    };
+  };
+
+  test("two sessions of one project send byte-identical tool and system definitions", async () => {
+    const first = await capture("session_prefix_a", "/tmp/worktrees/a", "token-a");
+    const second = await capture("session_prefix_b", "/tmp/worktrees/b", "token-bb");
+    expect(first.visible).toContain("sessions_read");
+    expect(second.visible).toBe(first.visible);
+    expect(first.browserHeaders).toEqual({ Authorization: "Bearer token-a" });
+    expect(second.browserHeaders).toEqual({ Authorization: "Bearer token-bb" });
+  });
+});
