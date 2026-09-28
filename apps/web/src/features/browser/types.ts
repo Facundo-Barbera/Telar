@@ -1,5 +1,5 @@
 import type { FrozenFrame } from "@/lib/native-view-overlay";
-import type { SitePermissionsBridge } from "@/lib/desktop-site-permissions";
+import type { SitePermissionsBridge } from "./desktop-site-permissions";
 import type { ElementBox } from "./annotation";
 import type { ViewportMode, ViewportPresetKey, ViewportZoom } from "./viewport";
 

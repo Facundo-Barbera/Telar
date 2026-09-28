@@ -5,7 +5,7 @@ import dynamic from "next/dynamic";
 import { ArrowLeftIcon, ArrowRightIcon, ChevronRightIcon, EllipsisIcon, LockIcon, LockOpenIcon, MonitorSmartphoneIcon, MoonIcon, PencilIcon, RotateCwIcon, RotateCwSquareIcon, SquareArrowOutUpRightIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { siteLabel } from "@/lib/desktop-site-permissions";
+import { siteLabel } from "../desktop-site-permissions";
 import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";

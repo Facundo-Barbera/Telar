@@ -23,7 +23,7 @@ import { EDITOR_HEADER_ROW } from "./editor-chrome";
 import { EditorSurface } from "./editor-surface";
 import { FilesSurface } from "./files-surface";
 import { FileViewSurface } from "@/features/files";
-import { NotebookSurface } from "./notebook-surface";
+import { NotebookSurface } from "@/features/plugins/data-science/notebook-surface";
 import { PdfSurface } from "./pdf-surface";
 import { TableSurface } from "./table-surface";
 import { emptyEditor, setExplorerOpen } from "@/lib/editor-workspace";

@@ -2,7 +2,7 @@
 
 import { CameraIcon, ChevronLeftIcon, ChevronRightIcon, MinusIcon, PencilIcon, PlusIcon, SquareArrowOutUpRightIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { siteLabel } from "@/lib/desktop-site-permissions";
+import { siteLabel } from "../desktop-site-permissions";
 import { IdentityIcon } from "@/lib/telar-icons";
 import { cn } from "@/lib/utils";
 import type { BrowserUi } from "../hooks/use-browser-session";

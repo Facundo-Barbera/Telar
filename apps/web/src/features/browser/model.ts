@@ -1,4 +1,4 @@
-import type { SitePermissionRecord } from "@/lib/desktop-site-permissions";
+import type { SitePermissionRecord } from "./desktop-site-permissions";
 import { captureFileName } from "./annotation";
 import type { DesktopBrowserBridge, DesktopBrowserCapture, DesktopBrowserDownload, DesktopBrowserPresentation, DesktopExtensionStatus } from "./types";
 

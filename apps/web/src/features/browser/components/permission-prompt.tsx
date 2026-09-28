@@ -14,7 +14,7 @@ import {
   type PermissionPromptSource,
   type SitePermissionKind,
   type SitePermissionRecord,
-} from "@/lib/desktop-site-permissions";
+} from "../desktop-site-permissions";
 import { cn } from "@/lib/utils";
 
 const KIND_ICONS: Record<SitePermissionKind, LucideIcon> = {

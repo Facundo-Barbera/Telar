@@ -18,16 +18,14 @@ import { choiceNamesAnything, choiceOf, sessionModelSelection, type ModelChoice,
 import { createEngineApi } from "@/platform/engine/index";
 import { hostFetcher } from "@/lib/hosts/client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
-import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";
+import { enablePatch, projectPluginSections, projectPaneFor, machineOffReason, PluginSettings } from "@/features/plugins";
 import { useSessionDefaults } from "@/features/sessions";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { AgentControl, modelOptionsOf, ReasoningControl } from "@/features/composer/index";
 import { ProjectIconPicker } from "./project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { projectPaneFor } from "@/components/plugins/settings-panes";
 import { McpSection } from "@/features/agent-tools";
-import { machineOffReason, PluginSettings } from "@/components/settings/plugin-settings";
 import { RemoveProjectSection } from "./remove-project-section";
 import { Dropdown, Row, Segmented, SettingsGroup, ToggleRow } from "@/components/settings/settings-shell";
 import { ProjectWorkspaceSection } from "./workspace-config-section";

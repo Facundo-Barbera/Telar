@@ -3,7 +3,7 @@
 import { Suspense, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import type { EngineEvent, Item, Turn, TurnState } from "@telar/engine-client";
-import { PluginSurface } from "@/components/plugins/surfaces";
+import { PluginSurface, type PluginPanelSource, isPluginSurface } from "@/features/plugins";
 import { desktopBrowserBridge } from "@/lib/desktop-browser-bridge";
 import { diffTabParams, readDiffTab, type DiffTab } from "@/lib/diff-scope";
 import { diffTurns, type DiffTurn } from "@/lib/diff-turns";
@@ -11,8 +11,6 @@ import type { TelarReference } from "@/lib/drag-reference";
 import type { EditorState, OpenIntent } from "@/lib/editor-workspace";
 import type { JournalTask } from "@/platform/engine";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/lib/forge-workspace";
-import type { PluginPanelSource } from "@/lib/plugins/panels";
-import { isPluginSurface } from "@/lib/plugins/registry";
 import { useSidebarPrefs } from "@/lib/sidebar-width";
 import { useCommandHandlers } from "@/features/commands";
 import { cn } from "@/lib/utils";
@@ -36,12 +34,12 @@ const DesktopBrowserSurface = dynamic(() => import("@/features/browser").then((m
 const DiffSurface = dynamic(() => import("@/features/git").then((mod) => mod.DiffSurface));
 const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
 const FileViewSurface = dynamic(() => import("@/features/files").then((mod) => mod.FileViewSurface));
-const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
+const NotebookSurface = dynamic(() => import("@/features/plugins/data-science/notebook-surface").then((mod) => mod.NotebookSurface));
 const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
 const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
 const GitHubSurface = dynamic(() => import("@/features/github").then((mod) => mod.GitHubSurface));
 const TerminalSurface = dynamic(() => import("@/features/terminal").then((mod) => mod.TerminalSurface));
-const ImageLightbox = dynamic(() => import("@/components/session/image-lightbox").then((mod) => mod.ImageLightbox));
+const ImageLightbox = dynamic(() => import("@/features/plugins/data-science/image-lightbox").then((mod) => mod.ImageLightbox));
 
 export type RightPanelProps = {
   active?: TurnState;

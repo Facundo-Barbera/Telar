@@ -13,7 +13,7 @@ Minimize2Icon
 } from "lucide-react";
 import { itemLabel, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
 import { fmtTokens } from "@/lib/format";
-import { attachmentUrl } from "@/lib/ds";
+import { attachmentUrl } from "@/features/plugins";
 import { MessageMenu, MessageResponse } from "@/components/ui/message";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Shimmer } from "@/components/ui/shimmer";

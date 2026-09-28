@@ -5,7 +5,7 @@
  */
 
 import { fileKind } from "@/lib/file-kinds";
-import { viewerAvailable } from "@/lib/plugins/registry";
+import { viewerAvailable } from "@/features/plugins";
 
 /** Notebooks and tables need the project's data-science plugin; markdown is `code`. */
 export type EditorView = "code" | "notebook" | "table" | "pdf";

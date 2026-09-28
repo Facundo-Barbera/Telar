@@ -11,7 +11,7 @@ import {
   PERMISSION_KINDS,
   type PermissionPrompt,
   type SitePermissionKind,
-} from "@/lib/desktop-site-permissions";
+} from "../desktop-site-permissions";
 import { describePermissionDenial, SitePermissionPrompt, SitePermissionsPopover } from "./permission-prompt";
 
 const prompt = (patch: Partial<PermissionPrompt> = {}): PermissionPrompt => ({

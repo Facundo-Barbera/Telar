@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { CodeXmlIcon, Loader2Icon, MoonIcon, PlusIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { describePermissionKinds } from "@/lib/desktop-site-permissions";
+import { describePermissionKinds } from "../desktop-site-permissions";
 import { browserPageReference, startReferenceDrag } from "@/lib/drag-reference";
 import { useNativeViewOverlay } from "@/lib/native-view-overlay";
 import { cn } from "@/lib/utils";

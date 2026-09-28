@@ -14,7 +14,7 @@ ProviderProbe,Session,Turn,WorkspaceFile,
 WorkspaceListing,
 WorkspaceWriteResult
 } from "@telar/engine-client";
-import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/lib/ds";
+import type { ExecResult, KernelState, NotebookRead, TableWindow, VarRow } from "@/features/plugins";
 import { request, type Fetcher } from "./transport";
 
 /** The cockpit's own workspace calls: the ones no package domain client covers yet. */

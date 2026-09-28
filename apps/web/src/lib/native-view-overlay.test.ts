@@ -13,7 +13,7 @@ const listed = (dir: string) => (fs.readdirSync(path.join(here, "..", dir), { re
 // The panel's and the browser's files, however they are split, plus anything else that claims the view.
 const SCANNED = [...listed("components"), ...listed("features/browser")].filter((file) => {
   if (!file.endsWith(".tsx") || file.includes(".test.")) return false;
-  if (/(^|\/)right-panel[^/]*(\/|\.tsx$)/.test(file) || file.startsWith("features/browser/")) return true;
+  if (/(^|\/)right-panel[^/]*(\/|\.tsx$)/.test(file) || (file.startsWith("features/browser/") && !file.startsWith("features/browser/panes/"))) return true;
   return fs.readFileSync(path.join(here, "..", file), "utf8").includes("useNativeViewOverlay(");
 });
 

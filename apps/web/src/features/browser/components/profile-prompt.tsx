@@ -8,7 +8,7 @@ import {
   desktopBrowserProfiles,
   profileNameProblem,
   type BrowserProfile,
-} from "@/lib/desktop-browser-profiles";
+} from "../desktop-browser-profiles";
 
 export type NewProfileOptions = {
   scopeKey?: string;
