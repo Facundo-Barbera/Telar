@@ -1,4 +1,5 @@
 import { appearanceClient } from "./appearance/client";
+import { dictationClient } from "./dictation/client";
 import { notesClient } from "./notes/client";
 import type { EngineTransport } from "./platform/transport";
 import type { InboxPolicy, SidebarLayout } from "./settings/schema";
@@ -7,6 +8,7 @@ import { schedulesClient } from "./schedules/client";
 import { settingsClient } from "./settings/client";
 import { storageClient } from "./storage/client";
 import { usageClient } from "./usage/client";
+import { worktreesClient } from "./worktrees/client";
 import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
 import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 import {
@@ -39,16 +41,9 @@ import {
   type ComputerUseGrant,
   type ComputerUseStatus,
   type RememberedLogin,
-  type CleanupPolicy,
-  type CleanupState,
   type WorkspaceConfig,
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
-  type WorktreeMoveResult,
-  type WorktreeInventory,
-  type WorktreeReclaimItem,
-  type WorktreeReclaimOutcome,
-  type WorktreesRoot,
   type ModelCatalogue,
   type ModelOverlay,
   type CustomProviderModel,
@@ -151,8 +146,10 @@ export * from "./schedules/schema";
 export * from "./settings/schema";
 export * from "./storage/schema";
 export * from "./usage/schema";
+export * from "./worktrees/schema";
 
 export * from "./appearance/schema";
+export * from "./dictation/schema";
 
 export * from "./icons";
 
@@ -332,40 +329,6 @@ export type SessionGrepMatch = {
 
 export type SessionGrepAnswer = { matches: SessionGrepMatch[]; more: boolean; next?: number };
 
-export type DictationProviderId = "off" | "deepgram";
-
-export type DictationLanguage = { code: string; label: string };
-
-export type DictationAnswer = {
-  dictation: {
-    provider: DictationProviderId;
-    configured: boolean;
-    language: string;
-    languages: DictationLanguage[];
-    vocabulary: string[];
-    keyterms?: {
-      /** What the engine assembled for this Mac. */
-      built: number;
-      /** What the provider actually took. Never more than `built`. */
-      sent: number;
-      reason?: "refused" | "unconfirmed";
-    };
-  };
-};
-
-export type DictationTokenAnswer = {
-  provider: DictationProviderId;
-  token: string;
-  expiresAt: number;
-  language: string;
-  keyterms?: string[];
-};
-
-export type DictationDiagnosisAnswer = {
-  fault: "refused" | "unreachable" | "elsewhere" | "unconfigured";
-  reason: string;
-};
-
 export type SessionBootstrap = SessionSnapshot & {
   /**
    * The journal from `cursor`. Empty on a quiet session, which is the ordinary
@@ -437,12 +400,14 @@ export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
 export interface EngineClient
   extends Methods<typeof appearanceClient>,
+    Methods<typeof dictationClient>,
     Methods<typeof notesClient>,
     Methods<typeof promptsClient>,
     Methods<typeof schedulesClient>,
     Methods<typeof settingsClient>,
     Methods<typeof storageClient>,
-    Methods<typeof usageClient> {}
+    Methods<typeof usageClient>,
+    Methods<typeof worktreesClient> {}
 
 export class EngineClient implements EngineTransport {
   constructor(
@@ -718,27 +683,6 @@ export class EngineClient implements EngineTransport {
     };
   }
 
-  dictation(): Promise<DictationAnswer> {
-    return this.request("GET", "/v2/dictation");
-  }
-
-  setDictation(patch: {
-    provider?: DictationProviderId;
-    apiKey?: string;
-    language?: string;
-    vocabulary?: string[];
-  }): Promise<DictationAnswer> {
-    return this.request("PATCH", "/v2/dictation", patch);
-  }
-
-  dictationToken(): Promise<DictationTokenAnswer> {
-    return this.request("POST", "/v2/dictation/token");
-  }
-
-  dictationDiagnosis(): Promise<DictationDiagnosisAnswer> {
-    return this.request("POST", "/v2/dictation/diagnose");
-  }
-
   computerUseStatus(): Promise<{ computerUse: ComputerUseStatus }> {
     return this.request("GET", "/v2/computer-use");
   }
@@ -773,56 +717,6 @@ export class EngineClient implements EngineTransport {
   /** Take one back. The next fill of that item asks again. */
   revokeBrowserLogin(id: string): Promise<{ ok: boolean }> {
     return this.request("DELETE", `/v2/browser/logins/${encodeURIComponent(id)}`);
-  }
-
-  /** Where session checkouts go on this install — see `WorktreesRoot`. */
-  worktreesRoot(): Promise<{ worktreesRoot: WorktreesRoot }> {
-    return this.request("GET", "/v2/worktrees-root");
-  }
-
-  setWorktreesRoot(root: string | null): Promise<{ worktreesRoot: WorktreesRoot }> {
-    return this.request("PUT", "/v2/worktrees-root", { root });
-  }
-
-  moveWorktrees(): Promise<{ move: WorktreeMoveResult }> {
-    return this.request("POST", "/v2/worktrees-root/move", {});
-  }
-
-  worktrees(options: { signal?: AbortSignal } = {}): Promise<{ inventory: WorktreeInventory }> {
-    return this.request("GET", "/v2/worktrees", undefined, options.signal);
-  }
-
-  reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<{ reclaim: WorktreeReclaimOutcome }> {
-    return this.request("POST", "/v2/worktrees/reclaim", { items });
-  }
-  /** The automatic cleanup's four switches and its last result — see `protocol/cleanup.ts`. */
-  cleanup(): Promise<{ cleanup: CleanupState }> {
-    return this.request("GET", "/v2/cleanup");
-  }
-
-  setCleanupPolicy(patch: Partial<CleanupPolicy>): Promise<{ cleanup: CleanupState }> {
-    return this.request("PUT", "/v2/cleanup", patch);
-  }
-
-  runCleanup(): Promise<{ cleanup: CleanupState }> {
-    return this.request("POST", "/v2/cleanup/run", {});
-  }
-
-  /** Delete a session's checkout and keep its branch and conversation. 409 with the reason when it is not safe. */
-  releaseSessionWorktree(sessionId: string): Promise<{ session: Session }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/release`, {});
-  }
-
-  restoreSessionWorktree(sessionId: string): Promise<{ session: Session }> {
-    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/restore`, {});
-  }
-
-  /** The worktree setup's status and the log lines after `after`. */
-  sessionSetup(
-    sessionId: string,
-    after = 0,
-  ): Promise<{ setup: { state: string; command: string; startedAt: number; endedAt?: number; exitCode?: number; detail?: string } | null; lines: { at: number; text: string }[]; cursor: number }> {
-    return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/setup?after=${after}`);
   }
 
   completeStructured(
@@ -1719,6 +1613,17 @@ export class EngineClient implements EngineTransport {
 
 type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
 
-Object.assign(EngineClient.prototype, appearanceClient, notesClient, promptsClient, schedulesClient, settingsClient, storageClient, usageClient);
+Object.assign(
+  EngineClient.prototype,
+  appearanceClient,
+  dictationClient,
+  notesClient,
+  promptsClient,
+  schedulesClient,
+  settingsClient,
+  storageClient,
+  usageClient,
+  worktreesClient,
+);
 
 export { ENGINE_PROTOCOL_VERSION };
