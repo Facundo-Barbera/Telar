@@ -11,7 +11,7 @@ import { nativeViewOverlayHidden } from "@/lib/native-view-overlay";
 import type { WorkspaceFileMenu } from "@/lib/workspace-open";
 import { EditorSurface } from "./editor-surface";
 import { FileRowMenuItems, FilesSurface } from "./files-surface";
-import { FileViewSurface } from "./file-view-surface";
+import { FileViewSurface } from "@/features/files";
 
 installTestDom();
 

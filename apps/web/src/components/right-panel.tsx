@@ -113,7 +113,7 @@ import { cn } from "@/lib/utils";
 const DesktopBrowserSurface = dynamic(() => import("@/components/browser-live").then((mod) => mod.DesktopBrowserSurface));
 const DiffSurface = dynamic(() => import("@/components/session/diff-surface").then((mod) => mod.DiffSurface));
 const EditorSurface = dynamic(() => import("@/components/session/editor-surface").then((mod) => mod.EditorSurface));
-const FileViewSurface = dynamic(() => import("@/components/session/file-view-surface").then((mod) => mod.FileViewSurface));
+const FileViewSurface = dynamic(() => import("@/features/files").then((mod) => mod.FileViewSurface));
 const NotebookSurface = dynamic(() => import("@/components/session/notebook-surface").then((mod) => mod.NotebookSurface));
 const PdfSurface = dynamic(() => import("@/components/session/pdf-surface").then((mod) => mod.PdfSurface));
 const TableSurface = dynamic(() => import("@/components/session/table-surface").then((mod) => mod.TableSurface));
