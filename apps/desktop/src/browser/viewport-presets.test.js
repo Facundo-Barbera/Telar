@@ -1,7 +1,7 @@
 "use strict";
 
 // The shared viewport table, from the shell's side. The web's test pins the
-// same table from the cockpit's side (apps/web/lib/browser-viewport.test.ts).
+// same table from the cockpit's side (apps/web/src/lib/browser-viewport.test.ts).
 
 const { describe, expect, test } = require("bun:test");
 const {

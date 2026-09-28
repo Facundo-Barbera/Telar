@@ -2,7 +2,7 @@
 // command-keys.d.ts, and for the same reason: apps/desktop has no tsconfig, so
 // this is what lets apps/web and apps/engine type the relative import. The .js
 // file is what ships and runs; this file only describes it. The key unions are
-// kept in step with the table by apps/web/lib/browser-viewport.test.ts.
+// kept in step with the table by apps/web/src/lib/browser-viewport.test.ts.
 
 export type ViewportPresetGroup = "phones" | "tablets" | "desktop" | "foldables";
 

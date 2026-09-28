@@ -12,7 +12,7 @@ import UserNotifications
 
     @Test func approveNeedsAnUnlockAndIsOfferedOnlyForARequest() throws {
         let categories = Dictionary(uniqueKeysWithValues: NotificationActions.categories.map { ($0.identifier, $0) })
-        // These ids are the wire contract with apps/web/lib/mobile/push.ts.
+        // These ids are the wire contract with apps/web/src/lib/mobile/push.ts.
         #expect(Set(categories.keys) == ["TELAR_REQUEST", "TELAR_SESSION"])
         let request = try #require(categories["TELAR_REQUEST"])
         #expect(request.actions.map(\.identifier) == [NotificationActions.approve, NotificationActions.open])

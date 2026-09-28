@@ -11,7 +11,7 @@ The iOS app ships only through TestFlight. A maintainer cuts a nightly by pushin
 | `io.github.novarix.telar.dev` | "Telar Dev": a Debug build with the amber icon, installed by cable through `apps/ios/phone.sh`. iOS treats it as a separate app from the TestFlight build, and each keeps its own pairing. |
 | `io.github.novarix.telar.dev.activity` | The extension inside "Telar Dev". |
 
-The push relay (`workers/push-relay/v2.mjs`) and the cockpit's push topics (`apps/web/lib/mobile/push.ts`) accept the app and `.dev` ids.
+The push relay (`workers/push-relay/v2.mjs`) and the cockpit's push topics (`apps/web/src/lib/mobile/push.ts`) accept the app and `.dev` ids.
 
 To change the id, override `TELAR_APP_BUNDLE_ID`. Never override `PRODUCT_BUNDLE_IDENTIFIER`, because the app and the extension would then share one id. The only entitlement is `aps-environment`: `development` in Debug and `production` in Release (`Config/TelarMobile.entitlements`). There are no app groups. The team is `MM74W7WGAM`.
 

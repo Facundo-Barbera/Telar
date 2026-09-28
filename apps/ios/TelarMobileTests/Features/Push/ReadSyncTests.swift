@@ -9,7 +9,7 @@ import Testing
     private let mac = UUID(uuidString: "12345678-1234-1234-1234-123456789ABC")!
     private let other = UUID(uuidString: "87654321-4321-4321-4321-CBA987654321")!
 
-    /// Shaped exactly as `notification()` in apps/web/lib/mobile/push.ts sends
+    /// Shaped exactly as `notification()` in apps/web/src/lib/mobile/push.ts sends
     /// it: `thread-id` is `"<hostId>:<sessionId>"` with the phone's upper-case
     /// `uuidString`, and `url` is `sessionURL`.
     private func alert(_ id: String, host: UUID, identifier: String? = nil) -> DeliveredAlert {

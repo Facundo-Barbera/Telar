@@ -5,7 +5,7 @@ import UserNotifications
  APPROVE AND OPEN, ON THE NOTIFICATION ITSELF.
 
  The Mac tags every alert with one of two categories (`CATEGORY_*` in
- `apps/web/lib/mobile/push.ts`, which must match these ids):
+ `apps/web/src/lib/mobile/push.ts`, which must match these ids):
 
  - `TELAR_REQUEST`: a session is blocked on exactly one approval (a command,
    an edit, a read, a tool call). It offers Approve and Open, and names that

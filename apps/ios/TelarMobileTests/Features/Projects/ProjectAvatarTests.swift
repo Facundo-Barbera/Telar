@@ -7,7 +7,7 @@ import Testing
 /// grapheme, not the first code unit.
 @Suite struct ProjectAvatarTests {
     @Test func hueMatchesTheWebFunctionBitForBit() {
-        // Values computed by apps/web/lib/project-avatar.ts for the same
+        // Values computed by apps/web/src/lib/project-avatar.ts for the same
         // strings. A drift here is two surfaces disagreeing about a colour.
         #expect(projectHue("Telar") == 273)
         #expect(projectHue("") == 61)

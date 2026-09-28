@@ -76,7 +76,7 @@ STEERED_TURN = dict(runId='run_steered', sessionId='design', sequence=1, state='
                     acceptedAt=NOW - 70000, updatedAt=NOW - 10000)
 
 STEERED_ITEMS = [
-    _item('sx_read', 'file_read', dict(read=dict(path='apps/web/components/transcript.tsx'))),
+    _item('sx_read', 'file_read', dict(read=dict(path='apps/web/src/components/transcript.tsx'))),
     _item('sx_spawn', 'task', dict(taskId='task_probe')),
     _item('sx_cmd', 'command_execution', dict(command=dict(command='rg splitAtMessageBoundaries', exitCode=0))),
     _item('sx_steer', 'user_message', dict(text='Actually — check the iPad path too, that is the one I use.')),

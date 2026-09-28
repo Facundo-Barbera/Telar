@@ -36,7 +36,7 @@ export const DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen";
  * A tokenizer belongs to a model, so a glossary confirmed against `nova-3` is
  * confirmed for a socket opened with `nova-3` and nothing else — and a refusal
  * read against `nova-3` is a refusal of the model the clients actually use. Its
- * twin lives in `apps/web/lib/dictation/deepgram.ts` (and iOS's
+ * twin lives in `apps/web/src/lib/dictation/deepgram.ts` (and iOS's
  * `Dictation.swift`), which this engine cannot import — so a client that moves
  * off `nova-3` without moving this is the one drift that would make an answer
  * here stale. Nothing else on the query can change it: `interim_results`,

@@ -14,7 +14,7 @@
  *     nothing else. The non-monotonic fixture (1200/400/900) is what tells the
  *     two implementations apart.
  *   - THE FOLD IS INVISIBLE TO THE TRANSCRIPT. Replayed through the production
- *     fold — `apps/web/lib/engine/journal.ts`, the same function the cockpit
+ *     fold — `apps/web/src/lib/engine/journal.ts`, the same function the cockpit
  *     runs — a folded turn's `usage` must be identical to an unfolded one's.
  *     The fixture whose `contextUsed` DROPS mid-turn is the one that catches a
  *     "keep the biggest" fold: occupancy is not a counter.
@@ -29,7 +29,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { ExecutionStore } from "../src/execution-store";
-import { projectJournal } from "../../web/lib/engine/journal";
+import { projectJournal } from "../../web/src/lib/engine/journal";
 import { turnUsage } from "./store-internals";
 
 const roots: string[] = [];

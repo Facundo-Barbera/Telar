@@ -221,7 +221,8 @@ export const mergeBaseOf = (root, baseRef) => {
 };
 
 export function newBlockFailures(root, base) {
-  const diff = git(root, ["diff", "-U0", "--no-color", "--no-renames", "--diff-filter=AM", base, "--", ...WORKSPACES, "scripts"]);
+  // Renames are followed so a moved file only counts the lines its move changed.
+  const diff = git(root, ["diff", "-U0", "--no-color", "-M", "-l0", "--diff-filter=AMR", base, "--", ...WORKSPACES, "scripts"]);
   const failures = [];
   for (const [file, added] of addedLines(diff)) {
     const language = languageOf(file);

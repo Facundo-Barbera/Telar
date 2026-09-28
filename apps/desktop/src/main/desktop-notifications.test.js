@@ -49,7 +49,7 @@ const notice = (patch = {}) => ({
 
 describe("the channel's contract", () => {
   test("both halves spell the env var and message types the same", () => {
-    const server = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "lib", "mobile", "desktop.ts"), "utf8");
+    const server = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "src", "lib", "mobile", "desktop.ts"), "utf8");
     for (const [name, value] of Object.entries({ DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS })) {
       expect(server).toContain(`export const ${name} = "${value}";`);
     }
@@ -71,7 +71,7 @@ describe("the channel's contract", () => {
   });
 
   test("the server's staleness window outlasts the shell's beat", () => {
-    const server = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "lib", "mobile", "desktop.ts"), "utf8");
+    const server = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "src", "lib", "mobile", "desktop.ts"), "utf8");
     const stale = Number(/export const PRESENCE_STALE_MS = ([\d_]+);/.exec(server)?.[1].replaceAll("_", ""));
 
     expect(stale).toBeGreaterThanOrEqual(PRESENCE_BEAT_MS * 3);

@@ -90,4 +90,4 @@ The security invariants for that move are in `security.md`.
 
 ## Status
 
-The code is mid-migration. The old layout (a flat `apps/engine/src`, the `state.ts`/`daemon.ts`/`driver.ts` monoliths, a flat `apps/web/lib`) is still there. New code goes into the target layout; code you touch moves toward it.
+The code is mid-migration. The old layout (a flat `apps/engine/src`, the `state.ts`/`daemon.ts`/`driver.ts` monoliths, a flat `apps/web/src/lib`) is still there. New code goes into the target layout; code you touch moves toward it.

@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 
 /// What a Mac says about this phone's automatic Live Activity
-/// (`activityReport` in apps/web/lib/mobile/push.ts), carried back on the
+/// (`activityReport` in apps/web/src/lib/mobile/push.ts), carried back on the
 /// push registration reply.
 struct ActivityReport: Decodable, Equatable {
     struct Start: Decodable, Equatable {
