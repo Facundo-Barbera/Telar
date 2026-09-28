@@ -104,7 +104,7 @@ Report-only in CI, but worth running on what you touched:
 
 ```sh
 bun run lint:ox         # oxlint: engine, desktop, engine-client; warns on files over 800 lines and functions over 150
-bun run knip            # unused files, exports and dependencies; never fails
+bun run knip            # unused files, exports and dependencies; fails CI on any finding
 ```
 
 ### check:source

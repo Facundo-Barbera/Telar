@@ -19,8 +19,9 @@ There is no `on: paths` filter. A workflow skipped that way never reports, and a
 | `Test the Electron suite (real Electron, real pages)` | each `test:desktop:<name>` Electron test in `apps/desktop`, each required to exit 0 and print its success marker |
 | `Does anything here reach the iOS build?` | diffs the change against its base and matches paths with `.github/workflows/ios-paths.sh` |
 | `Archive iOS (only when something iOS changed)` | on macOS: an unsigned Release archive, a type-check budget report, and `TelarMobileTests` on a simulator (at least 562 must pass). Otherwise a no-op on Linux |
+| `knip` | `bun run knip`: fails on any unused file, export, dependency or config hint |
 | `Verify passed` | the aggregate: fails unless every job above reports `success` |
-| `Guards (knip, oxlint; report only)` | `bun run knip`, `bun run lint:ox`. Never fails the run |
+| `Guards (oxlint; report only)` | `bun run lint:ox`. Never fails the run |
 
 Notes for operating it:
 

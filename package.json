@@ -32,7 +32,7 @@
     "test:desktop": "bun run --cwd apps/desktop test:desktop:unit",
     "test:desktop:smoke": "bun run --cwd apps/desktop test:desktop:smoke",
     "test:desktop:e2e": "bun run --cwd apps/desktop test:desktop:e2e",
-    "knip": "knip --no-exit-code",
+    "knip": "knip",
     "lint:ox": "oxlint -c .oxlintrc.json apps/engine apps/desktop packages/engine-client"
   },
   "devDependencies": {
