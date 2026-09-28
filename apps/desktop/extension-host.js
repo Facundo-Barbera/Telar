@@ -1,36 +1,8 @@
-/**
- * THE OFFICIAL 1PASSWORD EXTENSION IN THE INTEGRATED BROWSER — the product
- * wiring over extension-compat.js.
- *
- *   · install: download the CRX from the Chrome Web Store update endpoint
- *     (Google only — every redirect host is checked), VERIFY it against the
- *     pinned store id (every signature proof, over Chromium's signed
- *     payload), unpack with the verified publisher key so the runtime id IS
- *     the store id, into <userData>/extensions/<id>/<version>/;
- *   · load: electron-chrome-extensions on the integrated partition
- *     (persistent, so the extension's storage persists), the origin-scoped
- *     main-world shims registered first, then `loadExtension` — every boot,
- *     as Electron requires;
- *   · popup: opened by the library anchored to the toolbar button's rect in
- *     the app window, for the ACTIVE integrated tab. Opening it pauses
- *     nothing — agents' browser tools go on working in every session.
- *
- * Every failure is a sentence in `status()`, never a silent blank. No
- * message payloads are logged; the library's `debug` namespace is left off.
- */
 const fs = require("node:fs");
 const https = require("node:https");
 const path = require("node:path");
 const { attachExtensionSupport, registerShimPreload, unpackVerified } = require("./extension-compat");
 
-/**
- * `electron` IS REQUIRED WHERE IT IS USED, not at the top — the idiom this
- * file already follows for `screen`, `BrowserWindow` and `shell` below. The one
- * top-level `require` left the whole module unloadable outside an Electron
- * runtime, so the pure halves (the health classifier, the popup geometry, the
- * listener lifecycle) could only be unit-tested by constructing an instance
- * through `Object.create` and never touching the constructor.
- */
 function userDataDir() {
   return require("electron").app.getPath("userData");
 }
@@ -41,26 +13,8 @@ const ONE_PASSWORD = {
   updateUrl: (id) => `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0.0.0&acceptformat=crx2,crx3&x=id%3D${id}%26uc`,
 };
 
-/** Worker lines that are noise in this host, not failures: Electron's
- *  missing webRequest bindings (shimmed) and a wasm loader deprecation. */
 const KNOWN_NOISE = /No source for require\(webRequest|deprecated parameters for the initialization function|is not yet implemented\./;
 
-/**
- * THE NATIVE HELPER IS APP-LEVEL, NOT PER-PROFILE. `1Password-BrowserSupport`
- * is the desktop app's browser helper; more than one can run at once (one per
- * connected partition), and each has its own lifetime. Reporting one process's
- * exit as everyone's disconnect — or "B is connected" because A spawned a
- * helper — would be a lie. So we track the SET of live helper PIDs: a spawn
- * adds one, that PID's own exit removes that one, and the reported state is
- * honestly "helper(s) available to this browser app" with a count. Whether a
- * given PROFILE is actually paired is read from the official extension UI, not
- * inferred here. Worker errors stay per profile.
- */
-/**
- * Clamp `rect` to sit inside `region`, shrinking it if it is larger than the
- * region and then moving it so no edge spills out. Pure geometry — the popup
- * clamp and its test both use this. Returns a new rect; never negative size.
- */
 function clampRect(rect, region) {
   const width = Math.max(0, Math.min(rect.width, region.width));
   const height = Math.max(0, Math.min(rect.height, region.height));
@@ -69,8 +23,6 @@ function clampRect(rect, region) {
   return { x: Math.floor(x), y: Math.floor(y), width: Math.floor(width), height: Math.floor(height) };
 }
 
-/** The region a popup may occupy: the parent window's content bounds
- *  intersected with the display work area the window is on. */
 function popupRegion(parentWindow) {
   const { screen } = require("electron");
   const content = parentWindow.getContentBounds();
@@ -82,8 +34,6 @@ function popupRegion(parentWindow) {
   return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
 }
 
-/** Move/resize the popup window so it stays inside the parent window's
- *  content and the display work area. No-op when it already fits. */
 function clampPopupWithin(popupWindow, parentWindow) {
   if (!popupWindow || popupWindow.isDestroyed() || !parentWindow || parentWindow.isDestroyed()) return;
   const current = popupWindow.getBounds();
@@ -93,36 +43,13 @@ function clampPopupWithin(popupWindow, parentWindow) {
   }
 }
 
-/** Matches the cockpit's popovers (`rounded-lg`), which is what the popup
- *  sits beside. */
 const POPUP_CORNER_RADIUS = 10;
 const POPUP_CORNER_CSS = `html,body{border-radius:${POPUP_CORNER_RADIUS}px;overflow:hidden;}`;
 
-/**
- * ROUND WHAT THE 1PASSWORD POPUP PAINTS (issue #276).
- *
- * `electron-chrome-extensions` builds that window itself, with
- * `roundedCorners: false` and an opaque white background, so it lands over the
- * page as the one hard-edged rectangle in an app whose every other surface is
- * rounded. Telar is only handed the window afterwards.
- *
- * WHAT IS REACHABLE FROM HERE is the DOCUMENT: a radius and `overflow: hidden`
- * on html/body, re-applied on every load because `insertCSS` does not survive a
- * navigation and the popup navigates itself (unlock → item list). The window's
- * own background is cleared first so the corners it keeps are not white.
- *
- * WHAT IS NOT: `roundedCorners` is a constructor option with no setter, and
- * alpha in `setBackgroundColor` is only honoured by a window created
- * `transparent`. If macOS still draws the window's square corners under the
- * rounded document, the remaining fix is a patch of those two lines in the
- * library — see the issue's approach (b).
- */
 function roundPopupCorners(popupWindow) {
   try {
     popupWindow.setBackgroundColor("#00000000");
   } catch {
-    // An older Electron, or a window destroyed between activation and here:
-    // the CSS below is the half that matters, so keep going.
   }
   const contents = popupWindow.webContents;
   const apply = () => {
@@ -133,12 +60,6 @@ function roundPopupCorners(popupWindow) {
   apply();
 }
 
-/**
- * The official 1Password toolbar icon, as a data URL, read from the VERIFIED
- * unpacked extension (its manifest's own `icons` map) — a safe narrow bridge:
- * only a path the manifest itself names, only inside the installed dir, only
- * a PNG. Null if anything is off; the UI then keeps its fallback glyph.
- */
 function readIconDataUrl(dir) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
@@ -149,22 +70,19 @@ function readIconDataUrl(dir) {
     const root = dir.endsWith(path.sep) ? dir : dir + path.sep;
     if (!resolved.startsWith(root) || path.extname(resolved).toLowerCase() !== ".png") return null;
     const data = fs.readFileSync(resolved);
-    if (data.length > 512 * 1024) return null; // an icon, not a payload
+    if (data.length > 512 * 1024) return null;
     return `data:image/png;base64,${data.toString("base64")}`;
   } catch {
     return null;
   }
 }
 
-/** Install is memoized per rootDir so concurrent partition hosts share one
- *  download.crx and staging dir instead of racing them. */
-const installPromises = new Map(); // rootDir/<id> base → Promise<record>
-const liveHelpers = new Map(); // pid → { startedAt }
-let lastHelperExit = null; // { code, livedMs, hint } — the most recent immediate failure, for the hint
-const healthListeners = new Set(); // ExtensionHost instances wanting native-change pushes
+const installPromises = new Map();
+const liveHelpers = new Map();
+let lastHelperExit = null;
+const healthListeners = new Set();
 let nativeObserverInstalled = false;
 
-/** App-level helper availability — never a per-profile "connected" claim. */
 function nativeHealth() {
   if (liveHelpers.size > 0) return { state: "available", helpers: liveHelpers.size };
   if (lastHelperExit) return { state: "unavailable", helpers: 0, lastExitCode: lastHelperExit.code, ...(lastHelperExit.hint ? { hint: lastHelperExit.hint } : {}) };
@@ -172,7 +90,7 @@ function nativeHealth() {
 }
 
 function notifyNative() {
-  for (const host of healthListeners) { try { host.onHealthChange?.(host.status()); } catch { /* a listener must not break the boundary */ } }
+  for (const host of healthListeners) { try { host.onHealthChange?.(host.status()); } catch {  } }
 }
 
 function installNativeObserver() {
@@ -188,7 +106,7 @@ function installNativeObserver() {
       liveHelpers.set(pid, { startedAt });
       notifyNative();
       child.on("exit", (code) => {
-        liveHelpers.delete(pid); // only THIS pid leaves; others stay
+        liveHelpers.delete(pid);
         const livedMs = Date.now() - startedAt;
         lastHelperExit = { code, livedMs, hint: code === 1 && livedMs < 2000 ? "A 1Password app browser helper exited immediately. This browser app may not be accepted yet — check that it is added under 1Password → Settings → Browser and that its code signature is one 1Password trusts." : undefined };
         notifyNative();
@@ -199,12 +117,6 @@ function installNativeObserver() {
   };
 }
 
-/**
- * WORKER ERRORS ARE CLASSIFIED, NEVER FORWARDED. The extension's console is
- * its own; a line there may carry anything. Only the fact of a known
- * startup failure crosses into status(), as a fixed code, and everything
- * else is counted. Truncation is not a boundary; a closed vocabulary is.
- */
 const WORKER_ERROR_CLASSES = [
   { code: "null-window-at-boot", test: /Cannot read properties of null \(reading 'id'\)/ },
   { code: "native-messaging-stub", test: /native messaging host was disabled by the system administrator/ },
@@ -218,14 +130,9 @@ function classifyWorkerError(message) {
   return hit ? hit.code : "other";
 }
 
-/** The CRX is ~18 MB today; anything past this is not the package we want. */
 const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 90_000;
 
-/**
- * HTTPS only, Google hosts only (every redirect re-checked), a finite
- * timeout, a byte cap, and a partial file removed on any failure.
- */
 function download(url, dest, hops = 0) {
   return new Promise((resolve, reject) => {
     const fail = (error, request) => {
@@ -264,74 +171,49 @@ function download(url, dest, hops = 0) {
 }
 
 class ExtensionHost {
-  /**
-   * @param session the integrated browser's session (the persistent partition)
-   * @param deps { tabs: host tab callbacks for the library, rootDir?: where
-   *   extensions live, fetch?: download override }
-   */
   constructor(session, deps) {
     this.session = session;
     this.tabs = deps.tabs;
-    /** The app window, registered with the library BEFORE the extension
-     *  loads so a zero-tab boot still has a current window. */
+
     this.window = deps.window || null;
-    /** Human-only windows showing the extension's own pages. */
+
     this.extensionWindows = new Set();
     this.rootDir = deps.rootDir || path.join(userDataDir(), "extensions");
     this.download = deps.download || download;
     this.extensions = null;
-    this.loaded = null; // Electron.Extension
+    this.loaded = null;
     this.error = null;
-    this.phase = "idle"; // idle | installing | loading | ready | failed
+    this.phase = "idle";
     this.installedPath = null;
     this.verification = null;
-    /**
-     * HEALTH, observed not assumed. `ready` means loaded; whether the
-     * extension actually works is read from its own worker's error lines
-     * (uncaught errors, never payloads) and from the native host's lifecycle
-     * (spawned? still alive? exited how?). The panel shows both.
-     */
-    // Worker errors are PER HOST (per partition). The native host's state is
-    // a fact about the 1Password DESKTOP APP and this browser app's trust —
-    // the same for every partition — so it lives in a module-level singleton
-    // (sharedNative) rather than being captured by whichever host happened to
-    // install the spawn observer first.
-    this.health = { workerErrors: {} }; // { [code]: count }
-    this.icon = null; // official 1Password icon data URL, set on ready
+
+    this.health = { workerErrors: {} };
+    this.icon = null;
     this._startPromise = null;
-    /** Popup and extension-window lifetimes, tracked by identity so the app's
-     *  manager can count the surfaces that are open. Nothing is paused by an
-     *  open popup; a standalone harness may leave these unset. */
+
     this.onHoldOpen = null;
     this.onHoldClose = null;
-    /** The session listener `observeHealth` installs, held so `dispose` can
-     *  take it off again — the session outlives this host. */
+
     this.onWorkerConsole = null;
     this.holdPrefix = require("node:crypto").randomBytes(4).toString("hex");
     this._holdSeq = 0;
   }
 
-  /** Track an extension surface by id. */
   openHold(id, reason) {
     if (this.onHoldOpen) this.onHoldOpen(id, reason);
   }
 
-  /** That surface closed. */
   closeHold(id) {
     if (this.onHoldClose) this.onHoldClose(id);
   }
 
-  /** Kick off start() once; repeated calls return the same promise. */
   startOnce() {
     if (!this._startPromise) this._startPromise = this.start();
     return this._startPromise;
   }
 
-  /** Resolves when start() has SETTLED — ready or failed. A caller (the tab
-   *  wake path) awaits this before the first navigation so content scripts
-   *  are registered; a failed host resolves too, so it never blocks a page. */
   async whenReady() {
-    if (this._startPromise) { try { await this._startPromise; } catch { /* settled either way */ } }
+    if (this._startPromise) { try { await this._startPromise; } catch {  } }
     return this.status();
   }
 
@@ -348,18 +230,7 @@ class ExtensionHost {
     };
   }
 
-  /** Watch the extension's own worker for uncaught errors, and the native
-   *  host process for whether it stays alive. Worker text is classified
-   *  into fixed codes and counted; no message string leaves this method. */
   observeHealth() {
-    // Per-partition worker errors: this session's own worker only.
-    //
-    // HELD SO IT CAN COME OFF AGAIN (issue #296). `session.fromPartition` is a
-    // process-lifetime singleton, so this emitter outlives the host: a host
-    // created for a rebuilt window (a translucency change rebuilds the window
-    // and with it the manager and its hosts) used to add a SECOND listener to
-    // the same emitter, permanently, along with a permanent entry in the
-    // module-level `healthListeners`. Both come off in `dispose`.
     this.onWorkerConsole = (_event, details) => {
       if (details.level < 2) return;
       if (!String(details.sourceId || "").startsWith(`chrome-extension://${ONE_PASSWORD.id}/`)) return;
@@ -367,44 +238,24 @@ class ExtensionHost {
       this.noteWorkerError(details.message);
     };
     this.session.serviceWorkers.on("console-message", this.onWorkerConsole);
-    // Register for shared native-host notifications, and install the ONE
+
     // global spawn observer (idempotent). Whichever host installs it, ALL
-    // registered hosts hear the result — the native state is global.
+
     healthListeners.add(this);
     installNativeObserver();
   }
 
-  /**
-   * LET GO OF WHAT OUTLIVES THIS HOST — the partition session's emitter and the
-   * module-level listener set. Called when the manager that owns the host goes
-   * (window close, translucency rebuild). Idempotent; the host is finished
-   * afterwards.
-   *
-   * The library's own attachment is deliberately NOT torn down: it is keyed to
-   * the session and `attachExtensionSupport` reuses it
-   * (`ElectronChromeExtensions.fromSession`), so a rebuilt window's host gets
-   * the same instance rather than a second one.
-   */
   dispose() {
     if (this.onWorkerConsole) {
       try {
         this.session.serviceWorkers.off("console-message", this.onWorkerConsole);
       } catch {
-        // A session already torn down has nothing to remove.
       }
       this.onWorkerConsole = null;
     }
     healthListeners.delete(this);
   }
 
-  /**
-   * The verified unpacked directory for the pinned id, installing if absent.
-   * CONCURRENT HOSTS SHARE ONE INSTALL: every partition's host installs from
-   * and into the SAME rootDir, so two hosts booting at once would race the
-   * one `download.crx` and staging dir. The download+verify+place is memoized
-   * per rootDir (module-level `installPromises`); the first host does the
-   * work, the rest await its result and read the same marker.
-   */
   async ensureInstalled() {
     const base = path.join(this.rootDir, ONE_PASSWORD.id);
     const cached = this.readInstalledMarker(base);
@@ -420,7 +271,6 @@ class ExtensionHost {
     return result.dir;
   }
 
-  /** The cached install if the marker is valid, else null. */
   readInstalledMarker(base) {
     const marker = path.join(base, "installed.json");
     if (!fs.existsSync(marker)) return null;
@@ -428,13 +278,10 @@ class ExtensionHost {
       const record = JSON.parse(fs.readFileSync(marker, "utf8"));
       if (record.id === ONE_PASSWORD.id && record.dir && fs.existsSync(path.join(record.dir, "manifest.json"))) return record;
     } catch {
-      // Corrupt marker: reinstall.
     }
     return null;
   }
 
-  /** Download, verify, place, and write the marker. Runs at most once per
-   *  rootDir across concurrent hosts (see ensureInstalled). */
   async performInstall(base) {
     fs.mkdirSync(base, { recursive: true });
     const cached = this.readInstalledMarker(base);
@@ -483,88 +330,50 @@ class ExtensionHost {
     return this.status();
   }
 
-  /**
-   * Open the toolbar popup for the given tab, anchored to `anchorRect`
-   * (window-relative, from the renderer's button). Begins a private
-   * interaction FIRST, so no agent tool can observe the popup or the page.
-   */
   async openPopup(window, tabWebContents, anchorRect, scopeKey) {
     if (this.phase !== "ready" || !this.extensions) throw new Error(this.error || "The 1Password extension is not ready.");
-    // A UNIQUE hold id PER INVOCATION: a shared ":popup" id would let the old
-    // popup's close event release the NEW popup's hold on a rapid re-open.
+
     const popupHold = `${this.holdPrefix}:popup:${(this._holdSeq += 1)}`;
     this.openHold(popupHold, "1Password");
     let created;
     try {
-      // The library resolves the popup for the active tab of the current window.
       this.extensions.selectTab(tabWebContents);
-      // The library's handler only acts for an event whose `type` is "frame"
-      // (its own toolbar UI's IPC); any other type returns silently with no
-      // popup — which is exactly what the first signed test saw. `sender` is
-      // only logged.
+
       created = this.extensions.api.browserAction.activate(
         { type: "frame", sender: null, extension: this.loaded },
-        // NO "right" alignment. The library's default anchors the popup's RIGHT
-        // edge to the button and extends it LEFT — inward, into the window.
-        // Passing "right" would put the popup's LEFT edge at the button and
-        // extend it RIGHT, off the window's right edge (the overflow bug).
+
         { eventType: "click", extensionId: ONE_PASSWORD.id, tabId: tabWebContents.id, anchorRect: { x: Math.round(anchorRect.x), y: Math.round(anchorRect.y), width: Math.round(anchorRect.width), height: Math.round(anchorRect.height) } },
       );
       await created;
     } catch (error) {
-      // Activation failed: never leave the hold dangling.
       this.closeHold(popupHold);
       throw error;
     }
-    // 1Password sets NO popup URL until it is connected to the desktop app
-    // (action.popup stays ""); the click then dispatches onClicked and the
-    // extension opens its welcome/pairing page in a NEW TAB instead. Both
-    // are real outcomes; report which one happened rather than "opened".
+
     const popup = this.extensions.api.browserAction.popup;
     const popupWindow = popup && popup.browserWindow && !popup.browserWindow.isDestroyed() ? popup.browserWindow : null;
     if (popupWindow) {
-      // The library never clamps to the screen or the window. Keep the popup
-      // inside the app window's content AND the display work area, resizing it
-      // down if need be — on first placement and after every reposition/resize
-      // (1Password resizes the popup to its preferred size after load).
-      const clamp = () => { try { clampPopupWithin(popupWindow, window); } catch { /* window gone mid-clamp */ } };
-      // PopupView emits moved/resized; it does NOT emit "closed" (its destroy()
-      // force-destroys the BrowserWindow without re-emitting). So the hold is
-      // released on the CAPTURED BrowserWindow's own `closed`, before the
-      // library nulls its reference — dismiss, re-click, and blur all reach it.
+      const clamp = () => { try { clampPopupWithin(popupWindow, window); } catch {  } };
+
       popup.on("moved", clamp);
       popup.on("resized", clamp);
       clamp();
-      // The library's window is square-cornered and opaque white; round what
-      // it paints so it reads as one of the cockpit's own popovers.
-      try { roundPopupCorners(popupWindow); } catch { /* never block the popup on cosmetics */ }
+
+      try { roundPopupCorners(popupWindow); } catch {  }
       popupWindow.once("closed", () => this.closeHold(popupHold));
     } else {
-      // No popup window (1Password opened its page in a window instead): the
-      // popup hold has nothing to track, so release it — the extension-window
-      // and credential holds cover the rest.
       this.closeHold(popupHold);
     }
     const popupUrl = this.extensions.api.browserAction.getPopupUrl(ONE_PASSWORD.id, tabWebContents.id);
     return { ...this.status(), popup: popup && !popup.isDestroyed() ? "open" : popupUrl ? "closed" : "none-configured (the extension opened its page in a tab instead)" };
   }
 
-  /** Count one worker error under its fixed classification. */
   noteWorkerError(message) {
     const code = classifyWorkerError(message);
     this.health.workerErrors[code] = (this.health.workerErrors[code] || 0) + 1;
     this.onHealthChange?.(this.status());
   }
 
-  /**
-   * THE EXTENSION'S OWN PAGES — its welcome/pairing/settings pages, opened
-   * by chrome.tabs.create with a chrome-extension:// URL — live in a
-   * separate HUMAN-ONLY window, never in the integrated browser's tab list:
-   * browser tools cannot address a tab that is not a manager tab, and the
-   * manager's URL policy (http/https only) is untouched. The window is
-   * parented to the app window and tracked with the library as a tab (so
-   * chrome.tabs/runtime messaging work).
-   */
   openExtensionPage(url, parent) {
     const parsed = new URL(url);
     if (parsed.protocol !== "chrome-extension:" || parsed.host !== ONE_PASSWORD.id) throw new Error("Only the pinned extension's own pages open here.");
@@ -577,8 +386,7 @@ class ExtensionHost {
     });
     win.once("ready-to-show", () => win.show());
     win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    // Leaving the extension's origin is not what this window is for: an
-    // external link goes to the default browser, nothing else navigates.
+
     win.webContents.on("will-navigate", (event, target) => {
       let next; try { next = new URL(target); } catch { event.preventDefault(); return; }
       if (next.protocol === "chrome-extension:" && next.host === ONE_PASSWORD.id) return;
@@ -591,7 +399,6 @@ class ExtensionHost {
     return win;
   }
 
-  /** Track/untrack the integrated tabs so chrome.tabs sees them. */
   addTab(webContents, window) {
     if (this.extensions) this.extensions.addTab(webContents, window);
   }
@@ -600,7 +407,6 @@ class ExtensionHost {
       try {
         this.extensions.removeTab(webContents);
       } catch {
-        // Already gone.
       }
     }
   }
@@ -609,7 +415,6 @@ class ExtensionHost {
   }
 }
 
-// Nightlies are for the owner's personal use. Beta/stable remain opt-in.
 function extensionsEnabled({ dev, packaged, version, override }) {
   if (override === "0") return false;
   return override === "1" || dev || !packaged || /^\d+\.\d+\.\d+-nightly\./.test(version);

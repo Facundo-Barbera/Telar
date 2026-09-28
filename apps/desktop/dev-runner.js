@@ -156,9 +156,6 @@ async function stop(exitCode) {
 }
 
 async function main() {
-  // Prefer the pair dev.mjs minted and already handed to the engine — that is
-  // what lets the engine's BrowserRouter find THIS desktop. Standalone runs
-  // (bun run dev in apps/desktop) still mint their own.
   const configuredPort = Number(process.env.TELAR_DESKTOP_BROWSER_CONTROL_PORT);
   const controlPort = Number.isInteger(configuredPort) && configuredPort > 0 ? configuredPort : await firstFreePort(19223);
   const controlToken = process.env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN?.trim() || randomUUID();
@@ -189,8 +186,6 @@ async function main() {
   console.log(`[telar-desktop] app=${url} devtools=http://127.0.0.1:${debuggingPort}`);
   startElectron(url, debuggingPort, controlPort, controlToken);
 
-  // Watch the directory: editors often replace a file by rename, which leaves
-  // a watcher on the old inode and silently stops desktop hot reload.
   watchers.push(fs.watch(desktopDir, { persistent: true }, (_event, filename) => {
     const name = String(filename || "");
     if (name.endsWith(".js") && !name.includes("test") && name !== "dev-runner.js") scheduleElectronRestart();
