@@ -1,16 +1,3 @@
-/**
- * Protocol v2 tests.
- *
- * WHAT THESE ARE FOR. A schema file typechecks whether or not it is correct —
- * `z.object({})` is valid TypeScript and validates nothing. So these assert the
- * two properties a typecheck cannot see:
- *
- *   1. The schemas DISCRIMINATE — they reject the malformed payloads they exist
- *      to reject, not merely accept the good ones. An accept-only test suite
- *      passes over `z.unknown()`.
- *   2. The decisions encoded as code (auto-resolution, liveness, forward
- *      compatibility) behave as the contract's comments claim.
- */
 import { describe, expect, test } from "bun:test";
 import {
   ENGINE_PROTOCOL_VERSION,
@@ -59,8 +46,6 @@ describe("protocol version", () => {
 
   test("discovery rejects a short token and an out-of-range port", () => {
     const base = { version: 2 as const, daemonId: "d", host: "127.0.0.1" as const, startedAt: at };
-    // The token is the ONLY thing standing between a loopback port and any
-    // process on the machine, so a weak one must not parse.
     expect(EngineDiscovery.safeParse({ ...base, port: 4321, token: "short" }).success).toBe(false);
     expect(EngineDiscovery.safeParse({ ...base, port: 70000, token: "x".repeat(32) }).success).toBe(false);
     expect(EngineDiscovery.safeParse({ ...base, port: 4321, token: "x".repeat(32) }).success).toBe(true);
@@ -68,18 +53,6 @@ describe("protocol version", () => {
 });
 
 describe("the package barrel", () => {
-  /**
-   * THE TRAP THIS PINS, because it is invisible to both tsc and a reading of
-   * the source: when two modules reachable through `export *` export the same
-   * NAME, ES semantics resolve the ambiguity by OMITTING the name — no error,
-   * no warning, just `undefined` at every call site.
-   *
-   * It bit twice. `events.ts` briefly re-exported the entity schemas that
-   * `entities.ts` already exported; and during the cutover v1 and v2 coexisted
-   * sharing NINE names, which is why v2 was namespaced until v1 was deleted.
-   * v1 is gone now and v2 is the package root — this asserts the root really
-   * carries it rather than silently carrying nothing.
-   */
   test("the protocol is exported from the package root, not swallowed by a name clash", () => {
     expect(packageRoot.ENGINE_PROTOCOL_VERSION).toBe(2);
     expect(typeof packageRoot.EngineEvent?.safeParse).toBe("function");
@@ -87,9 +60,6 @@ describe("the package barrel", () => {
   });
 
   test("every entity schema survives the barrel", () => {
-    // Each of these is exported by one module and IMPORTED by events.ts. If
-    // events.ts ever re-exports one, it disappears from ../src/protocol and
-    // this fails — which is the only signal anyone would get.
     for (const [name, schema] of Object.entries({ Session, Turn, Item, EngineRequest })) {
       expect(schema, `${name} vanished from the protocol barrel`).toBeDefined();
       expect(typeof schema.safeParse, `${name} is not a schema`).toBe("function");
@@ -142,11 +112,6 @@ describe("Session", () => {
     expect(Session.safeParse({ ...session, environmentId: "remote" }).success).toBe(false);
   });
 
-  /**
-   * WHY THE SHELF SHELVED IT — issue #378. The stamp is what lets a row say
-   * "settled after its work for X was delivered" instead of leaving a person
-   * to wonder which of their decisions this was.
-   */
   test("settledBy carries the coordinator, the errand and when", () => {
     const parsed = Session.safeParse({
       ...session,
@@ -159,10 +124,6 @@ describe("Session", () => {
   });
 
   test("an unknown settle reason is rejected rather than kept unlabelled", () => {
-    // A union of one today. Accepting a kind this build does not understand
-    // would put an unreadable reason on a row that must be able to explain
-    // itself; a client meeting a newer engine drops the whole session record
-    // instead, which is the loud failure.
     expect(
       Session.safeParse({ ...session, settledBy: { kind: "vibes", coordinatorSessionId: "c", runId: "r", at } }).success,
     ).toBe(false);
@@ -174,14 +135,6 @@ describe("Session", () => {
   });
 });
 
-/**
- * THE DELEGATION GRACE, AND WHAT A POLICY WRITTEN BEFORE IT STILL MEANS.
- *
- * The second field is defaulted rather than required for one reason, and it is
- * the reason worth a test: `getInboxPolicy` answers a failed parse with the
- * WHOLE default, so a required field would have thrown away the quiet window
- * every existing reader had chosen.
- */
 describe("InboxPolicy", () => {
   test("a policy written before the delegation grace keeps its own window", () => {
     const parsed = InboxPolicy.safeParse({ autoSettleAfterHours: 6 });
@@ -226,10 +179,6 @@ describe("Turn", () => {
   });
 
   test("an agent turn carries BOTH the message and the notice that stands in for it", () => {
-    // The two are not alternatives: `input` is the durable record a
-    // `sessions_read` hands back, `agentNotice` is what the recipient's model
-    // was given instead. A client that kept only one of them would either
-    // flood a context or lose a message.
     const parsed = Turn.safeParse({
       ...turn,
       input: "the whole report",
@@ -244,8 +193,6 @@ describe("Turn", () => {
       expect(parsed.data.input).toBe("the whole report");
       expect(parsed.data.agentNotice).toContain("16 chars");
     }
-    // OPTIONAL BY CONSTRUCTION: turns stored before notices existed have none,
-    // and a decoder that required one would reject a session's own history.
     expect(Turn.safeParse({ ...turn, origin: "session", sender: {} }).success).toBe(true);
   });
 });
@@ -263,9 +210,6 @@ describe("ItemDetail", () => {
   });
 
   test("a payload from the wrong variant is rejected", () => {
-    // THE POINT OF THE DISCRIMINATED UNION. v1's `data: Record<string,
-    // unknown>` accepted this, which is why journal.ts had to hand-check
-    // `typeof event.data.text === "string"` before touching a field.
     expect(ItemDetail.safeParse({ type: "file_change", command: { command: "ls" } }).success).toBe(false);
     expect(ItemDetail.safeParse({ type: "command_execution", change: { path: "a" } }).success).toBe(false);
   });
@@ -275,9 +219,6 @@ describe("ItemDetail", () => {
   });
 
   test("a steered agent message keeps its notice beside the body it stands in for", () => {
-    // Declared on the schema rather than passed through untyped, because a zod
-    // object DROPS what it does not declare — an undeclared `notice` would be
-    // silently erased at exactly the seam that carries it to the transcript.
     const parsed = ItemDetail.safeParse({
       type: "user_message",
       text: "the whole report",
@@ -325,8 +266,6 @@ describe("EngineEvent", () => {
   });
 
   test("safeParseEvent skips an unknown type instead of throwing", () => {
-    // A cached client WILL meet a newer engine. One unrecognised row must not
-    // kill the stream.
     expect(safeParseEvent({ ...base, type: "quantum.entangled", payload: 1 })).toBeNull();
     expect(safeParseEvent({ ...base, type: "turn.started" })).not.toBeNull();
   });
@@ -360,10 +299,6 @@ describe("autoResolution — the policy that decides if detached runs work", () 
   });
 
   test("user_input NEVER auto-resolves, in any mode", () => {
-    // The one kind the engine has no defensible answer to invent. A fabricated
-    // answer to a question is worse than a parked session, and this is the
-    // assertion that stops a later "make auto really mean auto" change from
-    // quietly making one up.
     for (const mode of RuntimeMode.options) {
       expect(autoResolution(mode, "user_input"), mode).toBeNull();
       expect(requiresHuman(mode, "user_input"), mode).toBe(true);
@@ -371,10 +306,6 @@ describe("autoResolution — the policy that decides if detached runs work", () 
   });
 
   test("secret_access NEVER auto-resolves, in any mode — full-access included", () => {
-    // A mode widens what the AGENT may do, never what the VAULT gives up. A
-    // credential fill also carries the human's item pick in its resolution,
-    // which no policy could invent. This is the load-bearing assertion of the
-    // 1Password design: if it goes red, secrets can leave the vault unasked.
     for (const mode of RuntimeMode.options) {
       expect(autoResolution(mode, "secret_access"), mode).toBeNull();
       expect(requiresHuman(mode, "secret_access"), mode).toBe(true);
@@ -409,8 +340,6 @@ describe("autoResolution — the policy that decides if detached runs work", () 
 
 describe("Request", () => {
   test("a parked request records whether anyone was told", () => {
-    // "It was stuck and nobody was notified" has to be a detectable state, not
-    // an inference from absence.
     const parsed = EngineRequest.safeParse({
       id: "q1",
       runId: "r1",
@@ -492,15 +421,6 @@ describe("livenessOf — one definition of 'still working'", () => {
 });
 
 describe("a task carries no fan-out linkage", () => {
-  /**
-   * WHAT THIS BLOCK USED TO SAY, and why the inversion is the point.
-   *
-   * It asserted that an ordinary sub-agent carried no `warp` block and that a
-   * Warp agent was the SAME `Task` with linkage attached — the structural claim
-   * that aggregation is a projection, so nothing had to know about warps to
-   * represent an agent. #877 retired Warp. The projection claim survives; the
-   * block does not, and these tests now pin its absence.
-   */
   test("an ordinary sub-agent is a whole task on its own", () => {
     const parsed = Item.safeParse({
       id: "i1",
@@ -514,13 +434,6 @@ describe("a task carries no fan-out linkage", () => {
   });
 
   test("a `warp` block sent by an older engine is DROPPED, not carried", () => {
-    /**
-     * ASSERTED ON THE OUTPUT, not on `success`. Zod strips unknown keys rather
-     * than rejecting them, so a schema that merely no longer declares `warp`
-     * would still parse this happily — and a test reading `success` alone would
-     * pass identically whether the field was removed or still declared. What
-     * matters to a client is that nothing downstream can read it back.
-     */
     const parsed = TaskSchema.safeParse({
       id: "t1",
       sessionId: "s1",
@@ -538,15 +451,6 @@ describe("a task carries no fan-out linkage", () => {
 });
 
 describe("the forge query string", () => {
-  /**
-   * THE ROUND TRIP, PINNED, because a broken one is invisible.
-   *
-   * The bug this exists for: the cockpit built this query correctly, the engine
-   * parsed it correctly, and the Next adapter in between forwarded only `refresh`.
-   * Choosing a milestone typechecked at every layer, passed every test, sent a
-   * request with the milestone in it — and returned every issue in the repository.
-   * Nothing failed. It just did nothing.
-   */
   test("everything a filter carries survives the trip out and back", () => {
     const issues = { state: "all" as const, milestone: "Hito 2 · Septiembre", assignee: "@me", author: "ada", labels: ["bug", "área:web"] };
     const pulls = { state: "merged" as const, assignee: "grace", labels: ["deps"] };

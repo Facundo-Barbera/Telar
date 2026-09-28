@@ -1,34 +1,5 @@
-/**
- * THE IDENTITY VOCABULARY — the closed set of icons, and the closed set of
- * colours, that anything a person NAMES may wear: a browser profile, a project,
- * whatever comes next.
- *
- * WHY A CLOSED SET AND NOT AN EMOJI FIELD. An emoji is a font's opinion: it
- * renders differently on every machine, it cannot take the app's own colour, and
- * a picker over the whole of Unicode is not a choice anyone can make. A lucide id
- * is a glyph this app already ships, drawn in `currentColor`, so the same profile
- * looks the same everywhere and a colour token actually colours it.
- *
- * THE IDS ARE LUCIDE'S OWN, kebab-case, exactly as `lucide-react` names them —
- * the renderer maps id → component (`apps/web/lib/telar-icons.tsx`), and nothing
- * stores a component. Storing a name means an install that upgrades lucide keeps
- * every icon a person chose.
- *
- * THE COLOURS ARE THE EIGHT `--subject-*` HUES, and the law travels with them:
- * an identity hue says WHOSE something is, never how urgent.
- *
- * PURE DATA. No zod schema is imported by anything that only needs the list, and
- * nothing here reaches a DOM, a clock or a framework.
- */
 import { z } from "zod";
 
-/**
- * FORTY GLYPHS, GROUPED BY WHAT PEOPLE ACTUALLY NAME THINGS AFTER — work and
- * places, making and running, money and study, nature and weather, marks.
- *
- * Forty is a deliberate ceiling: a grid a person can scan in one look and pick
- * from without searching. Adding one is cheap; the picker grows a row.
- */
 export const TELAR_ICONS = [
   // Work, people, places
   "globe",

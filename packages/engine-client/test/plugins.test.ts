@@ -1,16 +1,3 @@
-/**
- * THE MIGRATION IS THE RISKY PART OF THE PLUGIN HOST, so it gets the tests.
- *
- * Not "does the schema parse" — the interesting properties are the ones a
- * reviewer worried about the rollout would ask about, and each has a named case
- * below:
- *
- *   - a project that predates the map migrates from its legacy blocks
- *   - once the marker is present the map is the WHOLE truth, and a missing
- *     entry is OFF rather than a legacy read (the resurrection bug)
- *   - the legacy blocks an older engine wrote fold into the map with their
- *     settings, a disabled one stays off, and re-running changes nothing
- */
 import { describe, expect, test } from "bun:test";
 import {
   applyPluginPatch,
@@ -49,18 +36,12 @@ describe("reading the map", () => {
   });
 
   test("legacy `enabled: false` migrates as disabled rather than absent", () => {
-    // A stored `{enabled:false}` is a project that turned the feature OFF, not
-    // one that never asked. Both read as off; the distinction only matters
-    // because dropping the entry would also drop the settings beside it.
     const { plugins } = readProjectPlugins({ latex: { enabled: false, mainFile: "paper.tex" } });
     expect(pluginEnabled(plugins, "latex")).toBe(false);
     expect(pluginSettings(plugins, "latex")).toEqual({ mainFile: "paper.tex" });
   });
 
   test("THE MARKER WINS ENTIRELY — a missing entry is OFF, never a legacy read", () => {
-    // This is the resurrection bug, asserted as absent. The project has a
-    // stale, enabled legacy LaTeX block and a migrated map with no LaTeX entry
-    // (because somebody turned it off). LaTeX must stay off.
     const { plugins, migrated } = readProjectPlugins({
       plugins: { version: 1, entries: { "data-science": { enabled: true } } },
       latex: latexLegacy,
@@ -145,8 +126,6 @@ describe("folding the legacy blocks into the map", () => {
     expect(changed).toBe(true);
     const plugins = readProjectPlugins(project).plugins;
     expect(pluginSettings(plugins, "latex")).toEqual({ mainFile: "thesis.tex" });
-    // The id the map did not name is filled from its legacy block, and an
-    // unrelated entry survives.
     expect(pluginSettings(plugins, "data-science")).toEqual({ stack: ["pandas"] });
     expect(pluginEnabled(plugins, "hello")).toBe(true);
     expect("latex" in project).toBe(false);
@@ -188,15 +167,6 @@ describe("patching", () => {
 
 describe("the capability list", () => {
   test("MOVING THE PLUGIN PREFIXES OUT OF `TELAR_CAPABILITIES` TOOK NOTHING AWAY", () => {
-    // The refactor's safety claim, pinned: every capability that routed before
-    // still routes, so no `startsWith` check, item mapping or approval route
-    // changed. Two ADDITIONS: `hello`, the proof plugin's prefix, which needs
-    // declaring for its rows to be typed when the gate is on; and `run`, which
-    // is CORE rather than a plugin and joins the list in the same change that
-    // mounts its toolkit. `spool` LEFT in #501, with the toolkit it named —
-    // the same rule read the other way. `prompt` joined in #87 under the same
-    // rule as `run`: core, and listed in the change that mounts its wall. So
-    // did `terminal`, with the toolkit that opens terminals for an agent.
     for (const capability of ["browser", "sessions", "notebook", "ds", "latex", "display"]) {
       expect(TELAR_CAPABILITIES).toContain(capability);
     }

@@ -1,30 +1,3 @@
-/**
- * THE LOOK FORMAT — one vocabulary, on the wire and in the browser.
- *
- * WHY THIS LIVES IN THE PROTOCOL PACKAGE AND NOT IN THE WEB APP. A Look started
- * as a browser thing: capture every appearance store, write one JSON file, wear
- * it on another machine. Then the cockpit began PUBLISHING its look to the
- * engine so a paired client could wear it too — and published a second, poorer
- * vocabulary to do it (sixteen tokens per half, an accent NAME, a backdrop
- * KIND). Two formats for one idea is one format too many: the poorer one could
- * not carry a wallpaper, could not carry the composed scene, and drifted every
- * time the richer one grew. So the RICH one moved here, where the engine, the
- * cockpit and any future client can all name the same shape.
- *
- * PURE, AND THAT IS THE CONSTRAINT THAT KEEPS IT SHARED. Nothing in this file
- * touches the DOM, localStorage, React or Tailwind — it is types, plain data
- * tables, and total parsers over `unknown`. The web app's own modules
- * (lib/looks.ts, lib/backdrop.ts, lib/scene-composer.ts) re-export what moved
- * and keep everything that decides anything about a live document.
- *
- * PARSING IS TOTAL, and it has to be twice over: a Look arrives from a FILE the
- * reader picked, and now also from an ENGINE any paired device may have written
- * to. Every member degrades to a default rather than throwing, and every value
- * that will end up inside a compiled stylesheet passes a gate first
- * (`isSafeColour`, `isGradientValue`, `isSceneValue`) — a blob that crossed a
- * trust boundary must not be able to close a declaration and open a rule.
- */
-
 /* ═══════════════════════════════════════════════ the theme vocabulary ═══ */
 
 /** The themable surface tokens, in the order the editor shows them. */
@@ -51,10 +24,6 @@ export type ThemeToken = (typeof THEME_TOKENS)[number];
 /** One colour scheme's complete set of surface tokens. */
 export type ThemeHalf = Record<ThemeToken, string>;
 
-/** The base palette's real values, restated once — apps/web/app/globals.css is
- *  where they actually paint from, and the "telar" identity theme compiles to
- *  nothing precisely because these ARE its values. A parser needs them
- *  concrete: a half filled from a partial file must still paint a whole app. */
 export const TELAR_LIGHT: ThemeHalf = {
   background: "oklch(0.975 0.002 286)",
   foreground: "oklch(0.274 0.006 286)",
@@ -95,40 +64,9 @@ export const TELAR_DARK: ThemeHalf = {
 
 /* ═══════════════════════════════════════ the accent and type vocabulary ═══ */
 
-/** Accent names double as `data-accent` values in the cockpit; the hues live in
- *  globals.css. A published look also carries the RESOLVED hex/oklch, because a
- *  client that never loaded that stylesheet cannot look a name up. */
 export const ACCENTS = ["indigo", "sky", "sea", "moss", "amber", "rose", "plum", "violet"] as const;
 export type Accent = (typeof ACCENTS)[number];
 
-/** "custom" has no stylesheet block anywhere: the look's own
- *  `fontSansCustom` / `fontMonoCustom` is what makes it mean something. */
-/**
- * ONE CATALOGUE, OFFERED TO BOTH SLOTS.
- *
- * The lists used to be disjoint, which quietly encoded an opinion nobody
- * asked for: that a monospaced face is for code and never for the interface.
- * Plenty of people want the whole app in JetBrains Mono. So both slots now
- * choose from the same set, and the LABEL is what differs by role — `geist`
- * is Geist in the interface slot and Geist Mono in the code slot, which is
- * what it has always meant in each and is why the id stays shared rather than
- * splitting into two that would strand every stored preference.
- *
- * The two type names survive because every caller distinguishes the two
- * SLOTS even now that they share a range.
- */
-/**
- * THE DEFAULT IS ELEMENT ZERO AND HAS TO STAY THERE — the cockpit's pre-paint
- * script decides "is this the default?" by comparing against the head of the
- * list it is handed (see DEPTHS below for the same contract). Everything after
- * it is ordered proportional faces first, then monospaced, then the two that
- * name no webfont at all; `MONOSPACED_FONTS` is the seam, and the picker draws
- * its headings from it.
- *
- * EVERY ONE OF THESE IS SELF-HOSTED AT BUILD TIME by next/font (apps/web's
- * layout.tsx), so adding a face costs bytes on disk and nothing at runtime —
- * no request leaves the machine to render one.
- */
 export const APP_FONTS = [
   "geist",
   "inter",
@@ -155,16 +93,6 @@ export type SansFont = (typeof SANS_FONTS)[number];
 export const MONO_FONTS = APP_FONTS;
 export type MonoFont = (typeof MONO_FONTS)[number];
 
-/**
- * Which faces are monospaced. Either slot may take either kind — a reader who
- * wants the whole interface in JetBrains Mono is not making a mistake — so this
- * decides nothing; it is what the picker puts its two headings around, which at
- * fifteen faces is the difference between a list and a wall.
- *
- * `geist` is in neither set on purpose: it is the one id whose face depends on
- * the SLOT (Geist in the interface, Geist Mono in code), which is what it has
- * always meant in each. `geist-mono` is the explicit one, for the interface.
- */
 export const MONOSPACED_FONTS: ReadonlySet<string> = new Set([
   "jetbrains",
   "plex-mono",
@@ -175,48 +103,16 @@ export const MONOSPACED_FONTS: ReadonlySet<string> = new Set([
   "cascadia-code",
 ]);
 
-/** The root px the whole interface is measured in — every rem-based dimension
- *  scales with it, which is the point: this is a zoom, not a text-only tweak. */
 export const MIN_FONT_SIZE = 13;
 export const MAX_FONT_SIZE = 18;
 
-/** The size of MONO CONTENT — code blocks, diffs, file previews, the terminal.
- *  It travels separately because the two answers genuinely differ: a reader
- *  who wants roomy prose usually wants code a notch tighter, and every mono
- *  face runs small at the same nominal size as its sans companion. Chrome that
- *  merely happens to be mono (a panel header) keeps its own size — this is the
- *  size of text you READ, not of labels. */
 export const MIN_MONO_FONT_SIZE = 11;
 export const MAX_MONO_FONT_SIZE = 18;
 export const DEFAULT_MONO_FONT_SIZE = 13;
 
-/** The translucency slider's DISPLAY scale (the cockpit maps it onto the real
- *  alpha range before any CSS sees it). */
 export const MIN_TRANSLUCENCY = 0;
 export const MAX_TRANSLUCENCY = 100;
 
-/**
- * HOW FAR THE ELEVATION LADDER TRAVELS — `data-depth` on the cockpit's <html>,
- * and the multipliers behind it live in globals.css beside the rungs.
- *
- * IT IS TASTE, SO IT TRAVELS IN A LOOK. `translucent` and `frost` are facts
- * about a MACHINE (macOS vibrancy, a window that has to be rebuilt); depth is
- * a fact about how you want surfaces to read, it means the same thing in a
- * browser tab and a desktop window, and a look built around flat hairlines is
- * a different look from the same palette under deep shadow. So it sits with
- * the accent and the type rather than with the window group.
- *
- * "soft" is the default and, like `indigo` and `geist`, writes no attribute at
- * all — the tokens as authored are soft, and the stylesheet stays the single
- * source of the default look.
- *
- * THE DEFAULT IS FIRST IN THIS LIST AND HAS TO STAY THERE. The cockpit's
- * pre-paint script (APPEARANCE_INIT_SCRIPT) is dependency-free and decides
- * "is this the default?" by comparing against element zero of the list it is
- * handed — the same contract ACCENTS and APP_FONTS already live under.
- * Reordering these would make the default write an attribute and one of the
- * other two stop writing one.
- */
 export const DEPTHS = ["soft", "flat", "deep"] as const;
 export type Depth = (typeof DEPTHS)[number];
 export const DEFAULT_DEPTH: Depth = "soft";
@@ -235,36 +131,16 @@ export const BACKDROP_FITS = ["cover", "fill", "tile"] as const;
 export const MAX_BACKDROP_BLUR = 40; // px
 export const MAX_BACKDROP_DIM = 80; // %
 
-/** Resolved CSS values, one `background-image` per colour scheme. A composed
- *  scene ALSO carries the per-layer lists (`background-size/position/repeat`
- *  take one comma entry per image layer); single-source kinds leave those to
- *  the stylesheet's defaults. */
 export type BackdropLayers = { light: string; dark: string; size?: string; position?: string; repeat?: string };
 
-/**
- * A colour value is going into a COMPILED STYLESHEET (the cockpit joins the
- * declarations with `;` and wraps them in `{ }`), so a value carrying either
- * character would close the block and let whatever follows become new rules.
- * Values typed into the editor cannot contain them; a Look arrives from a file
- * or from the engine, so its values are held to the shape a declaration value
- * has.
- */
 export function isSafeColour(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128 && !/[;{}<>]/.test(value);
 }
 
-/**
- * A custom gradient becomes a CSS variable via CSSOM `setProperty` — which
- * cannot escape the declaration — but a nonsense value silently paints
- * nothing, so writes are gated on looking like an actual gradient list.
- */
 export function isGradientValue(value: unknown): value is string {
   return typeof value === "string" && /gradient\(/.test(value) && !value.includes(";") && !value.includes("}") && !/url\s*\(/i.test(value);
 }
 
-/** A composed scene's background-image list: any mix of gradients and
- *  `url("data:image/…")` layers — data URLs ONLY, so a stored scene can never
- *  make the page fetch anything — and still no way out of the declaration. */
 export function isSceneValue(value: unknown): value is string {
   if (typeof value !== "string" || value.length === 0 || value.includes(";") || value.includes("}")) return false;
   return value
@@ -275,39 +151,8 @@ export function isSceneValue(value: unknown): value is string {
 
 /* ════════════════════════════════════════════ the gradient vocabulary ═══ */
 
-/**
- * A GRADIENT SOMEBODY BUILT — the stops, not a preset's name (#471).
- *
- * "It needs gradient customization. We give a lot of options; what if instead
- * we let the user create them." A gradient layer used to be a PRESET ID
- * pointing into a table of eleven authored meshes: the whole vocabulary of
- * what a gradient could be was eleven nouns, and the eleventh-and-a-half was
- * unreachable. So a gradient is now the thing itself — a shape, a direction,
- * and the stops — and the presets survive as STARTING POINTS that fill this
- * spec rather than as a kind you are locked into.
- *
- * THE SPEC, NOT THE RESOLVED CSS. The pre-composer branch had both: a preset
- * layer carrying an id and a `custom-gradient` layer carrying finished CSS,
- * because the CSS "has to paint on a build that never had this app's editor".
- * That reasoning made a gradient unre-editable the moment anything touched the
- * string. It is one layer type now, and it carries the spec — `composeGradient`
- * is total and lives in this package, so any client that can read a Look can
- * also paint one. What a hand-edited CSS value loses is stated at
- * `parseGradientCss`.
- *
- * STOPS CARRY THEIR OWN POSITION AND ALPHA. Evenly-spaced colour-only stops
- * were what made the old round-trip a regex; they were also why every custom
- * gradient looked like the same three bands. A stop is now a colour, where it
- * sits, and how opaque it is — and the alpha rides in the colour as an 8-digit
- * hex, which is the one alpha notation with no comma in it and so the only one
- * that survives a comma-split stop list.
- */
 export type GradientType = "linear" | "radial";
 
-/** One stop. `color` is hex — `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` —
- *  because `<input type="color">` is what authors one and hex is what it
- *  speaks. A bare keyword from a hand-edited value is kept and painted; it
- *  simply cannot be shown in the swatch. */
 export type GradientStop = {
   color: string;
   /** 0-100, where along the ramp this stop sits. */
@@ -336,8 +181,6 @@ export const MAX_GRADIENT_STOPS = 5;
 export const GRADIENT_LIMITS = {
   center: { min: 0, max: 100 },
   position: { min: 0, max: 100 },
-  /** A stop may go all the way to invisible — unlike a LAYER's fade, whose
-   *  floor is 10 because a layer you cannot see reads as a broken button. */
   opacity: { min: 0, max: 100 },
 } as const;
 
@@ -373,9 +216,6 @@ function wrapAngle(angle: unknown): number {
   return ((Math.round(angle) % 360) + 360) % 360;
 }
 
-/** Six lowercase hex digits, or null for anything that is not a hex colour.
- *  Any alpha the value carried is DROPPED — a stop's alpha lives in its own
- *  `opacity`, and two places holding it would eventually disagree. */
 function rgbHex(color: unknown): string | null {
   if (typeof color !== "string") return null;
   const match = /^#([0-9a-fA-F]{3,8})$/.exec(color.trim());
@@ -409,14 +249,6 @@ function stopColour(stop: GradientStop): string {
   return opacity >= GRADIENT_LIMITS.opacity.max ? `#${hex}` : `#${hex}${alphaHex(opacity)}`;
 }
 
-/**
- * THE ONE PLACE A SPEC BECOMES CSS, and the shape `parseGradientCss` is the
- * exact inverse of: one gradient function, explicit stop percentages, nothing
- * else. Regular enough that the round-trip is a test rather than a hope.
- *
- * Always emits a value `isGradientValue` accepts — no `;`, no `}`, no `url(`
- * can come out of hex colours and integers.
- */
 export function composeGradient(spec: CustomGradientSpec): string {
   const stops = spec.stops.slice(0, MAX_GRADIENT_STOPS);
   while (stops.length < MIN_GRADIENT_STOPS) {
@@ -433,21 +265,8 @@ export function composeGradient(spec: CustomGradientSpec): string {
 
 const LINEAR_CSS = /^linear-gradient\((\d{1,3})deg, (.+)\)$/;
 const RADIAL_CSS = /^radial-gradient\(circle at (\d{1,3})% (\d{1,3})%, (.+)\)$/;
-/** Hex or a bare keyword only. Comma-bearing functional colours (`rgb()`,
- *  `oklch()`) are deliberately NOT recognised: splitting the stop list on
- *  commas would shred them, and pretending otherwise would parse them wrong
- *  rather than refuse them. */
 const STOP_CSS = /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+) (\d{1,3})%$/;
 
-/**
- * The inverse of composeGradient, and ONLY of composeGradient — which is also
- * what the pre-composer branch's `custom-gradient` layers were written by, so
- * every value this app has ever stored reads back exactly.
- *
- * A preset's authored mesh, or anything hand-edited, returns null: the caller
- * then opens on a default rather than on a half-understood parse, which is the
- * honest failure. Never throws.
- */
 export function parseGradientCss(value: unknown): CustomGradientSpec | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -460,8 +279,6 @@ export function parseGradientCss(value: unknown): CustomGradientSpec | null {
     const match = STOP_CSS.exec(piece.trim());
     if (!match) return null;
     const hex = /^#[0-9a-fA-F]+$/.test(match[1]) ? match[1].slice(1) : null;
-    // The alpha comes back OUT of the colour and into the stop, which is where
-    // the editor's own control reads it from.
     const alpha = hex?.length === 4 ? parseInt(hex[3] + hex[3], 16) : hex?.length === 8 ? parseInt(hex.slice(6), 16) : 255;
     stops.push({
       color: rgbHex(match[1]) === null ? match[1] : `#${rgbHex(match[1])}`,
@@ -508,9 +325,6 @@ export function parseGradientSpec(value: unknown): CustomGradientSpec | undefine
 
 /* ═══════════════════════════════════════════════ the scene vocabulary ═══ */
 
-/** One image in the stack. Positions are `background-position` percentages,
- *  `scale` is the `background-size` WIDTH percentage (height stays `auto`, so
- *  the picture never distorts), and `opacity` is baked into the pixels. */
 export type SceneImageLayer = {
   type: "image";
   id: string;
@@ -525,21 +339,6 @@ export type SceneImageLayer = {
   tiled: boolean;
 };
 
-/**
- * ONE AUTHORED GRADIENT IN THE STACK, painted full-bleed.
- *
- * ONE GRADIENT KIND, NOT TWO (#471). There used to be a `gradient` layer
- * holding a preset id and a `custom-gradient` layer holding resolved CSS —
- * which meant "pick one of ours" and "build your own" were different SHAPES,
- * and a preset you liked-but-for-one-colour could not be edited into the thing
- * you wanted without starting over. Both read forward into this one:
- * `parseSceneLayer` expands a preset id into the spec it named, and reads a
- * `custom-gradient`'s CSS back into the stops that made it.
- *
- * `opacity` is the LAYER's own fade, distinct from any stop's: it is applied in
- * CSS by rewriting the composed gradient's colour alphas, so it costs nothing
- * to drag, and it multiplies with whatever the stops already say.
- */
 export type SceneGradientLayer = {
   type: "gradient";
   spec: CustomGradientSpec;
@@ -573,18 +372,6 @@ export const SCENE_LIMITS = {
  *  backdrop" rather than as a replacement for it. */
 export const DEFAULT_LAYER: Omit<SceneImageLayer, "id"> = { type: "image", x: 50, y: 50, scale: 60, opacity: 100, tiled: false };
 
-/**
- * WHICH GRADIENT STARTERS EXIST IS THE APP'S BUSINESS, NOT THE FORMAT'S.
- *
- * A layer stored by an older build names a PRESET, and reading it forward means
- * knowing what that preset was made of. The table is a web module full of tuned
- * gradients; importing it here would drag the cockpit's design into the
- * protocol. So the knowledge is a PARAMETER: the cockpit hands in its real
- * table, and a client reading a published look uses the permissive default
- * below, which knows no starters at all and falls back to a plain two-stop
- * gradient — a look that arrives from another build changes colour rather than
- * failing to compose.
- */
 export type ScenePresets = {
   /** The spec a starter id names, in one colour state; undefined when this
    *  build has no starter by that name. */
@@ -605,27 +392,11 @@ function clampTo(value: unknown, range: { min: number; max: number }, fallback: 
   return Math.min(range.max, Math.max(range.min, Math.round(value)));
 }
 
-/** A stored preset id as the spec it named. Always answers with a gradient:
- *  an id this build dropped falls to the fallback starter, and a build with no
- *  starter table at all falls to the plain default — a layer that composed to
- *  nothing would be a GAP in a positional list (see composeState). */
 export function expandGradientPreset(value: unknown, presets: ScenePresets, mode: "light" | "dark"): CustomGradientSpec {
   const named = typeof value === "string" && ID_SHAPE.test(value) ? presets.expand(value, mode) : undefined;
   return named ?? presets.expand(presets.fallback, mode) ?? DEFAULT_GRADIENT_SPECS[mode];
 }
 
-/**
- * One layer, or undefined. Every field is clamped into range rather than
- * refused: a stale scale from an older build should move the slider, not
- * delete someone's arrangement. Only a missing/malformed id is fatal — and
- * only for image layers, which is also the DEFAULT reading: scenes written
- * before gradient layers existed have no `type` member at all.
- *
- * `mode` is WHICH STATE this stack belongs to, and it exists for one reason:
- * the preset a v2 layer names has a light half and a dark half, and expanding
- * the wrong one would retint somebody's night on load. Every caller that knows
- * the state passes it; the legacy scene parser is read twice, once per state.
- */
 export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS, mode: "light" | "dark" = "light"): SceneLayer | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const record = value as Record<string, unknown>;
@@ -635,12 +406,6 @@ export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_
     return { type: "gradient", spec, opacity: clampTo(record.opacity, SCENE_LIMITS.opacity, SCENE_LIMITS.opacity.max) };
   }
   if (record.type === "custom-gradient") {
-    // The pre-composer layer: resolved CSS, read back into the stops that made
-    // it. Not a gradient at all is fatal rather than defaulted — there is no
-    // "the gradient they meant" to fall back to, and a layer that paints
-    // nothing is a gap in a positional list (see composeState). A gradient this
-    // parser cannot take apart (hand-edited, or an authored mesh) keeps its
-    // place and opens on the default: the layer survives, its stops do not.
     if (!isGradientValue(record.css)) return undefined;
     return {
       type: "gradient",
@@ -660,22 +425,6 @@ export function parseSceneLayer(value: unknown, presets: ScenePresets = DEFAULT_
   };
 }
 
-/**
- * Total: anything unrecognised is the default scene, so a truncated or
- * hand-edited value can never wedge the composer.
- *
- * MIGRATION. A stored `baseId` is the old mandatory base; it becomes the
- * BOTTOM gradient layer at full opacity, which is the same picture. Its
- * absence is meaningful in the new model — an explicit "nothing underneath" —
- * so it is only supplied when the value has neither a `layers` array nor a
- * `baseId` at all, i.e. when there is no scene here to read.
- */
-/**
- * A STACK, from an already-parsed value — the half of `parseScene` a
- * composition state needs too (its layers arrive inside a Look, not as their
- * own JSON string). Both caps are applied here, so no caller can build a stack
- * the composer would refuse to draw.
- */
 export function parseSceneLayers(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS, mode: "light" | "dark" = "light"): SceneLayer[] {
   if (!Array.isArray(value)) return [];
   const layers: SceneLayer[] = [];
@@ -735,63 +484,23 @@ export function parseSceneImages(raw: string | null): Record<string, string> {
 
 /* ═══════════════════════════════════════════════════════════ the Look ═══ */
 
-/**
- * The backdrop as a Look carries it: the CHOICE, its RESOLVED CSS, and — for
- * the kinds whose pixels live outside the choice — the payloads themselves. A
- * composed scene keeps its editable source too, so wearing a Look leaves the
- * scene composer populated rather than showing an arrangement it cannot edit.
- */
 export type LookBackdrop =
   | { kind: "none" }
   | { kind: "gradient"; id: string; dim?: number; resolved: BackdropLayers }
   | { kind: "custom-gradient"; light: string; dark: string; dim?: number; resolved: BackdropLayers }
   | { kind: "image"; fit: BackdropFit; blur: number; dim: number; image: string }
-  /** `scene` and `sceneDark` are the SAME stored stack read once per colour
-   *  state — the old model had one scene for both, but a gradient layer in it
-   *  named a preset with two halves, so expanding it needs to happen twice or
-   *  the migration would paint somebody's night in daylight colours. */
   | { kind: "scene"; scene: Scene; sceneDark: Scene; images: Record<string, string>; dim?: number; resolved: BackdropLayers };
 
 /* ═══════════════════════════════════════════════════ the composition ═══ */
 
-/**
- * ONE STATE OF A COMPOSITION — what the app looks like in one colour scheme.
- *
- * THE COMPOSITION IS THE THEME (#471). There is no separate palette object any
- * more. A state is a BASE colour and a stack of LAYERS over it, and the sixteen
- * surface tokens are DERIVED from the base rather than stored — which is the
- * whole point: "gradient and theme are different things here. We inject the
- * gradients over the theme, where I always thought that a gradient would be
- * part of a theme."
- *
- * THE BASE IS A HUE, NOT A CANVAS COLOUR. It goes through the same engine that
- * turns a photograph into a theme half (the cockpit's palette-from-image), so
- * what it supplies is the hue and how colourful to be; Telar's lightness spine
- * is kept underneath. That is what makes any base yield a READABLE palette
- * rather than letting somebody pick a canvas their text cannot sit on.
- *
- * OVERRIDES ARE THE ESCAPE HATCH, and they are sparse on purpose: a token in
- * here is one somebody set by hand, and everything absent follows the base. A
- * composition migrated from the old theme-pair model therefore arrives with a
- * full set — it has to look exactly as it did — and clearing one hands that
- * token back to the base.
- */
 export type CompositionState = {
   /** The app colour for this state. Any value `isSafeColour` accepts. */
   base: string;
-  /** The scene over it, TOP LAYER FIRST. Empty means nothing over the base,
-   *  which is what "None" is now. */
   layers: SceneLayer[];
   /** Tokens set by hand, over what the base derived. */
   overrides: Partial<ThemeHalf>;
 };
 
-/**
- * LIGHT AND DARK ARE TWO STATES OF ONE COMPOSITION, not two themes. The
- * window's colour scheme picks which one is showing; each carries its own base
- * and its own stack, so a scene tuned for daylight is not forced to be the one
- * that shows at night.
- */
 export type Composition = { light: CompositionState; dark: CompositionState };
 
 /** The base the identity look wears — Telar's own canvas, which derives to
@@ -825,20 +534,11 @@ export function parseComposition(value: unknown, presets: ScenePresets = DEFAULT
 }
 
 export type Look = {
-  /**
-   * 2 since the composition replaced the theme pair (#471). A missing version
-   * reads as 1 and is MIGRATED rather than refused — see `compositionFromV1`.
-   * The number marks a change of meaning; members added later need no bump,
-   * because every one of them falls back on its own.
-   */
   version: 2;
   id: string;
   label: string;
   /** What the app looks like, in both states. */
   composition: Composition;
-  /** Layer images by id, SHARED BY BOTH STATES — a layer id is unique across
-   *  the composition, and a dark state that started as a copy of light would
-   *  otherwise carry a second megabyte of the same picture. */
   images: Record<string, string>;
   accent: Accent;
   fontSans: SansFont;
@@ -848,7 +548,6 @@ export type Look = {
   fontSize: number;
   fontMonoSize: number;
   translucencyLevel: number;
-  /** How far the elevation ladder travels — see DEPTHS. */
   depth: Depth;
 };
 
@@ -879,9 +578,6 @@ export function parseThemeHalf(value: unknown, mode: "light" | "dark"): ThemeHal
   return half;
 }
 
-/** The resolved layers, held to the store's OWN gate: `check` is
- *  isGradientValue for the gradient kinds and isSceneValue for a scene, so a
- *  Look can never write something the backdrop would silently drop. */
 function parseLayers(value: unknown, check: (candidate: unknown) => candidate is string): BackdropLayers | undefined {
   if (!isRecord(value) || !check(value.light)) return undefined;
   const list = (candidate: unknown) =>
@@ -898,12 +594,6 @@ function parseLayers(value: unknown, check: (candidate: unknown) => candidate is
   };
 }
 
-/**
- * The backdrop half of a Look. Anything that does not survive its kind's gate
- * becomes "none" — a Look that paints nothing is a legible outcome; a Look
- * that sets `data-backdrop` with no layers behind it is a frosted wash hanging
- * over a bare canvas.
- */
 export function parseLookBackdrop(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): LookBackdrop {
   if (!isRecord(value)) return { kind: "none" };
   // Absent stays absent — a missing dim must not round-trip into `dim: 0`.
@@ -945,33 +635,6 @@ export function parseLookBackdrop(value: unknown, presets: ScenePresets = DEFAUL
   return { kind: "none" };
 }
 
-/**
- * A LOOK FROM BEFORE THE COMPOSITION EXISTED, read forward.
- *
- * Every Look ever written or exported is a theme PAIR plus a backdrop, and none
- * of them may change appearance on load — a migration that retints somebody's
- * saved work is worse than one that refuses. So:
- *
- *   THE BASE IS THE OLD CANVAS, flat. It is the honest answer to "what colour
- *   was this?" and it is what the base control opens on.
- *   THE OVERRIDES ARE THE WHOLE OLD HALF, which is what makes the migration
- *   lossless: every token is pinned to the value it had, and the base only
- *   starts deciding anything once somebody clears one.
- *   THE BACKDROP BECOMES LAYERS, the same stack in both states — the old model
- *   had one backdrop for both, so splitting it per state would be inventing a
- *   difference nobody asked for.
- *
- * WHAT AN IMAGE BACKDROP LOSES is its `fit`, `blur` and `dim`: a scene layer is
- * positioned and scaled rather than fitted, and has no blur of its own. `cover`
- * and `fill` become a full-bleed layer, `tile` becomes a tiled one, and the
- * picture survives — which is the part somebody would miss.
- *
- * WHAT A GRADIENT BACKDROP BECOMES is the STARTER SPEC its preset named, per
- * state (#471) — the old value was two authored meshes behind one id, and a
- * spec is one gradient, so the picture simplifies where the id did the work.
- * `presets` is where this build's starter table comes in; without one, every
- * gradient falls to the plain default.
- */
 export function compositionFromV1(
   theme: { light: ThemeHalf; dark: ThemeHalf },
   backdrop: LookBackdrop,
@@ -1023,10 +686,6 @@ export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_
   if (!isRecord(value)) return undefined;
   if (typeof value.id !== "string" || value.id.length === 0) return undefined;
   if (typeof value.label !== "string") return undefined;
-  // WHICH SHAPE IS THIS? A composition member is the mark of the new one; a
-  // `theme` pair with no composition is a file from before it existed, and is
-  // migrated rather than half-read. Neither is an error — a Look with neither
-  // simply falls to the identity composition, like every other member here.
   const migrated = !isRecord(value.composition) && isRecord(value.theme);
   const old = isRecord(value.theme) ? value.theme : {};
   const fromV1 = migrated
@@ -1061,29 +720,6 @@ export function parseLook(value: unknown, presets: ScenePresets = DEFAULT_SCENE_
 
 /* ═══════════════════════════════════════════ the published appearance ═══ */
 
-/**
- * WHAT THE HOST COCKPIT PUBLISHES — the whole Look, plus the few things a Look
- * deliberately is NOT.
- *
- * A Look is TASTE and travels between machines untouched. Three facts about
- * THIS WINDOW ride beside it rather than inside it, because a reader needs
- * them and a shared file must not carry them:
- *
- *   `scheme`       which half is being worn right now (light/dark/system).
- *                  Not in a Look: a Look has both halves, and which one you
- *                  are looking at is a property of the window.
- *   `translucent`  and `frost` — properties of the MACHINE. Turning
- *                  translucency on rebuilds a desktop window; frost is macOS
- *                  vibrancy. A phone cannot wear either, but it can want to
- *                  KNOW, so they are reported and never applied blind.
- *   `resolved`     the accent and typefaces as real CSS, because `"amber"` and
- *                  `"geist"` are names only this app's stylesheet can look up.
- *
- * ADDITIVE FOR READERS, VERSIONED FOR MEANING. `version: 2` marks the break
- * from the first, poorer blob (theme halves and scalar names only); new keys
- * after this need no bump, because `parsePublishedAppearance` falls back per
- * member and readers ignore what they do not recognise.
- */
 export type PublishedScheme = "light" | "dark" | "system";
 export type PublishedFrost = "blur" | "clear";
 
@@ -1099,14 +735,10 @@ export type PublishedResolved = {
 
 export type PublishedAppearance = {
   version: 2;
-  /** What the PUBLISHER believed the time was. Advisory only: the engine stamps
-   *  its own `updatedAt` on arrival, and that is the one an ETag is cut from. */
   updatedAtHint: number;
   scheme: PublishedScheme;
   translucent: boolean;
   frost: PublishedFrost;
-  /** Absent when nothing readable was published — a reader that only wants the
-   *  Look never needs it, and half-resolved colours are worse than none. */
   resolved?: PublishedResolved;
   look: Look;
 };
@@ -1122,9 +754,6 @@ function parseAccentColours(value: unknown): PublishedAccentColours | undefined 
   return { primary: value.primary, primaryForeground: value.primaryForeground };
 }
 
-/** ALL OR NOTHING. A half-resolved accent would let a client paint a button
- *  with a foreground that never matched its background; a missing `resolved`
- *  is a state every reader already has to handle. */
 function parseResolved(value: unknown): PublishedResolved | undefined {
   if (!isRecord(value)) return undefined;
   const accent = isRecord(value.accent) ? value.accent : undefined;
@@ -1138,12 +767,6 @@ function parseResolved(value: unknown): PublishedResolved | undefined {
   };
 }
 
-/**
- * Total, and gated: this blob crossed a trust boundary (any paired device can
- * PUT it), so every colour that could reach a stylesheet passes `isSafeColour`
- * on the way in. Undefined means "there is no look here" — the only fatal
- * member is the Look itself, because everything else has a defensible default.
- */
 export function parsePublishedAppearance(value: unknown, presets: ScenePresets = DEFAULT_SCENE_PRESETS): PublishedAppearance | undefined {
   if (!isRecord(value)) return undefined;
   const look = parseLook(value.look, presets);

@@ -27,8 +27,6 @@ function spec(patch: Partial<CustomGradientSpec> = {}): CustomGradientSpec {
   return { type: "linear", angle: 160, centerX: 50, centerY: 50, stops: [], ...patch };
 }
 
-/** A build that HAS a starter table, which is what the cockpit hands in. The
- *  two halves differ, which is the whole reason expansion takes a mode. */
 const DUSK_LIGHT = spec({ angle: 180, stops: [{ color: "#ffdad0", position: 0, opacity: 100 }, { color: "#ffe4e3", position: 100, opacity: 100 }] });
 const DUSK_DARK = spec({ angle: 180, stops: [{ color: "#663028", position: 0, opacity: 100 }, { color: "#100606", position: 100, opacity: 100 }] });
 const PRESETS: ScenePresets = {
@@ -37,8 +35,6 @@ const PRESETS: ScenePresets = {
 };
 
 test("a half is filled from the Telar base, and unsafe colours never land in it", () => {
-  // The contract the whole format rests on: a PARTIAL half paints a complete
-  // app, because a half-styled window is worse than an unfashionable one.
   const half = parseThemeHalf({ background: "oklch(0.5 0 0)" }, "light");
   expect(half.background).toBe("oklch(0.5 0 0)");
   expect(half.foreground).toBe(TELAR_LIGHT.foreground);
@@ -82,7 +78,6 @@ test("a backdrop that cannot be painted degrades to none, never to a wash over n
     resolved: { light: "linear-gradient(red, blue)", dark: "linear-gradient(red, blue)" },
   });
 
-  // Absent dim STAYS absent — it must not round-trip into `dim: 0`.
   const noDim = parseLookBackdrop({ kind: "gradient", id: "aurora", resolved: { light: "linear-gradient(red, blue)" } });
   expect("dim" in noDim).toBe(false);
 
@@ -120,25 +115,14 @@ test("a look reads what it can and defaults the rest, and needs only an id and a
     fontSansCustom: "",
   });
 
-  // A FUTURE version is still read on a best effort — every member already
-  // falls back on its own, so refusing outright would lose a readable look.
   expect(parseLook(look({ version: 99, accent: "sea" }))).toMatchObject({ version: 2, accent: "sea" });
 });
 
-/**
- * THE COMPOSITION REPLACED THE THEME PAIR, AND EVERY OLD FILE STILL OPENS.
- *
- * Every Look ever exported is `theme` + `backdrop`. None of them may change
- * appearance on load: a migration that retints somebody's saved work is worse
- * than one that refuses, and nobody would know which token had moved.
- */
 test("a Look from the theme-pair model migrates into a composition without changing", () => {
   const ember = { ...TELAR_LIGHT, background: "oklch(0.988 0.008 65)", foreground: "oklch(0.28 0.0128 65)" };
   const parsed = parseLook(look({ theme: { light: ember, dark: TELAR_DARK } }))!;
 
   expect(parsed.version).toBe(2);
-  // The base is the old canvas, flat — the honest answer to "what colour was
-  // this?", and what the base control opens on.
   expect(parsed.composition.light.base).toBe(ember.background);
   expect(parsed.composition.dark.base).toBe(TELAR_DARK.background);
   // And every token is pinned, which is what makes the migration lossless: the
@@ -149,9 +133,6 @@ test("a Look from the theme-pair model migrates into a composition without chang
 });
 
 test("the old backdrop kinds each become layers over the migrated base", () => {
-  // A GRADIENT BACKDROP NAMED A PRESET, and a preset has two halves — so each
-  // state expands the half it needs. Expanding light into both would paint
-  // somebody's night in daylight colours.
   const gradient = parseLook(
     look({ backdrop: { kind: "gradient", id: "dusk", resolved: { light: "linear-gradient(#fff, #000)", dark: "linear-gradient(#000, #fff)" } } }),
     PRESETS,
@@ -164,9 +145,6 @@ test("the old backdrop kinds each become layers over the migrated base", () => {
   const unknown = parseLook(look({ backdrop: { kind: "gradient", id: "no-such-preset", resolved: { light: "linear-gradient(#fff, #000)" } } }))!;
   expect(unknown.composition.light.layers).toEqual([{ type: "gradient", spec: DEFAULT_GRADIENT_SPECS.light, opacity: 100 }]);
 
-  // A custom gradient is the ONE place the old model held two values where the
-  // new one holds two stacks, so each state takes its own half — read back into
-  // the stops that made it, because it is one gradient kind now.
   const custom = parseLook(
     look({
       backdrop: {
@@ -190,7 +168,6 @@ test("the old backdrop kinds each become layers over the migrated base", () => {
   expect(photo.images).toEqual({ migrated: "data:image/webp;base64,AAAA" });
   expect(photo.composition.light.layers).toMatchObject([{ type: "image", id: "migrated", tiled: true }]);
 
-  // And "no backdrop" is what "no layers" now means.
   expect(parseLook(look({ backdrop: { kind: "none" } }))!.composition.light.layers).toEqual([]);
 });
 
@@ -210,9 +187,6 @@ test("a preset gradient layer expands per state, and round-trips through export"
   expect(opened.composition.light.layers).toEqual([{ type: "gradient", spec: DUSK_LIGHT, opacity: 60 }]);
   expect(opened.composition.dark.layers).toEqual([{ type: "gradient", spec: DUSK_DARK, opacity: 60 }]);
 
-  // EXPORT WRITES THE SPEC, and reading that back is a fixed point: once a look
-  // has been opened by a build that has the starter table, it no longer depends
-  // on one.
   const exported: unknown = JSON.parse(JSON.stringify(opened));
   const reopened = parseLook(exported)!; // no starter table at all this time
   expect(reopened.composition).toEqual(opened.composition);
@@ -238,8 +212,6 @@ test("a spec composes to CSS and the CSS reads back into the same spec", () => {
   for (const value of cases) {
     const css = composeGradient(value);
     const back = parseGradientCss(css);
-    // A radial carries no angle, so the round trip restores the default rather
-    // than the one it was given — everything that PAINTS comes back exact.
     expect(back).toEqual(value.type === "radial" ? { ...value, angle: DEFAULT_GRADIENT_SPECS.light.angle } : value);
     expect(composeGradient(back!)).toBe(css);
   }
@@ -316,14 +288,10 @@ test("a published appearance is total, gated, and fatal only in its look", () =>
   // The window facts default rather than refuse.
   expect(parsePublishedAppearance({ look: look() })).toMatchObject({ scheme: "system", translucent: false, frost: "blur", updatedAtHint: 0 });
 
-  // `resolved` is ALL OR NOTHING: a foreground that never matched its
-  // background would let a client paint an unreadable button.
   const halfResolved = parsePublishedAppearance({ ...blob, resolved: { ...blob.resolved, accent: { name: "sea", light: blob.resolved!.accent.light } } });
   expect(halfResolved?.resolved).toBeUndefined();
   expect(halfResolved?.look.label).toBe("A look");
 
-  // …and the same declaration-escape gate applies to it, because this blob
-  // crossed a trust boundary: any paired device can PUT one.
   const hostile = parsePublishedAppearance({
     ...blob,
     resolved: { ...blob.resolved, fontStacks: { sans: "Geist; } html { display: none", mono: "monospace" } },

@@ -1,15 +1,3 @@
-/**
- * THE CONVERSION IS THE RISKY PART, because it is arithmetic that has to agree
- * with a CLI that is not in this repo.
- *
- * The threshold Claude Code fires at, read out of the installed binary:
- *
- *     effective = window − min(the model's max output tokens, 20 000)
- *     threshold = min(floor(effective × pct / 100), effective − 13 000)
- *
- * `cliThreshold` is that formula, written out once, and every "does N land on
- * N" case runs the spawned environment THROUGH it.
- */
 import { describe, expect, test } from "bun:test";
 import {
   AUTO_COMPACT_DEFAULTS,
@@ -87,13 +75,11 @@ describe("the environment a Claude session is spawned with", () => {
 
 describe("migrating a pre-#587 Claude login", () => {
   test("the old token count becomes the 200k limit; 1M takes the default", () => {
-    // 150 000, as the old control wrote it, beside a variable it never owned.
     const old = [plain("ANTHROPIC_BASE_URL", "https://example.test"), plain(CLAUDE_COMPACTION_WINDOW_ENV, "183000"), plain(CLAUDE_COMPACTION_PERCENT_ENV, "100")];
     expect(migrateClaudeCompaction(old)).toEqual({
       env: [plain("ANTHROPIC_BASE_URL", "https://example.test")],
       autoCompact: limits(150_000, AUTO_COMPACT_DEFAULTS.long),
     });
-    // 120 000 and 30 000: both regimes of the old conversion.
     expect(migrateClaudeCompaction([plain(CLAUDE_COMPACTION_WINDOW_ENV, "153000"), plain(CLAUDE_COMPACTION_PERCENT_ENV, "90.225564")])?.autoCompact).toEqual(
       limits(120_000, 400_000),
     );

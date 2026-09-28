@@ -1,20 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { IDENTITY_COLORS, IdentityColor, isIdentityColor, isTelarIcon, TELAR_ICONS, TelarIcon } from "../src/index";
 
-/**
- * THE IDENTITY VOCABULARY IS A CLOSED SET, AND A SHARED ONE.
- *
- * Two surfaces spend it — browser profiles (#366) and project icons — and a
- * renderer maps every id to a glyph by hand (`apps/web/lib/telar-icons.tsx`).
- * That makes the list's SHAPE load-bearing in a way a list of strings usually is
- * not: a duplicate silently costs a slot in the picker grid, an id that is not
- * kebab-case cannot be looked up in lucide, and a hue that drifts from
- * `--subject-*` stops covering half the app's colour tokens.
- */
 describe("the icon set", () => {
   test("is forty ids, each distinct", () => {
-    // Forty is the picker's own claim: a grid a person scans in one look. If
-    // this number moves, the grid's shape was a decision someone made.
     expect(TELAR_ICONS).toHaveLength(40);
     expect(new Set(TELAR_ICONS).size).toBe(TELAR_ICONS.length);
   });
@@ -26,8 +14,6 @@ describe("the icon set", () => {
   test("the guard answers for the set and refuses everything else", () => {
     expect(isTelarIcon("globe")).toBe(true);
     expect(TELAR_ICONS.every((icon) => isTelarIcon(icon))).toBe(true);
-    // The three things a person might reasonably try, and the owner's own
-    // "not emojis though, icons": none of them is an icon id.
     expect(isTelarIcon("🏠")).toBe(false);
     expect(isTelarIcon("Globe")).toBe(false);
     expect(isTelarIcon(undefined)).toBe(false);

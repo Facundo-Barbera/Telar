@@ -1,18 +1,3 @@
-/**
- * THE WIRE ENCODING OF A DIFF READ — the builder and the parser, together.
- *
- * WHY THIS FILE EXISTS. #694 shipped a working toggle whose flag never reached
- * git: the cockpit built the option, the engine parsed the parameter, and the
- * Next adapter between them enumerated parameters by hand and listed only one
- * of the two. Nothing failed — TypeScript does not check excess properties on a
- * non-literal — so the toggle flipped, the row re-read, and the same hunks came
- * back. `forgeQuery` carries a note about the identical failure in the GitHub
- * filter; this is that lesson's second bill.
- *
- * THE ROUND TRIP IS THE TEST. Asserting the string alone would pin an encoding;
- * asserting the pair pins the CONTRACT, which is the thing three layers rely on
- * meaning the same thing.
- */
 import { describe, expect, test } from "bun:test";
 import { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "../src/protocol/diff-query";
 
@@ -27,12 +12,6 @@ describe("the base, which has three states and not two", () => {
   });
 
   test("EMPTY is 'no base' — the working tree, and a question of its own", () => {
-    /**
-     * THE ONE THAT CARRIES THE SCOPE SELECTOR. A layer that treated empty as
-     * absent would silently ask for the session's base and return a confident,
-     * plausible answer about something else — which is #690's bug arriving by
-     * a different door.
-     */
     expect(diffBaseQuery({ base: null })).toBe("base=");
     expect(parseDiffBaseQuery(new URLSearchParams("base="))).toEqual({ base: null });
     // ...and the two are not the same request, at either end.
@@ -41,20 +20,9 @@ describe("the base, which has three states and not two", () => {
   });
 
   test("a RANGE has a right-hand side, and absent is still the working tree — issue #741", () => {
-    /**
-     * Every comparison this contract could express was one ref against the
-     * working tree. A turn is a range, and there was no way to say its second
-     * half — so `to` is declared here, in the one file a diff parameter may be
-     * declared in, rather than at a call site.
-     *
-     * NO `null` STATE, unlike `base`: "compare against the working tree" is
-     * what absent already means, so a second spelling of it would be the very
-     * ambiguity `base` needs three states to avoid.
-     */
     expect(diffBaseQuery({ base: "aaa", to: "bbb" })).toBe("base=aaa&to=bbb");
     expect(parseDiffBaseQuery(new URLSearchParams("base=aaa&to=bbb"))).toEqual({ base: "aaa", to: "bbb" });
 
-    // Absent stays absent — the ordinary read is the bare URL it always was.
     expect(diffBaseQuery({ base: "aaa" })).toBe("base=aaa");
     expect(parseDiffBaseQuery(new URLSearchParams("base=aaa")).to).toBeUndefined();
     expect(diffBaseQuery({})).toBe("");
@@ -101,14 +69,6 @@ describe("one file's patch", () => {
   });
 
   test("a rename carries BOTH of its paths — issue #694", () => {
-    /**
-     * THE OPTION #739's ARGUMENT WAS WRITTEN FOR. A patch read with one path
-     * cannot see a rename at all: git excludes the other from the pathspec and
-     * answers `new file mode`. So the old path is part of the REQUEST, and it
-     * is declared here — the one place a diff parameter may be declared —
-     * rather than at a call site, which is how the last one reached two layers
-     * of three and stopped.
-     */
     const query = filePatchQuery("dst.txt", { renamedFrom: "src.txt" });
     expect(new URLSearchParams(query).get("renamedFrom")).toBe("src.txt");
     expect(round(query)).toEqual({ untracked: false, ignoreWhitespace: false, renamedFrom: "src.txt" });

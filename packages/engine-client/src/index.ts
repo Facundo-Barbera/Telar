@@ -1,12 +1,3 @@
-/**
- * engine client — protocol v2.
- *
- * PROTOCOL v1 IS GONE, not deprecated. Its eleven flat `turn.*` events were not
- * a subset of v2 and there is no dual-emit path; an engine speaking v2 answers
- * on `/v2/**` and a v1 client gets a 404 rather than a confusing parse failure
- * three layers in. The routes moved with the version deliberately, so the break
- * is visible at the URL.
- */
 import { parsePublishedAppearance, type PublishedAppearance } from "./look";
 import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
 import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
@@ -175,21 +166,8 @@ import {
 
 export * from "./protocol";
 
-/**
- * THE LOOK FORMAT — the appearance vocabulary the cockpit publishes and every
- * other client reads. Kept out of `protocol/` because it is not part of the
- * engine's own model: the engine stores this blob without understanding a word
- * of it (see `/v2/appearance`), and the shape belongs to the clients that both
- * write and wear it. Pure data and total parsers; no DOM, no framework.
- */
 export * from "./look";
 
-/**
- * THE IDENTITY VOCABULARY — the closed sets of icons and colours anything a
- * person names may wear (a browser profile, a project). Like the look format,
- * it is not part of the engine's model: the clients that draw an identity are
- * what needs the two lists to agree.
- */
 export * from "./icons";
 
 /** `?turns=N[&before=runId]`, or nothing — spelled once for every caller. */
@@ -200,32 +178,11 @@ export function snapshotQuery(window?: SnapshotWindow): string {
   return `?${params.toString()}`;
 }
 
-/**
- * A QUERY STRING, OR NOTHING — for the routes whose parameters are all optional
- * (#516's five).
- *
- * A BARE `?` IS NOT THE SAME URL, and the routes here distinguish absent from
- * empty: `?limit=` is a caller saying something, and `positiveParam` reads an
- * unparseable value as a 400 rather than as the default. So an empty parameter
- * set produces no question mark at all.
- */
 function query(params: URLSearchParams): string {
   const written = params.toString();
   return written ? `?${written}` : "";
 }
 
-/**
- * A TRANSPORT FAILURE, REDUCED TO SOMETHING SAFE TO KEEP.
- *
- * `fetch` rejects with a `TypeError` whose message and `cause` chain routinely
- * carry the request URL — and this client's URLs are loopback addresses whose
- * headers hold the engine's bearer token. So the error is NOT propagated: only
- * the constructor name and an errno-shaped code survive, which is exactly the
- * pair that distinguishes ECONNRESET from ECONNREFUSED from a timeout.
- *
- * Everything else is dropped. `undefined` when there is nothing errno-shaped to
- * say, which stays honestly distinguishable from "the cause was known".
- */
 export function sanitizeTransportCause(cause: unknown): string | undefined {
   const seen = new Set<unknown>();
   let current = cause;
@@ -247,11 +204,6 @@ export function sanitizeTransportCause(cause: unknown): string | undefined {
 export class EngineClientError extends Error {
   readonly code: EngineErrorCode;
   readonly status?: number;
-  /**
-   * Which client call failed, as a stable identifier (`workerHeartbeat`,
-   * `submitTurn`). Present so a supervisor can tell an idempotent control poll
-   * from a mutating submission WITHOUT re-deriving it from a URL.
-   */
   readonly operation?: string;
   /** The sanitized transport cause — see `sanitizeTransportCause`. Absent for
    *  an ordinary HTTP error response, which has a status instead. */
@@ -267,31 +219,15 @@ export class EngineClientError extends Error {
   }
 }
 
-/** Engine discovery (`discoverEngine`/`connectEngine`) lives in `./node`, a
- *  separate entry point, because it reads the filesystem and this root export
- *  is bundled into browser client components — a top-level `node:fs/promises`
- *  import here is a hard Turbopack error. */
 export type FetchLike = typeof fetch;
 
-/**
- * WHAT SETTLING A SESSION ENDED — issue #883. On the answer to a PATCH that
- * settled it: the terminals Telar closed (the person's shells included) and the
- * background tasks it stopped. Absent on every other PATCH, and from an engine
- * older than this.
- */
 export type SessionSettleEnded = { terminals: number; backgroundTasks: number };
 
-/** Where a windowed snapshot stands in the session's history. */
 export type SnapshotPage = {
   /** Oldest settled turn on this page — the `before` for the next page up. */
   before: string | null;
   /** Are there settled turns above this page? */
   more: boolean;
-  /**
-   * How many turns the WHOLE session has, settled or not — what a windowed
-   * reader would otherwise have to fetch every turn to count. Absent from an
-   * engine older than this field.
-   */
   total?: number;
 };
 
@@ -306,70 +242,18 @@ export type SnapshotWindow = {
 /** What `GET /v2/sessions/:id` answers with — the snapshot a client opens on
  *  so it does not have to replay the journal from zero. */
 export type SessionSnapshot = {
-  /**
-   * The journal position this snapshot reflects — the id of the last event
-   * the engine had written when it was read. A client tails from here;
-   * replaying the journal from zero to learn what the snapshot already
-   * says was the whole cost of opening a long session. Absent from an
-   * engine older than this field, in which case a client has to ask.
-   */
   cursor?: number;
-  /**
-   * Present when the read was windowed (`session(id, { turns })`): the page
-   * above this one is `session(id, { turns, before })`, and `null` once the
-   * window reaches the session's first turn. Every unsettled turn is on the
-   * first page whatever the limit.
-   */
   page?: SnapshotPage;
   session: Session;
   turns: Turn[];
   items: Item[];
-  /**
-   * The requests filed under the turns in this window, plus EVERY open one
-   * wherever its turn sits — an unanswered question on a paged-out turn is
-   * still the session's own state and still has to reach a composer. Settled
-   * requests outside the window are not here: they render nothing, and on a
-   * long session they were the largest thing in the snapshot after `items`.
-   */
   requests: EngineRequest[];
-  /**
-   * Who this session is working on behalf of, and what it has finished for
-   * them. Folded by the ENGINE over the whole queue, never windowed — a client
-   * paging its transcript cannot tell a finished carrier from an absent one,
-   * so it must not have to try. Absent from an older engine.
-   */
   assignments?: SessionAssignment[];
-  /** Sub-agents and background work. A background task OUTLIVES the turn that
-   *  started it, so this is the only thing that can tell a client opening a
-   *  cold session that it is still working. */
   tasks: Task[];
 };
 
 /** What `GET /v2/sessions/:id/held-reports` answers with: peer notifications waiting for the next turn. */
 export type HeldReports = { held: number };
-
-/**
- * ══ THE FIVE QUERY ROUTES — issue #516 ══
- *
- * `GET /v2/sessions/find`, `/:id/outline`, `/:id/runs/:runId/items[/:step]`,
- * `/:id/answer` and `/:id/grep`: five reads that ASK a conversation something
- * rather than paging it, each answered from the `turn_summary` projection or
- * one indexed document span.
- *
- * ── WHY THEY ARE ON THE CLIENT AT ALL ───────────────────────────────────────
- * Not for a cockpit surface — the transcript has the snapshot. They are here
- * because the OUT-OF-PROCESS worker builds a session's tool wall out of this
- * class: it holds no store handle by design, so every verb a session can reach
- * goes back over HTTP. Without these six methods the query tools were mountable
- * in the daemon's embedded worker and nowhere else, which would have made one
- * tool answer differently depending on which worker claimed the turn.
- *
- * ── THE SHAPES ARE THE ROUTES', NOT A NARROWING OF THEM ─────────────────────
- * Every field the route sends is declared, including the ones the tool wall
- * does not read (`sequence`, `startedAt`, `index`). A client type that quietly
- * dropped a key would make the engine's answer and the client's disagree about
- * what the route returns, which is the drift this file exists to prevent.
- */
 
 /** One hit from `GET /v2/sessions/find`, quoting the line that matched. */
 export type SessionSearchHit = {
@@ -378,7 +262,6 @@ export type SessionSearchHit = {
   projectId?: string;
   activity: string;
   updatedAt: number;
-  /** The turn the match was found in, when it was found in one. */
   runId?: string;
   /** The matching line, clamped — so a chooser is not taking the engine's word
    *  for the match. */
@@ -400,12 +283,10 @@ export type SessionOutlineRow = {
   sequence: number;
   origin?: Turn["origin"];
   state: Turn["state"];
-  /** The first line of what was asked, clamped. */
   input: string;
   items: number;
   /** The first line of the answer, clamped. */
   answer: string;
-  /** The WHOLE answer's length, so a caller can price `/answer` before it asks. */
   answerChars: number;
   endedAt?: number;
   failure?: string;
@@ -415,8 +296,6 @@ export type SessionOutlineAnswer = {
   turns: SessionOutlineRow[];
   total: number;
   more: boolean;
-  /** The `before` for the next page — a SEQUENCE, so appends underneath a
-   *  paging caller cannot shift its window. */
   next?: number;
 };
 
@@ -432,8 +311,6 @@ export type RunItemRow = {
 
 export type RunItemsAnswer = { items: RunItemRow[] };
 
-/** One step, whole — `text` is its `detail`, clamped to `maxChars` with the
- *  marker that says how much was left behind. */
 export type RunItemRead = {
   index: number;
   id: string;
@@ -447,8 +324,6 @@ export type RunItemRead = {
   more: boolean;
 };
 
-/** One turn's answer text, sliced. The slices are VERBATIM: concatenated
- *  across calls they are the text exactly as the turn wrote it. */
 export type TurnAnswerRead = {
   runId: string;
   sequence: number;
@@ -471,162 +346,40 @@ export type SessionGrepMatch = {
 
 export type SessionGrepAnswer = { matches: SessionGrepMatch[]; more: boolean; next?: number };
 
-/**
- * WHO TRANSCRIBES, AND WHETHER THIS MAC CAN — issue #544.
- *
- * `off` IS THE DEFAULT AND IT IS A REAL CHOICE. macOS and iOS dictation already
- * work on the composer — it is a plain editable — and so does Wispr Flow and
- * everything like it, so a mic button that appeared uninvited would be Telar
- * claiming a job somebody may have given to something else. With `off` there is
- * no key row and no mic button on any surface.
- *
- * THE SET IS OPEN BY DESIGN. OpenAI transcription and an on-device model are
- * the two the engine's provider interface exists to hold
- * (`apps/engine/src/dictation/provider.ts`); neither is built. A client that
- * meets a provider it does not know should read it as "not one I can drive"
- * rather than failing to parse the document.
- *
- * `configured` IS THE WHOLE OF WHAT IS SAID ABOUT THE KEY. Not a prefix, not a
- * length, not a redaction — all three are how a secret ends up in a log one
- * pass later. It is answered even when the provider is off, because a key
- * pasted before is still there and a pane that said otherwise would have
- * somebody paste it twice. See `apps/engine/src/dictation/credentials.ts`.
- */
 export type DictationProviderId = "off" | "deepgram";
 
-/** One language the engine will transcribe, with the name to offer it under.
- *  THE LABEL COMES FROM THE ENGINE so no client holds a copy of a vendor's
- *  language table — see `apps/engine/src/dictation/deepgram-languages.ts`. */
 export type DictationLanguage = { code: string; label: string };
 
-/**
- * `language` IS WHAT IS STORED and `languages` is the vocabulary it is written
- * in (#560). Both ride one answer because a picker needs them at the same
- * instant: fetched separately, a client could draw the list before the choice
- * and show nothing selected.
- *
- * `multi` IS THE DEFAULT — Nova-3 code-switching between supported languages
- * inside one utterance. Sending no language at all is what made dictation
- * English-only, which is the bug this field closes.
- */
 export type DictationAnswer = {
   dictation: {
     provider: DictationProviderId;
     configured: boolean;
     language: string;
     languages: DictationLanguage[];
-    /**
-     * THE PERSON'S OWN WORDS FOR THE RECOGNISER (#581) — a plain list of terms,
-     * one per line in the box that writes it.
-     *
-     * NOT `keyterm`S. That is Deepgram's name for the wire parameter, and the
-     * mapping happens on the engine so this setting outlives the provider it
-     * was typed under — see `apps/engine/src/dictation/keyterms.ts`. What a
-     * client edits is the glossary; what a socket carries is whatever that
-     * provider makes of it.
-     */
     vocabulary: string[];
-    /**
-     * WHETHER THE LAST PRESS SENT THE WHOLE GLOSSARY, AND WHY NOT (#712).
-     *
-     * The engine builds a list, asks the provider whether it fits, and shortens
-     * it when the answer is no. That is a degradation rather than a failure —
-     * the words that go are the branch slugs at the tail, by design — so it
-     * does not interrupt anybody mid-sentence. But it must not be SILENT: a
-     * glossary quietly half the size it looks is how #581 became invisible the
-     * first time, and this is where somebody would come to do something about
-     * it.
-     *
-     * ABSENT UNTIL SOMETHING HAS BEEN MINTED, which is every engine that has
-     * not been dictated to since it started. `built === sent` is the ordinary
-     * answer and means nothing was dropped.
-     */
     keyterms?: {
       /** What the engine assembled for this Mac. */
       built: number;
       /** What the provider actually took. Never more than `built`. */
       sent: number;
-      /** `refused` — the provider said the list was over its budget.
-       *  `unconfirmed` — it could not be asked, so the provably-safe prefix
-       *  went instead. Absent when nothing was dropped. */
       reason?: "refused" | "unconfirmed";
     };
   };
 };
 
-/** A credential minted for one dictation, valid for minutes. `provider` is what
- *  tells the client which socket to open and what to encode, and `language` what
- *  to ask it to transcribe — already in that provider's own spelling, so one
- *  round trip serves the whole press of the button. `expiresAt` is epoch
- *  milliseconds rather than a duration, so a client compares it against its own
- *  clock instead of timing a request it did not observe the start of. */
 export type DictationTokenAnswer = {
   provider: DictationProviderId;
   token: string;
   expiresAt: number;
   language: string;
-  /**
-   * WHAT TO PRIME THE RECOGNISER WITH, in the provider's own shape (#581) —
-   * for Deepgram, the values of the repeated `keyterm` parameter.
-   *
-   * IT RIDES THE TOKEN because only the engine can build it: the list is the
-   * person's stored glossary plus what this Mac is currently about — unsettled
-   * conversation titles, project names, branches — and a client has none of
-   * that. Bounded and ordered there; a client appends it and does not think
-   * about it.
-   *
-   * THIS ENGINE ALWAYS SENDS IT, empty when there is nothing to say — but it
-   * is OPTIONAL on the type, because an engine that predates the field is a
-   * real thing a client can be pointed at: a cockpit updates on its own
-   * schedule and the phone reaches a paired Mac through the host proxy.
-   * ABSENT HAS TO READ AS "NO GLOSSARY", which is what every dictation had
-   * until now; arriving as `undefined` in a builder that iterates it would
-   * break the mic button outright over a feature that is an improvement to
-   * begin with.
-   */
   keyterms?: string[];
 };
 
-/**
- * WHY A DICTATION FAILED, IN THE PROVIDER'S OWN WORDS (#711).
- *
- * `reason` IS FOR THE PERSON and is the only field a surface needs: one
- * sentence naming the fault, already written for a reader. Show it instead of
- * the one the client could honestly say — "the connection failed" is true and
- * useless, and it is what sent the owner to replace a working key.
- *
- * `fault` IS FOR A CLIENT THAT WANTS TO BEHAVE DIFFERENTLY — a pane offering
- * "paste a key" for `refused` and nothing for `elsewhere`. Nothing has to read
- * it, and a client that only shows the sentence is a complete one.
- *
- *   refused      the provider turned the connection down; `reason` is its own
- *                words, so this is the account or this Mac's settings.
- *   unreachable  the Mac could not reach the provider at all.
- *   elsewhere    the provider ACCEPTED a connection from the Mac just now, so
- *                the fault is between the device that was dictating and the
- *                provider — a network, or something that will not pass a
- *                WebSocket. The one answer nothing else can produce.
- *   unconfigured there is no key on that Mac to ask with.
- */
 export type DictationDiagnosisAnswer = {
   fault: "refused" | "unreachable" | "elsewhere" | "unconfigured";
   reason: string;
 };
 
-/**
- * What `GET /v2/sessions/:id/bootstrap` answers with — everything a cockpit
- * needs to OPEN a conversation, from one read (#407).
- *
- * IT IS THE SNAPSHOT PLUS TWO KEYS, deliberately: the same fold answers both
- * routes, so a field the snapshot grows arrives here too and the two can never
- * describe different sessions.
- *
- * WHY IT EXISTS AT ALL — the shape, not the size. A client opening on a
- * snapshot must then tail the journal from the cursor that snapshot stamped, so
- * the second request cannot be sent until the first has returned; the two round
- * trips are strictly serial and each one crosses a cockpit route handler as
- * well as the engine. The engine holds both halves at one instant.
- */
 export type SessionBootstrap = SessionSnapshot & {
   /**
    * The journal from `cursor`. Empty on a quiet session, which is the ordinary
@@ -639,22 +392,6 @@ export type SessionBootstrap = SessionSnapshot & {
   subscriptions: Subscription[];
 };
 
-/**
- * THE WHOLE OF WHAT A RAIL ASKS FOR IN ONE PASS — what `GET /v2/sessions/live`
- * answers with.
- *
- * Everything beyond the rows and the projects is here because this is the read
- * every rail already makes on its own cadence, so carrying it costs no request,
- * no timer and no connection anywhere: the arrangement (#306), so a drag on one
- * device reaches the others; the engine's identity and its settling window
- * (#459), which used to be two more requests per host per tick; and the
- * revision, which is what lets the NEXT ask be conditional.
- *
- * THE LAST THREE ARE OPTIONAL AT EVERY HOP, and absent must read as "this engine
- * did not say" rather than as an answer. A missing `daemonId` leaves a host's
- * rows undeduplicated; a missing `inbox` falls back to the default window; a
- * missing `revision` keeps every read a full one. None of them costs a row.
- */
 export type LiveSessionsAnswer = {
   sessions: LiveSessionRow[];
   projects: Array<{ id: string; name: string }>;
@@ -663,42 +400,13 @@ export type LiveSessionsAnswer = {
   daemonId?: string;
   inbox?: InboxPolicy;
   revision?: number;
-  /**
-   * HOW MANY ROWS THE DEFAULT ANSWER LEFT OUT — issue #457.
-   *
-   * The route answers only the UNSETTLED rows unless asked for `all`, so this is
-   * the size of the shelf the caller did not receive. It rides the default
-   * answer because the shelf's HEADER is drawn from it: without a count there is
-   * no "Settled (284)" to click, and so no way to ask for the rest.
-   *
-   * Absent from an engine that predates the filter, which a client must read as
-   * "this engine sent you everything" — not as an empty shelf. It is the same
-   * rule as the three fields above, and here it decides whether the caller may
-   * band the rows it holds or must ask again.
-   */
   settledCount?: number;
-  /**
-   * HOW MANY TERMINALS EACH SESSION IN THIS ANSWER HOLDS OPEN, WHOEVER OPENED
-   * THEM — issue #883, keyed like `assignments` and only for a session with one
-   * or more. As the terminal host last told the engine: on every settle and
-   * close, on each of the engine's own terminals opening or ending, and on the
-   * five-minute settled sweep. Absent from an engine that predates it.
-   */
   terminals?: Record<string, number>;
   /** The discriminant, present only so `unchanged` narrows this union in a
    *  caller rather than needing a cast. Never sent on the wire. */
   unchanged?: false;
 };
 
-/**
- * NOTHING HAS MOVED SINCE THE CURSOR YOU HELD — the conditional read's other
- * answer, and the one an idle cockpit gets every single time.
- *
- * A UNION, SO A CALLER CANNOT REACH `sessions` WITHOUT ASKING FIRST. That is the
- * whole safety of the design: `unchanged` means "keep what you have", and a rail
- * that redrew from a missing `sessions` key would blank itself once a tick. The
- * type makes that a compile error rather than something to remember.
- */
 export type LiveSessionsUnchanged = { unchanged: true; revision: number; daemonId?: string };
 
 /** The run surface hangs off the session that is asking — see `runStatus` for
@@ -707,11 +415,6 @@ function runBase(sessionId: string): string {
   return `/v2/sessions/${encodeURIComponent(sessionId)}/run`;
 }
 
-/**
- * WHICH TERMINAL A RUN VERB IS ABOUT. `terminalId` is the name; `runId` is the
- * same value under its old name, still accepted for one release, and the wire
- * always carries `terminalId`.
- */
 export type RunTargetInput = { terminalId?: string; runId?: string };
 
 /** The wire's spelling of a target: `terminalId`, whichever name it came in. */
@@ -734,34 +437,13 @@ function runCursor(input: RunTargetInput & { after?: number } & RunOutputFilter)
   const { terminalId } = runTarget(input);
   if (terminalId !== undefined) query.set("terminalId", terminalId);
   if (input.after !== undefined) query.set("after", String(input.after));
-  // THE THREE NARROWINGS (#890). None of them moves the cursor — see
-  // `RunOutputFilter` — so a caller may alternate them with `after` freely.
   if (input.tail !== undefined) query.set("tail", String(input.tail));
   if (input.grep !== undefined) query.set("grep", input.grep);
   if (input.stream !== undefined) query.set("stream", input.stream);
   return query.size === 0 ? "" : `?${query.toString()}`;
 }
 
-/**
- * How ONE file's patch is read — the questions that change what git prints
- * rather than which file it prints it for.
- *
- * `ignoreWhitespace` IS NOT A RENDER OPTION (#694). A hunk that exists only
- * because a line was re-indented is a hunk before any of it reaches a client,
- * so the toolbar's toggle has to reach the command; hiding those rows in the
- * browser would leave the file's own header counting them.
- */
-/**
- * The diff read's wire encoding lives in the contract beside `forgeQuery`, and
- * for the reason that one documents — see `protocol/diff-query.ts`, which is
- * where this repeated the same mistake and where the fix is argued.
- */
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery } from "./protocol/diff-query";
-/** WHERE A REMOVABLE VOLUME APPEARS, and whether this platform can be asked —
- *  the ONE list (#665). It was five, each carrying a comment saying it was a
- *  copy; the win32 hole was in all five, and a fix that edits five files that
- *  agree by convention holds until the sixth appears. Re-exported from the root
- *  entry rather than `./node` because it touches no filesystem. */
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
@@ -771,16 +453,6 @@ export class EngineClient {
     private readonly fetchImpl: FetchLike = fetch,
   ) {}
 
-  /**
-   * `operation` is the CALLER'S OWN NAME for what it was doing, threaded
-   * through rather than derived from the URL.
-   *
-   * A supervisor deciding whether a failure may be tolerated has to know
-   * whether the call that failed was an idempotent control poll or a mutating
-   * submission, and reconstructing that from a path is exactly the kind of
-   * re-derivation that drifts. Absent from older call sites, which then get the
-   * previous behaviour — an unnamed failure is never treated as retryable.
-   */
   private async request<T>(method: string, pathname: string, body?: unknown, signal?: AbortSignal, operation?: string): Promise<T> {
     const named = operation === undefined ? {} : { operation };
     let response: Response;
@@ -798,14 +470,6 @@ export class EngineClient {
       // An abort is the caller hanging up, not the engine being away — rethrow
       // it as itself so a forwarding route can end quietly.
       if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-      /**
-       * THE CAUSE IS KEPT, SANITIZED. It used to be caught and dropped on the
-       * floor, which is why a Telar that lost one loopback request could not
-       * afterwards say whether the engine had died, the socket had reset, or
-       * the process had run out of descriptors — see #208. The raw error is
-       * still not propagated: its message and cause chain carry the request
-       * URL, and these URLs are authenticated.
-       */
       throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, {
         ...named,
         ...(sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {}),
@@ -816,8 +480,6 @@ export class EngineClient {
     try {
       payload = await response.json();
     } catch {
-      // A reply that arrived but did not parse is a DIFFERENT failure from one
-      // that never arrived: the status is the evidence, and it is kept.
       throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status, { ...named, transport: "malformed_response" });
     }
     if (!response.ok) {
@@ -828,20 +490,6 @@ export class EngineClient {
     return payload as T;
   }
 
-  /**
-   * A GET THAT MAY BE ANSWERED "UNCHANGED" — issue #586.
-   *
-   * SEPARATE FROM `request` RATHER THAN A FLAG ON IT, because a 304 has NO BODY
-   * AT ALL and `request` parses one unconditionally: sending `If-None-Match`
-   * through that path turns the cheap answer into `malformed_response`, which
-   * is the single most confusing way this could fail.
-   *
-   * THE TAG COMES BACK ON BOTH ANSWERS, and it has to. A 304 carries the tag
-   * the client just spent, so a caller that stored only the last 200's tag
-   * would work anyway; a 200 carries the NEW one, and a caller that did not
-   * read it would ask unconditionally for ever and quietly lose the saving
-   * while every test still passed.
-   */
   private async requestConditional<T>(
     pathname: string,
     etag: string | undefined,
@@ -862,8 +510,6 @@ export class EngineClient {
       });
     }
     const tag = response.headers.get("etag") ?? undefined;
-    // BEFORE ANY PARSE. There is nothing to parse, and reaching for a body here
-    // is exactly the bug this method exists to avoid.
     if (response.status === 304) return { unchanged: true, ...(tag ? { etag: tag } : {}) };
     let payload: unknown;
     try {
@@ -911,13 +557,6 @@ export class EngineClient {
     return this.request("GET", "/v2/health");
   }
 
-  /**
-   * The project's icon, as bytes — the image behind `Project.icon`.
-   *
-   * The one binary GET on this client. Not folded into `request` because that
-   * envelope parses JSON, and generalising it for one route would put a
-   * content-type branch on every call in the class.
-   */
   async projectIcon(projectId: string): Promise<{ data: Uint8Array; contentType: string }> {
     let response: Response;
     try {
@@ -955,34 +594,10 @@ export class EngineClient {
     return this.request("POST", "/v2/projects", input);
   }
 
-  /**
-   * Clone a repository into `parent` and register what landed, in one call.
-   *
-   * ONE CALL BECAUSE THE CALLER CANNOT NAME THE PATH IN BETWEEN. `git clone`
-   * chooses the folder from the URL, so a client doing this in two steps would be
-   * registering a path it never picked. `name` is optional and defaults to that
-   * folder's own name.
-   *
-   * NOT STREAMED. The answer is the registered project, or a 400/409 whose message
-   * is the sentence to show: a URL that is not one, a parent that is not a
-   * directory, a target that already exists, or git's own stderr.
-   */
   cloneProject(input: { url: string; parent: string; name?: string }): Promise<{ project: Project }> {
     return this.request("POST", "/v2/projects/clone", input);
   }
 
-  /**
-   * Remove a project from Telar. NOT A DELETE OF THE PROJECT, and REVERSIBLE:
-   * the checkout, its git metadata, its worktrees, the journals of every
-   * session that ran on it and those sessions' browser profiles are all left
-   * alone, and so is the registration record — it is marked `removedAt` and
-   * dropped from `listProjects`. `restoreProject`, or `registerProject` on the
-   * same root, brings it back with the SAME id and settings.
-   *
-   * 409 when a session on that project has work in flight — the engine will
-   * not quietly put a registration away under a running turn. `sessions`
-   * counts the session records that now belong to a put-away project.
-   */
   unregisterProject(projectId: string): Promise<{ project: Project; sessions: number }> {
     return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}`);
   }
@@ -992,27 +607,12 @@ export class EngineClient {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/restore`, {});
   }
 
-  /**
-   * Move a project's identity and its opt-in switches. `dataScience: null` /
-   * `latex: null` turn a feature off.
-   *
-   * `iconName`, `iconEmoji`, `defaultModel` and `envMode` take `null` for the
-   * same reason and with the same meaning as the two above: REMOVE the stored
-   * answer, which is not the same as storing a neutral one. A project with no
-   * `envMode` follows this Mac's `SessionDefaults`; a project that stored
-   * `"local"` insists on the checkout however the Mac's answer moves later. A
-   * project with neither icon field goes back to the one its checkout carries.
-   *
-   * `name` HAS NO `null`. Every project has a name — clearing it would leave a
-   * row with nothing to render — so it takes a new one or is left alone.
-   */
   updateProject(
     projectId: string,
     patch: {
       name?: string;
       /** One id from `TELAR_ICONS` — see `Project.iconName`. */
       iconName?: string | null;
-      /** Legacy; nothing writes a value now. `null` clears a stored mark. */
       iconEmoji?: string | null;
       defaultModel?: ModelSelection | null;
       envMode?: EnvMode | null;
@@ -1024,7 +624,6 @@ export class EngineClient {
       dataScience?: DataScienceConfig | null;
       /** @deprecated An input alias for `plugins.latex`, as `dataScience` above. */
       latex?: LatexConfig | null;
-      /** THE ARM TO USE. One entry per plugin, `null` to turn it off. */
       plugins?: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>;
     },
   ): Promise<{ project: Project }> {
@@ -1107,11 +706,6 @@ export class EngineClient {
     return this.request("GET", "/v2/latex/managed");
   }
 
-  /**
-   * Fetch it. IDEMPOTENT — an install already running is joined rather than
-   * duplicated, and one already finished returns immediately — so a pane may
-   * call this on every press without guarding.
-   */
   installManagedTectonic(): Promise<{ managed: ManagedTectonic }> {
     return this.request("POST", "/v2/latex/managed", {});
   }
@@ -1135,23 +729,11 @@ export class EngineClient {
     autoSettleAfterHours?: number | null;
     /** The delegation grace — see `InboxPolicy`. `null` turns it off. */
     settleDelegatedAfterHours?: number | null;
-    /** How many terminals settled sessions may keep open (#883). */
     settledTerminalLimit?: number;
   }): Promise<{ inbox: InboxPolicy }> {
     return this.request("PATCH", "/v2/inbox", patch);
   }
 
-  /**
-   * Whether Telar may tell an agent where it is — see `AgentOrientation`.
-   * Environment-wide, like the inbox rule above: it decides what EVERY session
-   * on this machine is told.
-   *
-   * `text` IS THE ENGINE'S OWN COPY OF THE PARAGRAPH, and it rides the answer
-   * so that "show me exactly what you inject" is a read rather than a second
-   * copy of the words in the cockpit. A paired Mac may be running a different
-   * release; the disclosure then shows what THAT engine says, which is the only
-   * honest thing it could show.
-   */
   orientation(): Promise<{ orientation: AgentOrientation; text: string }> {
     return this.request("GET", "/v2/orientation");
   }
@@ -1192,20 +774,6 @@ export class EngineClient {
     return this.request("PUT", `/v2/projects/${encodeURIComponent(projectId)}/workspace`, { overrides });
   }
 
-  /**
-   * WHERE EVERY SESSION'S EVENTS ARRIVE — issue #586.
-   *
-   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION: the caller opens the
-   * connection, so a cockpit route can PIPE the body
-   * untouched instead of parsing and re-framing it, and a client that wants
-   * `EventSource` can have one.
-   *
-   * NO `after`. An event id here is per session —
-   * `PRIMARY KEY(session_id, id)` — so there is no machine-wide cursor to
-   * replay from, and a parameter that silently meant nothing would be worse
-   * than none. The feed is live-only and its readers reconcile on their own
-   * slower timer; see the route.
-   */
   sessionsStream(): { url: string; headers: Record<string, string> } {
     return {
       url: `http://${this.discovery.host}:${this.discovery.port}/v2/sessions/stream`,
@@ -1213,86 +781,23 @@ export class EngineClient {
     };
   }
 
-  /* ---------------------------------------------------------------- *
-   * DICTATION — issue #544, first step.
-   *
-   * NO AUDIO GOES THROUGH THE ENGINE. The microphone is in the client on
-   * every surface, so the engine holds the key and hands out a short-lived
-   * token for the client to open its own transcription socket with. The
-   * answers carry `provider` so a second vendor can follow without a second
-   * route.
-   * ---------------------------------------------------------------- */
-
-  /** Whether this Mac can dictate — which provider, and whether its key is
-   *  there. NEVER THE KEY, not even redacted: `configured` is the whole of
-   *  what may be said about it. */
   dictation(): Promise<DictationAnswer> {
     return this.request("GET", "/v2/dictation");
   }
 
-  /**
-   * Choose a provider, paste its key, or clear it.
-   *
-   * BY PRESENCE, BOTH FIELDS. A patch that names no provider must not switch
-   * dictation off, and one that names no key must not clear it.
-   *
-   * THE KEY IS WRITE-ONLY AND NEVER COMES BACK. An empty string clears it —
-   * a departure from the provider registry's "blank never clears", because
-   * this field is the only writer of the secret and a Remove button has to be
-   * able to mean it.
-   *
-   * SWITCHING A PROVIDER OFF DOES NOT THROW ITS KEY AWAY, so turning dictation
-   * back on is one click rather than a trip to the vendor's console.
-   *
-   * AN UNKNOWN `language` IS REFUSED WITH A SENTENCE rather than stored: a code
-   * the provider cannot transcribe would surface as a failed handshake on the
-   * next press of the mic button, which is a long way from the pane that caused
-   * it. `multi` is what an engine that has never been told answers.
-   */
   setDictation(patch: {
     provider?: DictationProviderId;
     apiKey?: string;
     language?: string;
-    /** The whole glossary, every time — this is a list box and not a row of
-     *  fields, so a save is what it now contains. An EMPTY ARRAY clears it,
-     *  which is what emptying the box means; omitting the field leaves it. */
     vocabulary?: string[];
   }): Promise<DictationAnswer> {
     return this.request("PATCH", "/v2/dictation", patch);
   }
 
-  /**
-   * Mint a token for one dictation.
-   *
-   * POST BECAUSE IT MINTS. Every call spends a round trip against the provider
-   * and produces a new credential; a GET that did that would be cached by
-   * something eventually.
-   *
-   * IT EXPIRES IN MINUTES, and `expiresAt` is an instant rather than a
-   * duration so a client can compare it against its own clock without having
-   * to have timed the request. Fetch one per press of the button rather than
-   * holding one.
-   */
   dictationToken(): Promise<DictationTokenAnswer> {
     return this.request("POST", "/v2/dictation/token");
   }
 
-  /**
-   * Why the last dictation failed (#711).
-   *
-   * CALL IT AFTER A SOCKET FAILS, NOT BEFORE ONE OPENS. No client can read the
-   * reason itself — a browser's `WebSocket` error event carries none by design,
-   * and the phone and the headset land on their own version of the same
-   * nothing — so this asks the engine, which holds the key, to ask Deepgram and
-   * answer in Deepgram's own words.
-   *
-   * POST BECAUSE IT SPENDS A HANDSHAKE against the provider, like the mint
-   * beside it.
-   *
-   * IT IS ALLOWED TO FAIL AND THE CALLER MUST SURVIVE IT. The sentence a client
-   * already has is honest; this one is better. An engine too old to have this
-   * route answers 404, and the right move is to keep showing the first.
-   */
   dictationDiagnosis(): Promise<DictationDiagnosisAnswer> {
     return this.request("POST", "/v2/dictation/diagnose");
   }
@@ -1314,13 +819,6 @@ export class EngineClient {
     return this.request("PATCH", "/v2/sidebar-layout", patch);
   }
 
-  /**
-   * Computer use, MEASURED: whether cua-driver is installed, whether its daemon
-   * is up, and the grant — answered by one real read-only call. Slow by design
-   * (one subprocess round trip). THIS IS ALSO THE CLAIM GATE: the engine keeps
-   * the answer, and a session is handed the desktop tools only while the last
-   * answer was `granted`, so calling this is how a fresh grant reaches sessions.
-   */
   computerUseStatus(): Promise<{ computerUse: ComputerUseStatus }> {
     return this.request("GET", "/v2/computer-use");
   }
@@ -1365,18 +863,10 @@ export class EngineClient {
     return this.request("GET", `/v2/usage?${query.toString()}`);
   }
 
-  /**
-   * The CLIProxyAPI hubs quota is read from — configuration, not quota.
-   *
-   * MANAGEMENT KEYS NEVER COME BACK: every row reads `managementKey: ""`, with
-   * `keyRedacted: true` when one is stored. See `UsageLimitSource`.
-   */
   usageLimitSources(): Promise<{ sources: UsageLimitSource[] }> {
     return this.request("GET", "/v2/usage/sources");
   }
 
-  /** Create or replace one hub. An EMPTY `managementKey` keeps the stored one,
-   *  which is what makes saving a row you read back redacted safe. */
   saveUsageLimitSource(input: {
     id: string;
     kind?: UsageLimitSourceKind;
@@ -1395,71 +885,22 @@ export class EngineClient {
     return this.request("DELETE", `/v2/usage/sources/${encodeURIComponent(id)}`);
   }
 
-  /**
-   * What the hubs currently report — pooled account quota, per source.
-   *
-   * SERVED FROM A SHORT-LIVED CACHE. `refresh` waits for a fresh read of every
-   * configured hub; without it a stale snapshot comes back immediately and
-   * refreshes behind the answer.
-   */
   usageLimits(options: { refresh?: boolean } = {}): Promise<{ limits: UsageLimits }> {
     return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
   }
 
-  /**
-   * What this engine is keeping on disk, by category — issue #642.
-   *
-   * THE CHECKOUTS ARE SIZED IN THE BACKGROUND, never on this read: their row
-   * comes back `status: "measuring"` until the engine has walked them, and
-   * asking again is what picks up the progress (and what keeps the walk going
-   * — the engine stops sizing once nobody has asked for a while). The store's
-   * own categories come back with the `measuredAt` they were taken at until
-   * somebody asks for a fresh one. There is no write.
-   */
   storage(options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<{ storage: StorageReport }> {
     return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`, undefined, options.signal);
   }
 
-  /**
-   * Compact the turn journal and return the freed pages to the filesystem —
-   * issue #646.
-   *
-   * SLOW AND EXCLUSIVE, and the only write on the storage surface. The VACUUM
-   * behind it rewrites the whole database under a lock — seconds on a large
-   * one — so this belongs behind an explicit press and never on a render path.
-   *
-   * What it drops is journal rows a settled turn has superseded, never a turn,
-   * an item or an answer; `deltas` and `starts` are how many, and `before` and
-   * `after` are the file either side of the work.
-   */
   reclaimJournal(): Promise<{ reclaimed: JournalReclaim }> {
     return this.request("POST", "/v2/storage/journal/reclaim");
   }
 
-  /**
-   * A COPY OF THIS STORE SOMEBODY CAN OPEN WITHOUT RISK — issue #665.
-   *
-   * SLOW, and it writes to `destination`, which must not already exist. It does
-   * NOT touch the live store: the database is copied through `VACUUM INTO`, so
-   * the copy is consistent rather than pages from different moments, and no
-   * compaction or watermark is written on this side.
-   *
-   * The reproducible tier is deliberately not carried — checkouts, Python
-   * environments and toolchains are re-makeable, and on a real machine they are
-   * most of the bytes.
-   */
   copyStore(destination: string): Promise<{ copy: StoreCopy }> {
     return this.request("POST", "/v2/storage/copy", { destination });
   }
 
-  /**
-   * The retention window in force, and what each candidate window would take —
-   * issues #542 and #646. Nothing is deleted to answer this.
-   *
-   * `bytes` COSTS A SCAN of every qualifying row's text, where the session and
-   * event counts are index ranges. Ask for it when a person is looking at the
-   * figure and never on a path that repeats.
-   */
   retention(options: { bytes?: boolean; signal?: AbortSignal } = {}): Promise<{ retention: RetentionPolicy; buckets: RetentionBucket[] }> {
     return this.request("GET", `/v2/storage/retention${options.bytes ? "?bytes=1" : ""}`, undefined, options.signal);
   }
@@ -1470,45 +911,18 @@ export class EngineClient {
     return this.request("PUT", "/v2/storage/retention", patch);
   }
 
-  /**
-   * Sweep now — the distinct visible act the design asks for, rather than
-   * something the next startup does quietly.
-   *
-   * SLOW ON A BACKLOG: the first run after enabling exports and drops every
-   * qualifying session, one transaction each. It returns counts and no bytes;
-   * the file shrinks when somebody presses Reclaim.
-   */
   sweepRetention(): Promise<{ swept: JournalRetirement }> {
     return this.request("POST", "/v2/storage/retention/sweep");
   }
 
-  /**
-   * THE STANDING INSTRUCTIONS ON THIS INSTALL — issue #543, or one session's
-   * with `sessionId`.
-   *
-   * READ ONCE, NOT ON A TIMER. A row changes when a sweep touches it, which is
-   * at most every thirty seconds and usually never; polling it would be #629
-   * again at a worse price per tick, and the pane is looked at rather than
-   * watched.
-   */
   schedules(sessionId?: string): Promise<{ schedules: Schedule[] }> {
     return this.request("GET", `/v2/schedules${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`);
   }
 
-  /**
-   * Create a row, or replace one by `id`.
-   *
-   * `nextRunAt` IS NOT A PARAMETER and cannot be: the engine computes the first
-   * one from the rule and the zone. A caller that could name it could aim a row
-   * at the past, where the grace rule would then skip it for ever.
-   */
   putSchedule(input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }): Promise<{ schedule: Schedule }> {
     return this.request("POST", "/v2/schedules", input);
   }
 
-  /** Forget a row. There is deliberately no "run now": it would be a second way
-   *  to start a turn with none of the sweep's re-aiming, and pressing it twice
-   *  would give two turns and a `nextRunAt` that meant nothing. */
   deleteSchedule(id: string): Promise<{ deleted: boolean }> {
     return this.request("DELETE", `/v2/schedules/${encodeURIComponent(id)}`);
   }
@@ -1518,61 +932,18 @@ export class EngineClient {
     return this.request("GET", "/v2/worktrees-root");
   }
 
-  /**
-   * Put them somewhere else from the next cut onward. `null` restores the
-   * default beside the store.
-   *
-   * NOTHING IS MOVED BY THIS and no restart is needed: checkouts already cut
-   * keep working where they are, addressed by the path on their session.
-   */
   setWorktreesRoot(root: string | null): Promise<{ worktreesRoot: WorktreesRoot }> {
     return this.request("PUT", "/v2/worktrees-root", { root });
   }
 
-  /**
-   * Move the checkouts already cut to the configured root, by re-cutting each
-   * from its own branch.
-   *
-   * SLOW, AND PARTIAL BY DESIGN. One `git worktree remove` and one `add` per
-   * checkout. A checkout with uncommitted changes is refused by git and
-   * reported rather than forced; so is one whose branch no longer exists. The
-   * whole call is refused while any session is working in its checkout.
-   */
   moveWorktrees(): Promise<{ move: WorktreeMoveResult }> {
     return this.request("POST", "/v2/worktrees-root/move", {});
   }
 
-  /**
-   * EVERY CHECKOUT THIS INSTALL IS KEEPING, CLASSIFIED — issue #671.
-   *
-   * NOT A LIST WITH COLUMNS: each row carries a VERDICT, because the proof
-   * (merged, clean, nothing needs it) is the thing worth having and a reader
-   * who has to re-derive it per row will not. Read `WorktreeVerdict` before
-   * drawing anything.
-   *
-   * COSTS TWO GIT READS PER CHECKOUT, so it is a read a person asks for —
-   * never a poll. The classification is live; the sizes are the engine's
-   * background measurement, and a row not yet sized has no `bytes`.
-   */
   worktrees(options: { signal?: AbortSignal } = {}): Promise<{ inventory: WorktreeInventory }> {
     return this.request("GET", "/v2/worktrees", undefined, options.signal);
   }
 
-  /**
-   * Give checkouts back.
-   *
-   * THIS ARCHIVES SESSIONS. A checkout held by a settled session is released by
-   * putting that session down — the only supported way, since settling
-   * deliberately does not release one and nothing re-cuts a missing worktree.
-   * A caller's confirm must say "archive the session"; one that names the disk
-   * space and hides the session is the kind people click and regret.
-   *
-   * `confirm` IS THE BASENAME, TYPED, and is required for every row whose
-   * verdict is `needs-force` — the rows where Telar could not prove the work is
-   * safe. Refusals come back per item rather than as an error status: a press
-   * over six checkouts where one has since been claimed is five successes and
-   * one honest refusal.
-   */
   reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<{ reclaim: WorktreeReclaimOutcome }> {
     return this.request("POST", "/v2/worktrees/reclaim", { items });
   }
@@ -1585,7 +956,6 @@ export class EngineClient {
     return this.request("PUT", "/v2/cleanup", patch);
   }
 
-  /** Sweep now with the current switches; answers when it is done. */
   runCleanup(): Promise<{ cleanup: CleanupState }> {
     return this.request("POST", "/v2/cleanup/run", {});
   }
@@ -1595,7 +965,6 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/release`, {});
   }
 
-  /** Bring a released checkout back now, rather than on the next message. */
   restoreSessionWorktree(sessionId: string): Promise<{ session: Session }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/worktree/restore`, {});
   }
@@ -1607,7 +976,6 @@ export class EngineClient {
   ): Promise<{ setup: { state: string; command: string; startedAt: number; endedAt?: number; exitCode?: number; detail?: string } | null; lines: { at: number; text: string }[]; cursor: number }> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/setup?after=${after}`);
   }
-
 
   /** Who writes generated titles and branch names — see `TextGenPolicy`. */
   textGenPolicy(): Promise<{ textGen: TextGenPolicy }> {
@@ -1624,15 +992,6 @@ export class EngineClient {
     return this.request("PATCH", "/v2/textgen", patch);
   }
 
-  /**
-   * One structured completion from the policy's harness — the title job's
-   * subprocess, generalised for callers that bring their own JSON schema.
-   *
-   * SLOW AND FALLIBLE BY NATURE: a cold harness start plus a completion, and a
-   * harness that refuses or times out comes back as a `textgen_failed` 502
-   * rather than an empty answer. Treat it as a request that may take a minute
-   * and may not succeed.
-   */
   completeStructured(
     input: { prompt: string; schema: Record<string, unknown>; model?: string; effort?: "low" | "medium" | "high" },
     options: { signal?: AbortSignal } = {},
@@ -1640,17 +999,6 @@ export class EngineClient {
     return this.request("POST", "/v2/textgen/complete", input, options.signal);
   }
 
-  /**
-   * The host cockpit's published look — the whole `Look` (both theme halves,
-   * the backdrop with its pixels, accent, type, strength) plus the few facts
-   * about the publishing WINDOW a Look deliberately does not carry.
-   *
-   * PARSED HERE, NOT HANDED THROUGH RAW. The engine stores this blob without
-   * understanding a word of it, and any paired device may have written it — so
-   * the shared total parser runs on the way out, colour gates included. A
-   * `null` appearance means "nothing published, or nothing readable"; both are
-   * the same instruction to a reader: wear your own defaults.
-   */
   async appearance(): Promise<{ appearance: PublishedAppearance | null; updatedAt: number | null }> {
     const raw = await this.request<{ appearance?: unknown; updatedAt?: unknown }>("GET", "/v2/appearance");
     return {
@@ -1659,15 +1007,6 @@ export class EngineClient {
     };
   }
 
-  /**
-   * THE APPEARANCE HOME — the files, not the mailbox.
-   *
-   * Returned RAW rather than parsed into Looks and Themes. The home is a
-   * directory two authors edit by hand, so "what is on disk" and "what this
-   * build can wear" are different questions: the caller parses with the
-   * vocabulary it paints with, and decides for itself what to do with an entry
-   * it does not understand. `skipped` names the files that were not even JSON.
-   */
   async appearanceHome(): Promise<{
     settings: Record<string, unknown> | null;
     themes: Record<string, unknown>[];
@@ -1695,12 +1034,6 @@ export class EngineClient {
     await this.request("DELETE", `/v2/appearance/home/${kind}/${encodeURIComponent(id)}`);
   }
 
-  /**
-   * A stored picture's bytes. Shaped exactly like `projectIcon` because it is
-   * the same job — the engine holds a file, the cockpit streams it — and a
-   * second idiom for "fetch binary from the engine" is how two of them drift
-   * on error handling.
-   */
   async appearanceImage(name: string): Promise<{ data: Uint8Array; contentType: string }> {
     let response: Response;
     try {
@@ -1719,10 +1052,6 @@ export class EngineClient {
     await this.request("PUT", "/v2/appearance/home/settings", settings);
   }
 
-  /** Replaces the published look wholesale — a snapshot, never a patch, because
-   *  two publishers' merged halves would describe a look neither of them wears.
-   *  `updatedAt` and `etag` come back so a publisher can tell its own write
-   *  apart from somebody else's. */
   setAppearance(blob: PublishedAppearance): Promise<{ ok: boolean; updatedAt: number; etag: string }> {
     return this.request("PUT", "/v2/appearance", blob);
   }
@@ -1740,13 +1069,6 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/git`);
   }
 
-  /**
-   * THE PROJECT NOTEBOOK.
-   *
-   * Notes hang off the PROJECT, so every session on it reads the same notebook,
-   * and the composer's foot draws this list. Already ordered — pinned first,
-   * then the user's own order — so no caller re-sorts.
-   */
   projectNotes(projectId: string): Promise<{ notes: ProjectNote[] }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/notes`);
   }
@@ -1763,16 +1085,12 @@ export class EngineClient {
       title: string;
       body?: string;
       pinned?: boolean;
-      /** Whose hand. ABSENT MEANS THE HUMAN'S ("you") — only the engine's own
-       *  tool wall declares "session". */
       author?: ProjectNoteAuthor;
     },
   ): Promise<{ note: ProjectNote }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/notes`, input);
   }
 
-  /** The author NEVER changes — the engine refuses a patch that names it, so
-   *  provenance survives every edit, as it does on the shelf. */
   updateProjectNote(
     projectId: string,
     noteId: string,
@@ -1781,8 +1099,6 @@ export class EngineClient {
     return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`, patch);
   }
 
-  /** A REAL DELETE, unlike the shelf's retire: a project note is a scratchpad,
-   *  and `deleted: false` means it was already gone — never an error. */
   deleteProjectNote(projectId: string, noteId: string): Promise<{ deleted: boolean }> {
     return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}`);
   }
@@ -1791,23 +1107,10 @@ export class EngineClient {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/notes/${encodeURIComponent(noteId)}/pin`, { pinned });
   }
 
-  /** The notebook socket's connect card — what the user's OTHER app is
-   *  configured with. Its own secret, not the engine token. */
   notesMcpInfo(): Promise<{ mcp: NotesMcpInfo }> {
     return this.request("GET", "/v2/notes/mcp-info");
   }
 
-  /**
-   * THE PROMPT SHELF — unsent messages kept by name, either hand's.
-   *
-   * Hangs off the PROJECT for the notebook's reason, with one addition: a
-   * prompt may also name the SESSION it was prepared for, and a composer offers
-   * the project's own plus its own session's. `promptsForComposer` in the
-   * engine is the filter; this route answers the whole shelf and the caller
-   * narrows, because the rail wants the count either way.
-   *
-   * Already ordered newest-first, so no caller re-sorts.
-   */
   projectPrompts(projectId: string): Promise<{ prompts: PreparedPrompt[] }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/prompts`);
   }
@@ -1820,19 +1123,13 @@ export class EngineClient {
       title: string;
       text: string;
       reason?: string;
-      /** The session it is FOR. Absent puts it on every composer in the
-       *  project — the generation case. */
       sessionId?: string;
-      /** Whose hand. ABSENT MEANS THE HUMAN'S ("you") — only the engine's own
-       *  tool wall declares "session". */
       author?: PreparedPromptAuthor;
     },
   ): Promise<{ prompt: PreparedPrompt }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/prompts`, input);
   }
 
-  /** The author NEVER changes — the engine refuses a patch that names it, so a
-   *  draft an agent wrote stays marked as one however far you edit it. */
   updateProjectPrompt(
     projectId: string,
     promptId: string,
@@ -1841,8 +1138,6 @@ export class EngineClient {
     return this.request("PATCH", `/v2/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`, patch);
   }
 
-  /** `deleted: false` means it was already gone — never an error, because the
-   *  ordinary way a prompt leaves the shelf is being sent from two windows. */
   deleteProjectPrompt(projectId: string, promptId: string): Promise<{ deleted: boolean }> {
     return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/prompts/${encodeURIComponent(promptId)}`);
   }
@@ -1859,63 +1154,23 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github${forgeQuery(options)}`);
   }
 
-  /**
-   * What there is to filter by in this repository — milestones, labels, who can be
-   * assigned, and the login `gh` is signed in as.
-   *
-   * ITS OWN ROUTE AND ITS OWN CACHE, five minutes rather than thirty seconds: these
-   * change on the timescale of a sprint. Nothing asks for it until a filter menu
-   * opens, so a reader who never filters never pays for it.
-   */
   projectForgeFacets(projectId: string, options: { refresh?: boolean } = {}): Promise<{ facets: GitHubFacets }> {
     const suffix = options.refresh ? "?refresh=1" : "";
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/facets${suffix}`);
   }
 
-  /**
-   * One failing check's log — the tail of `gh run view --log-failed`.
-   *
-   * NOT CACHED anywhere: a finished job's log never changes, so there is nothing to
-   * save, and a running job's is the one thing that must not be stale.
-   */
   projectCheckLog(projectId: string, jobId: string): Promise<{ log: GitHubCheckLog }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/checks/${encodeURIComponent(jobId)}/log`);
   }
 
-  /**
-   * Ignore Telar's own files in a project's repository.
-   *
-   * NO BODY, AND THAT IS THE SAFETY: the rules are the engine's, so a client
-   * cannot use this to append arbitrary lines to a file in somebody's checkout.
-   * The answer reports what was added AND what a rule already covered, because a
-   * repository that already ignores everything is a success that would otherwise
-   * look like a no-op.
-   */
   projectGitignore(projectId: string): Promise<{ gitignore: GitignoreResult }> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`, {});
   }
 
-  /**
-   * Take those rules back out — the Undo behind the toast that reports them.
-   *
-   * ONLY THE BLOCK THIS ENGINE WROTE: its header and the run of its own rules
-   * directly under it. A `.telar/` somebody added in their own section is theirs
-   * and survives. `removed: []` is a success, not a failure — it means there was
-   * nothing of Telar's left to remove.
-   */
   undoProjectGitignore(projectId: string): Promise<{ gitignore: GitignoreRemoval }> {
     return this.request("DELETE", `/v2/projects/${encodeURIComponent(projectId)}/gitignore`);
   }
 
-  /**
-   * ONE issue or ONE pull request — the body, the conversation, and for a pull
-   * request its reviews, its checks and whether GitHub will merge it.
-   *
-   * THE ANSWER IS A UNION, not a throw: `{ issue }` or `{ unavailable, message? }`.
-   * A detail read has a fifth way to be unavailable that a list read does not
-   * (`not_found` — there is no #999), and all five are sentences a reader can act
-   * on rather than HTTP failures.
-   */
   projectIssue(projectId: string, number: number, options: { refresh?: boolean } = {}): Promise<GitHubIssueRead> {
     const suffix = options.refresh ? "?refresh=1" : "";
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/issues/${number}${suffix}`);
@@ -1926,18 +1181,6 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}${suffix}`);
   }
 
-  /**
-   * Merge a pull request.
-   *
-   * `expectedHeadOid` IS REQUIRED AND IS THE POINT. It is the `headRefOid` the
-   * detail read returned, and it goes to GitHub as `--match-head-commit`, so a
-   * commit pushed after the review — by a person or by an agent — makes this
-   * refuse rather than merge something nobody read. There is deliberately no way
-   * to say "merge whatever is on the branch now".
-   *
-   * A refusal is `{ merged: false, refusal }` with seven named reasons, not an
-   * exception; see `GitHubMergeRefusal`.
-   */
   mergeProjectPull(
     projectId: string,
     number: number,
@@ -1946,12 +1189,6 @@ export class EngineClient {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/merge`, input);
   }
 
-  /**
-   * Add (`react: true`) or remove one reaction on an issue, a pull request, or
-   * a comment on one — #842. `subjectId` is the node id the detail read carried;
-   * `kind` and `number` name the detail it belongs to, so its cache is dropped.
-   * A refusal is `{ reacted: false, refusal }`, not an exception.
-   */
   reactOnProjectForge(
     projectId: string,
     kind: "issue" | "pull",
@@ -1961,18 +1198,14 @@ export class EngineClient {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/${kind === "issue" ? "issues" : "pulls"}/${number}/reactions`, input);
   }
 
-  /** Reply to one review thread on a pull request (#842). */
   replyToProjectThread(projectId: string, number: number, threadId: string, body: string): Promise<GitHubThreadReplyResult> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/replies`, { body });
   }
 
-  /** Resolve (`true`) or unresolve one review thread (#842). */
   resolveProjectThread(projectId: string, number: number, threadId: string, resolved: boolean): Promise<GitHubThreadResolveResult> {
     return this.request("POST", `/v2/projects/${encodeURIComponent(projectId)}/github/pulls/${number}/threads/${encodeURIComponent(threadId)}/resolve`, { resolved });
   }
 
-  /** What is uncommitted in a project right now — the review a canvas shows
-   *  before its conversation exists. */
   projectDiff(projectId: string): Promise<{ diff: SessionDiff }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff`);
   }
@@ -1981,13 +1214,6 @@ export class EngineClient {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/diff?${filePatchQuery(path, options)}`);
   }
 
-  /**
-   * Every file in a checkout, for the Files tree.
-   *
-   * NOT CACHED AND NOT POLLED. It is git reading its own index — 18ms for this
-   * repository — and a tree that reorders itself under the cursor on a timer is
-   * worse than one that waits to be asked. The surface has a refresh button.
-   */
   projectFiles(projectId: string): Promise<{ listing: WorkspaceListing }> {
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/files`);
   }
@@ -1996,31 +1222,10 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files`);
   }
 
-  /**
-   * What this session's provider can be asked to do — its skills and its slash
-   * commands, read where the session actually runs.
-   *
-   * PER SESSION RATHER THAN PER PROJECT because the checkout is: a worktree
-   * session's `.claude` is its own copy's, and the provider answers about the
-   * directory it was started in. Cached in the engine (see
-   * `provider-skills.ts`), so a menu may ask on every keystroke.
-   */
   sessionSkills(sessionId: string): Promise<ProviderSkills> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/skills`);
   }
 
-  /**
-   * THE PERSON'S OWN CLAUDE CODE CONVERSATIONS, newest first — `/resume`'s
-   * picker (#616).
-   *
-   * PER LOGIN, NOT PER SESSION, like `projectSkills` and for the same reason:
-   * the picker runs on a canvas, before the session it would adopt into exists.
-   * `instanceId` is which login's history to read — absent is the built-in
-   * slot, which is where a terminal `claude` writes.
-   *
-   * Forks Telar has already adopted are not in the answer: adopting an adoption
-   * is something a person could do without ever being told that is what it was.
-   */
   claudeConversations(options: { instanceId?: string; cwd?: string } = {}): Promise<{ conversations: ClaudeConversation[] }> {
     const query = new URLSearchParams();
     if (options.instanceId) query.set("instanceId", options.instanceId);
@@ -2029,14 +1234,6 @@ export class EngineClient {
     return this.request("GET", `/v2/claude/conversations${suffix}`);
   }
 
-  /**
-   * Adopt one into this session: fork it, import its history as journal rows,
-   * and point the session's next turn at the fork.
-   *
-   * THE PERSON'S OWN HISTORY IS NOT WRITTEN TO — asserted by the engine after
-   * the fork rather than assumed, and the adoption is refused if the original
-   * moved by so much as a byte.
-   */
   adoptClaudeConversation(
     sessionId: string,
     input: { sourceSessionId: string; cut?: "whole" | "since_compact_boundary"; sourceCwd?: string },
@@ -2044,15 +1241,6 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/adopt`, input);
   }
 
-  /**
-   * The same inventory for a PROJECT, which is what a canvas can ask before its
-   * session exists.
-   *
-   * `driver` is the canvas's pending choice rather than a recorded one — there
-   * is no session yet to have made it — and defaults to Claude at the engine.
-   * Read from the project's own checkout, which is where the `.claude` the new
-   * session will run against already is.
-   */
   projectSkills(projectId: string, driver?: ProviderDriverKind): Promise<ProviderSkills> {
     const query = driver ? `?${new URLSearchParams({ driver }).toString()}` : "";
     return this.request("GET", `/v2/projects/${encodeURIComponent(projectId)}/skills${query}`);
@@ -2068,12 +1256,6 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/files?${new URLSearchParams({ path }).toString()}`);
   }
 
-  /**
-   * One file's BYTES — what the cockpit's media viewers (image, PDF, video)
-   * render. The text routes above deliberately withhold a binary file's
-   * content; this is the read that serves it, refused past the engine's raw
-   * ceiling rather than truncated.
-   */
   projectFileBytes(projectId: string, path: string): Promise<{ data: Uint8Array; contentType: string }> {
     return this.rawBytes(`/v2/projects/${encodeURIComponent(projectId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
   }
@@ -2082,15 +1264,6 @@ export class EngineClient {
     return this.rawBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/files/raw?${new URLSearchParams({ path }).toString()}`);
   }
 
-  /**
-   * Save a file a human edited.
-   *
-   * `expectedSha256` IS THE SAFETY, not an optimisation: it is the hash the read
-   * returned, and the engine refuses the write if disk no longer matches — which
-   * happens for real, because an agent may be writing this file mid-turn. A
-   * refusal comes back as `written: false` rather than as a thrown error; see
-   * `WorkspaceWriteResult`.
-   */
   writeProjectFile(projectId: string, path: string, text: string, expectedSha256: string): Promise<WorkspaceWriteResult> {
     return this.request(
       "PUT",
@@ -2107,14 +1280,6 @@ export class EngineClient {
     );
   }
 
-  /**
-   * Which models a provider says it has, as one login reads them.
-   *
-   * The PROVIDER answer is cached in the engine for five minutes — answering
-   * means spawning the provider's own CLI. The reader's overlay on top of it is
-   * not cached at all, so a hide or an added id shows up on the very next call
-   * without `refresh`. Omitting `instanceId` gets the driver's built-in slot.
-   */
   modelCatalogue(
     driver: ProviderDriverKind,
     options: { refresh?: boolean; instanceId?: string } = {},
@@ -2144,17 +1309,6 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions?projectId=${encodeURIComponent(projectId)}`);
   }
 
-  /**
-   * Every LIVE session on the engine, across projects, with the project
-   * registry beside it — one read rather than one per project, so the two
-   * halves cannot be composed from different instants.
-   */
-  /**
-   * WHAT THIS MAC ALLOWS, and its machine-level plugin settings.
-   *
-   * Scoped to the engine this client points at — a cockpit viewing a remote Mac
-   * reads that Mac's answer, never the one it happens to run beside.
-   */
   machinePlugins(): Promise<{ plugins: PluginStatus[]; machine: ProjectPlugins }> {
     return this.request("GET", "/v2/plugins");
   }
@@ -2176,81 +1330,14 @@ export class EngineClient {
     return this.request("PATCH", "/v2/plugins", { plugins });
   }
 
-  /**
-   * Assignments ride this list so a sidebar never fetches a history per row.
-   *
-   * ROWS, NOT WHOLE SESSIONS (#459): the engine answers `LiveSessionRow`, which
-   * is every `Session` field a rail draws and none it does not. A full record is
-   * assignable to one, so a caller holding either keeps working; a client that
-   * genuinely needs the old shape asks the route with `?full=1`, for one release.
-   *
-   * AND IT IS THE WHOLE OF WHAT A RAIL ASKS PER PASS. `daemonId` and the inbox
-   * policy ride here for the same reason the arrangement does — this is the read
-   * every rail already makes, and fetching either beside it meant three
-   * concurrent requests per host per tick for two fields that almost never move.
-   *
-   * AND SO DOES THE ARRANGEMENT. `layout` is the engine's whole
-   * `sidebar-layout.json`, carried here because this is the one route every
-   * rail already polls — which is what lets a drag on one device reach the
-   * others without a second request or a connection of its own. Optional: an
-   * engine older than the field says nothing, and a rail reads that as "keep
-   * the copy I have" rather than "nobody has arranged anything".
-   *
-   * AND IT IS THE UNSETTLED ROWS UNLESS YOU ASK FOR ALL OF THEM (#457). On the
-   * owner's store that is 7 rows rather than 291 — the other 284 were folded and
-   * serialised every three seconds so each rail could put them on a shelf nobody
-   * had open. `all` is what a SHELF asks with; `settledCount` on the default
-   * answer is what draws the header that opens it.
-   */
   liveSessions(options: { all?: boolean } = {}): Promise<LiveSessionsAnswer> {
     return this.request("GET", options.all ? "/v2/sessions/live?all=1" : "/v2/sessions/live");
   }
 
-  /**
-   * THE SAME LIST, CONDITIONALLY — issue #459, and the read a rail should make.
-   *
-   * A rail cannot be pushed to (no global event feed, and no new long-lived
-   * connection: see #82), so it still asks on a timer. This makes the ask nearly
-   * free: hand back the `revision` from last time and an engine with nothing to
-   * say answers `{ revision, unchanged: true }` — sixty bytes, no fold — instead
-   * of several hundred kilobytes of rows that are all identical to the ones the
-   * caller already has.
-   *
-   * `unchanged` MEANS "KEEP WHAT YOU HAVE", never "there is nothing". A caller
-   * that redraws from a missing `sessions` key would empty its own rail once a
-   * tick. An engine too old to count sends no `revision` and no `unchanged`, so
-   * every read stays a full one and the caller is simply the old cockpit.
-   *
-   * ALWAYS THE DEFAULT LIST — the unsettled rows (#457) — and there is no `all`
-   * here on purpose. The revision counts writes, so it does not move when a
-   * reader opens the Settled shelf; a cursor earned against one list and spent
-   * against the other would be answered "unchanged" and the shelf would never
-   * fill. A caller that wants the whole list calls `liveSessions({ all: true })`
-   * and pays for it, which is the version of this that cannot be got wrong.
-   */
   liveSessionsSince(since: number): Promise<(LiveSessionsAnswer & { unchanged?: false }) | LiveSessionsUnchanged> {
     return this.request("GET", `/v2/sessions/live?since=${encodeURIComponent(String(since))}`);
   }
 
-  /**
-   * THE SAME LIST, CONDITIONAL ON AN ETAG — issue #457, step 3.
-   *
-   * `liveSessionsSince` is this in the body and it stays; this is the HTTP
-   * spelling, and it buys three things the body cursor cannot. A 304 carries no
-   * body at all. The MODE is inside the tag, so this is safe for `all: true` —
-   * a `?since=` earned against the unsettled list would have been answered
-   * "unchanged" against `?all=1` and left a shelf empty, which is why that
-   * combination is refused. And it is the standard spelling, so an intermediary
-   * that has never heard of `?since=` still does the right thing.
-   *
-   * ITS OWN ENVELOPE, not `request`'s, for the same reason `requestBytes` has
-   * one: `request` parses a JSON body on every path, and a 304 has none. Two
-   * routes with an unusual shape is not a reason to put a branch on all of them.
-   *
-   * NO `etag` MEANS AN UNCONDITIONAL READ, which is also what an engine too old
-   * to mint one leaves the caller with — it answers 200 with no tag, and a
-   * caller with nothing to hand back simply keeps reading in full.
-   */
   async liveSessionsMatching(
     options: { etag?: string; all?: boolean } = {},
   ): Promise<{ notModified: true; etag: string } | (LiveSessionsAnswer & { notModified?: false; etag?: string })> {
@@ -2272,8 +1359,6 @@ export class EngineClient {
       });
     }
     const etag = response.headers.get("etag") ?? undefined;
-    // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none, and asking for
-    // one would turn the cheapest answer on this client into a parse failure.
     if (response.status === 304) {
       return { notModified: true, etag: etag ?? options.etag ?? "" };
     }
@@ -2290,22 +1375,6 @@ export class EngineClient {
     return { ...(payload as LiveSessionsAnswer), ...(etag === undefined ? {} : { etag }) };
   }
 
-  /**
-   * WHEN EACH PROJECT WAS LAST WORKED IN — the front door's read (#490).
-   *
-   * One row per project, and the ONLY two fields a ranking needs. It replaces
-   * `liveSessions({ all: true })` on the launch path, where 101.6 KB of session
-   * rows were serialised so the browser could fold them into one integer per
-   * project and render none of them.
-   *
-   * ACTIVE SESSIONS ONLY, which is the population `liveSessions` carried and
-   * which the ranking's cold case depends on: a project whose conversations are
-   * all archived is absent here, scores nothing, and falls through to
-   * most-recently-registered.
-   *
-   * A PROJECT WITH NO ACTIVE SESSION IS SIMPLY ABSENT rather than present at 0 —
-   * the same thing to a caller that folds with `max`, and fewer rows.
-   */
   projectActivity(): Promise<{ projects: Array<{ projectId: string; updatedAt: number }> }> {
     return this.request("GET", "/v2/sessions/activity");
   }
@@ -2322,28 +1391,9 @@ export class EngineClient {
     /** Proposed branch for a worktree session, e.g. `loom/<loom>/<thread>`.
      *  Must live under `loom/` or `telar/`; the engine refuses anything else. */
     branchSlug?: string;
-    /** What a worktree is cut from — any name in `GitOverview.refs`
-     *  (`main`, `origin/feature-x`). Absent means HEAD. Worktree only. */
     baseRef?: string;
-    /** A human's own name for the new branch, OUTSIDE loom//telar/. The engine
-     *  refuses (never resets) a collision with an existing branch. */
     branchName?: string;
-    /**
-     * WHO ASKED — provenance, never a link to anything and never a count.
-     * `"session"` marks a session that the `sessions` toolkit created; absent
-     * is a human's own click. Declared by the calling CODE, never by a model
-     * argument.
-     */
     origin?: SessionOrigin;
-    /**
-     * THE PRIVILEGE CEILING — the session whose runtime mode the new one may
-     * not exceed (#541 G1). A session ID and not a mode, so nothing on this
-     * call can WIDEN anything: the engine reads the mode off that session and
-     * takes the narrower of it and the new session's own posture.
-     *
-     * Declared by the calling CODE from a verified claim, never by a model
-     * argument, exactly as `origin` is.
-     */
     ceilingFrom?: string;
   }): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
@@ -2358,25 +1408,10 @@ export class EngineClient {
     return this.request("GET", "/v2/sessions/mcp-info");
   }
 
-  /**
-   * A HUMAN WAS SHOWN THIS TURN'S RESULT — the read receipt behind unread.
-   *
-   * NAMES THE TURN, NOT A TIME. A "read as of now" would swallow whatever
-   * finished between the render being reported on and this request landing,
-   * which is exactly the answer nobody has seen. The engine keeps the highest
-   * result sequence anybody has confirmed, so a late or duplicate receipt is a
-   * no-op rather than a regression, and a turn that is still running — or was
-   * steered or discarded — is refused.
-   */
   markSessionRead(sessionId: string, runId: string): Promise<{ session: Session }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/read`, { runId });
   }
 
-  /**
-   * Change a live session. `runtimeMode` takes effect on the very NEXT tool
-   * call, including inside a turn that is already running — it is the brake a
-   * human reaches for when a detached session does something unexpected.
-   */
   updateSession(
     sessionId: string,
     patch: {
@@ -2397,12 +1432,6 @@ export class EngineClient {
     return this.request("PATCH", `/v2/sessions/${encodeURIComponent(sessionId)}`, patch);
   }
 
-  /**
-   * THE ONE FIELD OF `updateSession` A WORKER MAY TOUCH. The worker's client
-   * is a `Pick`, so an orchestrating session can shelve a peer it finished
-   * with without gaining the mode, model or title of any session — see
-   * `sessions_settle`.
-   */
   settleSession(sessionId: string, settled: boolean): Promise<{ session: Session; ended?: SessionSettleEnded }> {
     return this.updateSession(sessionId, { settledOverride: settled ? "settled" : "active" });
   }
@@ -2416,48 +1445,15 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}${snapshotQuery(window)}`);
   }
 
-  /**
-   * THE WHOLE OPENING, IN ONE READ (#407) — see `SessionBootstrap`.
-   *
-   * Prefer this to `session` + `events` when opening a conversation: those two
-   * cannot be issued in parallel (the second's `after` is the first's answer),
-   * so a client paid two serial round trips for state the engine holds at one
-   * instant. `session` stays for the paging path, which asks for a window it
-   * already knows the cursor of.
-   */
   sessionBootstrap(sessionId: string, window?: SnapshotWindow): Promise<SessionBootstrap> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/bootstrap${snapshotQuery(window)}`);
   }
 
-  /**
-   * ONE PAGE OF THE JOURNAL ABOVE `after` (#494), not the rest of the run.
-   *
-   * The engine caps what it will serialise, so an answer with `more` true is
-   * the ordinary case on a session that has been away, not an error: page again
-   * from `next` — or use `drainEvents`, which is that loop written once.
-   */
   events(sessionId: string, after = 0, limit?: number): Promise<EventPage> {
     const bound = limit === undefined ? "" : `&limit=${limit}`;
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${bound}`);
   }
 
-  /**
-   * The same page, asked conditionally — issue #586.
-   *
-   * THE TAIL IS THE COCKPIT'S LARGEST LOOP: 1 s while a conversation is open,
-   * ~86,400 requests a day, and almost every one of them answers `events: []`
-   * after folding a page and serialising a body. This is the ask that can be
-   * answered in no bytes at all.
-   *
-   * `unchanged` MEANS KEEP WHAT YOU HAVE — the same rule and the same word
-   * `liveSessionsSince` uses, deliberately, so there is one thing to learn
-   * rather than two. A caller that treated it as "no events, reset" would blank
-   * a transcript once a second, which is the way this design fails loudest.
-   *
-   * SEPARATE FROM `events` rather than an optional argument on it, because the
-   * RETURN TYPE differs: a caller must be made to handle the second arm by the
-   * compiler, not reminded to.
-   */
   eventsIfChanged(
     sessionId: string,
     after = 0,
@@ -2468,24 +1464,9 @@ export class EngineClient {
     return this.requestConditional<EventPage>(`/v2/sessions/${encodeURIComponent(sessionId)}/events?after=${after}${bound}`, etag);
   }
 
-  /**
-   * ══ THE FIVE QUERY ROUTES (#516) — see the types above for why ══
-   *
-   * Every one of them is a GET with its bounds in the query string, and every
-   * bound is CLAMPED at the route rather than refused: a caller that asks for
-   * more than the ceiling is served the ceiling and told so by `more`. So these
-   * methods pass numbers through untouched and add nothing of their own — the
-   * tool wall clamps once for a model, the route clamps once for everybody, and
-   * a third opinion here would be a number nobody could find.
-   */
-
-  /** Which conversation was this — lexical, across every session on the engine. */
   findSessions(query: { q: string; projectId?: string; settled?: boolean; since?: number; limit?: number }): Promise<SessionSearchAnswer> {
     const search = new URLSearchParams({ q: query.q });
     if (query.projectId !== undefined) search.set("projectId", query.projectId);
-    // EXPLICIT `0`/`1` RATHER THAN `String(boolean)`: the route reads `1` or
-    // `true`, and sending `false` for "open sessions only" has to mean that
-    // rather than being swallowed as an absent filter.
     if (query.settled !== undefined) search.set("settled", query.settled ? "1" : "0");
     if (query.since !== undefined) search.set("since", String(query.since));
     if (query.limit !== undefined) search.set("limit", String(query.limit));
@@ -2505,12 +1486,6 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(runId)}/items`);
   }
 
-  /**
-   * One step, whole. `step` is a POSITION when it is a number and an item id
-   * when it is a string — the route parses it the same way, so a caller that
-   * has just read `runItems` names an index and one that found the item in a
-   * journal page names its id.
-   */
   runItem(sessionId: string, runId: string, step: number | string, options: { maxChars?: number } = {}): Promise<RunItemRead> {
     const search = new URLSearchParams();
     if (options.maxChars !== undefined) search.set("maxChars", String(options.maxChars));
@@ -2538,20 +1513,6 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/grep?${search.toString()}`);
   }
 
-  /**
-   * EVERY EVENT ABOVE `after`, however many pages that takes.
-   *
-   * For the caller that genuinely needs the whole tail — an export, or a client
-   * catching up from a cursor it has held across a long sleep. It is still
-   * bounded per REQUEST, which is the property #494 is about: the engine never
-   * builds a 36.5 MB response, and a caller that only wanted the next few rows
-   * never asks for the rest.
-   *
-   * `pages` IS A STOP, not a tuning knob. A journal that is being appended to
-   * faster than it is read would otherwise spin here forever; the default is
-   * far above any real catch-up, and stopping leaves a valid cursor to resume
-   * from rather than a partial answer that claims to be complete.
-   */
   async drainEvents(sessionId: string, after = 0, options?: { limit?: number; pages?: number }): Promise<EventPage> {
     const pages = options?.pages ?? 100;
     let cursor = after;
@@ -2565,11 +1526,6 @@ export class EngineClient {
     return { events, cursor, more: true, next: cursor };
   }
 
-  /**
-   * Queue one message. `model` applies to THIS turn only and cannot name an
-   * instance — the provider is the session's for its whole life (see
-   * `TurnModelSelection`). `attachments` are ids from `uploadAttachment`.
-   */
   submitTurn(
     sessionId: string,
     input: { runId: string; input: string; kind?: "message" | "compact"; model?: TurnModelSelection; attachments?: string[] },
@@ -2577,57 +1533,22 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns`, input);
   }
 
-  /**
-   * Queue one message AS AN AGENT — the worker's half of `sessions_send`.
-   * `proof` is the sending turn's own claim; the engine stamps the sender
-   * from it and never from anything a model typed. See `AgentTurnInput`.
-   */
   submitAgentTurn(sessionId: string, input: AgentTurnInput): Promise<TurnSubmissionResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/agent`, input);
   }
 
-  /**
-   * ONE DOOR TO THE SESSION'S KERNEL. `method` is the verb — `execute`,
-   * `notebook/run`, `snapshot`… — and it is always a POST, because even a read
-   * of the namespace may start the kernel. The daemon's `storeDsCapability`
-   * is the implementation; this is its wire.
-   */
   ds<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/ds/${method}`, body ?? {});
   }
 
-  /**
-   * ONE DOOR TO THE SESSION'S LATEX, shaped like `ds` above: `method` is the
-   * verb — `compile`, `status`, `log`… — always a POST. The daemon's
-   * `storeLatexCapability` is the implementation; this is its wire.
-   */
   latex<T>(sessionId: string, method: string, body?: unknown): Promise<T> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/latex/${method}`, body ?? {});
   }
 
-  /**
-   * ONE DOOR TO EVERY PLUGIN — `ds` and `latex` above, generalised, and the
-   * reason a third feature needs no third method here. `pluginId` picks the
-   * plugin, `method` its verb; the daemon resolves the capability (which
-   * project, has it opted in) and hands it to the plugin's own route.
-   *
-   * `ds` and `latex` REMAIN as their own methods rather than becoming callers
-   * of this: they are the shape a released client already speaks, and an old
-   * client pointed at a new daemon has to keep working.
-   */
   plugin<T>(sessionId: string, pluginId: string, method: string, body?: unknown): Promise<T> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/plugins/${pluginId}/${method}`, body ?? {});
   }
 
-  /**
-   * The project's saved launch recipes, and the session's terminals.
-   *
-   * SESSION-SCOPED URLS, AND TWO SCOPES OF ANSWER. A configuration belongs to
-   * the project — which project is something only the engine can resolve from
-   * a session id — while a terminal belongs to the session whose panel it
-   * opened in ("Run = a new terminal"), so status, stream and every terminal
-   * verb answer for the calling session alone.
-   */
   runConfigurations(sessionId: string): Promise<RunConfigurationsAnswer> {
     return this.request("GET", `${runBase(sessionId)}/configs`);
   }
@@ -2636,12 +1557,6 @@ export class EngineClient {
     return this.request("POST", `${runBase(sessionId)}/configs`, draft);
   }
 
-  /**
-   * PATCH SEMANTICS, AND `env` IS THE ONE THAT MATTERS. The engine merges this
-   * shallowly, so omitting `env` preserves what is stored — which is the only
-   * way a client that was never sent a secret value can edit a configuration
-   * without erasing it. Sending `env` replaces the whole list.
-   */
   updateRunConfiguration(sessionId: string, configId: string, patch: Partial<RunConfigurationDraft>): Promise<RunConfigurationView> {
     return this.request("POST", `${runBase(sessionId)}/configs/${encodeURIComponent(configId)}`, patch);
   }
@@ -2655,28 +1570,14 @@ export class EngineClient {
     return this.request("GET", `${runBase(sessionId)}/status`);
   }
 
-  /**
-   * Open a NEW terminal from a configuration, in the session's panel. Never a
-   * conflict with another terminal; a busy port comes back as `warning` on the
-   * view. `replace` is accepted and ignored.
-   */
   startRun(sessionId: string, input: RunStartInput): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/start`, input);
   }
 
-  /**
-   * Open a NEW terminal running a command the AGENT chose, with no saved
-   * configuration behind it (`terminal_open`). Recorded as `origin: "agent"`.
-   */
   openTerminal(sessionId: string, input: RunOpenInput): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/open`, input);
   }
 
-  /**
-   * Close a terminal, which ends what runs in it. `signal` is a polite first
-   * word (SIGINT for a server that traps SIGTERM); the close follows it anyway.
-   * `closedBy` is who is asking — absent means the person.
-   */
   stopRun(sessionId: string, terminalId?: string, signal?: RunStopSignal, options: { closedBy?: RunClosedBy } = {}): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/stop`, {
       ...(terminalId === undefined ? {} : { terminalId }),
@@ -2685,7 +1586,6 @@ export class EngineClient {
     });
   }
 
-  /** Close, then open the same recipe as a NEW terminal (a new id). */
   restartRun(sessionId: string, terminalId?: string, options: { closedBy?: RunClosedBy } = {}): Promise<RunView> {
     return this.request("POST", `${runBase(sessionId)}/restart`, {
       ...(terminalId === undefined ? {} : { terminalId }),
@@ -2693,52 +1593,18 @@ export class EngineClient {
     });
   }
 
-  /** Captured output from `after`. A cursor that goes BACKWARDS means a
-   *  different terminal, not lost lines — see `RunOutputAnswer`. */
   runOutput(sessionId: string, input: RunTargetInput & { after?: number } & RunOutputFilter = {}): Promise<RunOutputAnswer> {
     return this.request("GET", `${runBase(sessionId)}/output${runCursor(input)}`);
   }
 
-  /**
-   * BLOCK UNTIL ONE OF FOUR THINGS HAPPENS — issue #890.
-   *
-   * A POST RATHER THAN A GET, and not for the body's sake: this one HOLDS THE
-   * CONNECTION for up to `timeoutMs`, which is a thing to do deliberately
-   * rather than to a route that reads like a cheap read. The engine decides it
-   * over state it already holds, so nothing about waiting reaches the desktop —
-   * a wait that polled the host would be the poll this milestone deleted,
-   * renamed.
-   */
   runWait(sessionId: string, input: RunTargetInput & { pattern?: string; ready?: boolean; exit?: boolean; timeoutMs: number }): Promise<RunWaitAnswer> {
     return this.request("POST", `${runBase(sessionId)}/wait`, runBody(input));
   }
 
-  /**
-   * The same window as `runOutput`, as the redacted BYTES an emulator draws.
-   *
-   * BOTH EXIST AND NEITHER IS THE OTHER'S REPLACEMENT. `run_output` hands lines
-   * to an agent, which is what an agent can use; this hands a terminal a
-   * terminal's stream. Same cursor contract, so one poll shape serves both.
-   */
   runBytes(sessionId: string, input: RunTargetInput & { after?: number } = {}): Promise<RunBytesAnswer> {
     return this.request("GET", `${runBase(sessionId)}/bytes${runCursor(input)}`);
   }
 
-  /**
-   * EVERY TERMINAL TRANSITION FOR THIS SESSION — issue #890.
-   *
-   * A URL AND HEADERS RATHER THAN A SUBSCRIPTION, exactly like
-   * `sessionsStream`: the caller opens it, so a cockpit route can pipe the
-   * body untouched.
-   *
-   * ITS FRAMES CARRY THE WHOLE `RunView`, WHICH THE SESSIONS FEED'S FRAMES
-   * DELIBERATELY DO NOT. Their rule — a frame names a journal entry a reader
-   * can page back to — has nothing to stand on here: a run's status lives in
-   * the engine's memory, and the only read of it is `/run/status`, which is the
-   * poll this feed exists to delete. So a reader reads status ONCE on mount and
-   * then never again, and a missed frame costs nothing because the next one
-   * carries the whole state rather than a delta.
-   */
   runStream(sessionId: string): { url: string; headers: Record<string, string> } {
     return {
       url: `http://${this.discovery.host}:${this.discovery.port}${runBase(sessionId)}/stream`,
@@ -2746,20 +1612,10 @@ export class EngineClient {
     };
   }
 
-  /**
-   * Type into the program a run's recipe named.
-   *
-   * NOT A SHELL, usually: an unpinned recipe is `/bin/sh -c "<command>"`, so
-   * these bytes reach `psql`, an installer's prompt or a dev server's watch
-   * mode. A run that is not running refuses `conflict`; `delivered: false` is
-   * the narrower fact that the bytes reached no process.
-   */
   writeRun(sessionId: string, input: RunTargetInput & { data: string }): Promise<RunWriteAnswer> {
     return this.request("POST", `${runBase(sessionId)}/write`, runBody(input));
   }
 
-  /** The geometry the surface drawing it is using, so SIGWINCH says something
-   *  true to a program that draws a full screen. */
   resizeRun(sessionId: string, input: RunTargetInput & { cols: number; rows: number }): Promise<RunResizeAnswer> {
     return this.request("POST", `${runBase(sessionId)}/resize`, runBody(input));
   }
@@ -2790,8 +1646,6 @@ export class EngineClient {
     return this.rawBytes(`/v2/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`);
   }
 
-  /** A GET whose answer is content rather than JSON — attachments and raw
-   *  workspace files. Errors still arrive as JSON and are decoded as such. */
   private async rawBytes(pathAndQuery: string): Promise<{ data: Uint8Array; contentType: string }> {
     let response: Response;
     try {
@@ -2814,14 +1668,6 @@ export class EngineClient {
     return { data: new Uint8Array(await response.arrayBuffer()), contentType: response.headers.get("content-type") ?? "application/octet-stream" };
   }
 
-  /**
-   * Put a file where the session's provider can reach it, BEFORE the message
-   * that refers to it.
-   *
-   * Raw bytes rather than JSON: base64 costs a third of the payload again on
-   * the largest thing a client ever sends, and the engine's JSON body cap is
-   * deliberately small for everything else.
-   */
   async uploadAttachment(
     sessionId: string,
     file: { name: string; mediaType: string; data: ArrayBuffer | Uint8Array },
@@ -2835,11 +1681,6 @@ export class EngineClient {
     });
   }
 
-  /**
-   * What this session has done to the repository since it started — committed
-   * and uncommitted together, measured from the base recorded when it was
-   * created. See `SessionDiff` for why that framing rather than `git status`.
-   */
   sessionDiff(sessionId: string, options: DiffBaseOption = {}): Promise<{ diff: SessionDiff }> {
     const query = diffBaseQuery(options);
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/diff${query ? `?${query}` : ""}`);
@@ -2857,47 +1698,22 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/commit`, { message });
   }
 
-  /**
-   * Publish this session's own branch — issue #670. The engine's only networked
-   * git call, and the only one a person has to press for.
-   *
-   * NO BODY. The branch, the checkout and the remote are read off the session
-   * record by the engine: a client that could name the branch could ask this
-   * engine to push anything on the machine.
-   */
   pushSessionBranch(sessionId: string): Promise<GitPushResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/git/push`, {});
   }
 
-  /**
-   * Open a pull request for this session's branch — issue #670.
-   *
-   * A SECOND ARM, NOT A SECOND HALF OF THE PUSH. Pushing needs git and a remote;
-   * this needs `gh` and a GitHub one, and a cockpit that made the portable half
-   * hostage to the unportable one would give a GitLab user one button that
-   * cannot work instead of one that can.
-   */
   openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull`, input);
   }
 
-  /** What placing a Diff line on the session branch's pull request needs (#1014). */
   sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull/anchor`);
   }
 
-  /** Start a review thread on a line or range of the session branch's pull request (#1014). */
   commentOnSessionPullLine(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/github/pull/comments`, input);
   }
 
-  /**
-   * What the session's browser is looking at, with pixels.
-   *
-   * `screenshot` costs a real round trip through Chromium, so it is opt-in; and
-   * `start` is opt-in for a bigger reason — a panel that polled for state would
-   * otherwise LAUNCH a browser for every session it rendered.
-   */
   browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<{ browser: BrowserSnapshot }> {
     const query = new URLSearchParams();
     if (options.screenshot) query.set("screenshot", "1");
@@ -2913,14 +1729,6 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/browser/open`, { url });
   }
 
-  /**
-   * The MACHINE-WIDE MCP servers — the ones every project sees.
-   *
-   * A project's own live under `listProjectMcpServers`, and the URL is what
-   * says which scope you are in. Two shapes rather than one with a filter,
-   * because "all of them" and "the global ones" being the same request is how a
-   * delete lands in the wrong scope.
-   */
   listMcpServers(): Promise<{ mcpServers: McpServer[] }> {
     return this.request("GET", "/v2/mcp-servers");
   }
@@ -2947,33 +1755,10 @@ export class EngineClient {
     return this.request("DELETE", path);
   }
 
-  /**
-   * Whether each http server wants a login, and whether ours works.
-   *
-   * COSTS TWO NETWORK ROUND TRIPS PER SERVER — a detection probe and an
-   * authenticated `initialize` — so it is a call a page makes when it opens or
-   * when somebody presses refresh, never a poll.
-   *
-   * `projectId` SCOPES IT the same way the server list does: absent asks about
-   * the machine-wide servers, present asks about the merge that project's
-   * sessions actually run with.
-   */
   mcpOAuthStatus(projectId?: string): Promise<{ statuses: McpOAuthStatus[] }> {
     return this.request("GET", projectId ? `/v2/mcp-oauth?projectId=${encodeURIComponent(projectId)}` : "/v2/mcp-oauth");
   }
 
-  /**
-   * Start a browser sign-in and get the URL to send them to.
-   *
-   * NOTHING SECRET CROSSES THIS CALL IN EITHER DIRECTION. The PKCE verifier and
-   * the state stay in the engine, keyed by the state the authorization server
-   * will echo back; the caller receives only a URL it could have been shown
-   * anyway.
-   *
-   * `redirectOrigin` is the ORIGIN OF THE PAGE the user is looking at, because
-   * the authorization server sends the browser back there — and on a cockpit
-   * reachable by more than one name, a constant would send it to the wrong one.
-   */
   connectMcpOAuth(input: { serverId: string; projectId?: string; redirectOrigin: string }): Promise<{ authorizationUrl: string }> {
     return this.request("POST", "/v2/mcp-oauth/connect", input);
   }
@@ -2989,36 +1774,10 @@ export class EngineClient {
     return this.request("POST", "/v2/mcp-oauth/disconnect", input);
   }
 
-  /**
-   * The configured logins, and what the machine says about each.
-   *
-   * ONE CALL FOR BOTH: a settings row needs the configuration and the probe to
-   * render at all, and splitting them would let the page paint a green dot
-   * beside an instance the second call is about to report missing.
-   *
-   * SENSITIVE ENVIRONMENT VALUES ARE NOT IN THIS ANSWER. They come back as
-   * `{ value: "", valueRedacted: true }`; sending that same shape to
-   * `saveProviderInstance` keeps the stored secret.
-   */
   listProviderInstances(options: { refresh?: boolean } = {}): Promise<{ providerInstances: ProviderInstance[]; probes: ProviderProbe[] }> {
     return this.request("GET", `/v2/provider-instances${options.refresh ? "?refresh=1" : ""}`);
   }
 
-  /**
-   * Update the CLI behind one login, and report what happened.
-   *
-   * THERE IS NO COMMAND IN THIS CALL. The instance id is the whole input; the
-   * engine resolves which binary that login runs and derives what would update
-   * it from the install it found. Anything else would make this a remote shell
-   * with a settings button on it.
-   *
-   * KEYED ON THE LOGIN, not the driver, because a login can pin its own
-   * `binaryPath`. Rows sharing a binary still all change together — that falls
-   * out of them resolving to the same file, rather than being assumed.
-   *
-   * THE FRESH PROBES COME BACK IN THE SAME ANSWER, past every cache, so the
-   * caller cannot paint the version it just replaced.
-   */
   updateProviderCli(instanceId: string): Promise<{
     result: ProviderUpdateRun;
     providerInstances: ProviderInstance[];
@@ -3027,17 +1786,6 @@ export class EngineClient {
     return this.request("POST", `/v2/provider-updates/${encodeURIComponent(instanceId)}`, {});
   }
 
-  /**
-   * `null` clears a field, an absent key leaves it alone. Two different
-   * requests, and JSON has no other way to say so.
-   *
-   * `stoppedInheriting` COMES BACK WHEN THIS SAVE COST SOMETHING — #594. An
-   * instance's FIRST variable (or its first config folder) makes it configured,
-   * and a configured login stops inheriting the variables its driver owns. That
-   * is deliberate and is not changing; what changed is that it now says so.
-   * Present only when non-empty, and NAMES ONLY — several of them are
-   * credentials.
-   */
   saveProviderInstance(input: {
     id: string;
     driver?: ProviderDriverKind;
@@ -3053,9 +1801,6 @@ export class EngineClient {
     binaryPath?: string | null;
     enabled?: boolean;
     env?: ProviderInstanceEnvVar[];
-    /** Inherited variables to keep, as this login's own declarations. NAMES
-     *  ONLY: the engine reads the values from its own environment, so no
-     *  credential crosses this call in either direction. */
     carryOverInherited?: string[];
   }): Promise<{ providerInstance: ProviderInstance; stoppedInheriting?: string[] }> {
     const { id, ...patch } = input;
@@ -3072,36 +1817,18 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { runId });
   }
 
-  /** End all session-owned active, queued, held and background work.
-   * Delivered messages remain in history; the next message needs no Resume.
-   * `stopTurn` is the separate operation that interrupts only one run. */
   stopSession(sessionId: string, by: "user" | "agent" = "user", commandId?: string): Promise<{ stopped: Turn[]; live?: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop`, { scope: "session", by, commandId });
   }
 
-  /**
-   * Stop the session's lingering background tasks — the "N tasks still
-   * working" chip. A DIFFERENT verb from `stopTurn`: background work outlives
-   * its turn, so there may be no turn to stop, and the turn Stop deliberately
-   * spares it. `stopped` is how many tasks it ended.
-   */
   stopBackgroundTasks(sessionId: string): Promise<{ stopped: number }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/stop-background`, {});
   }
 
-  /**
-   * HOW MANY TERMINALS THIS SESSION HOLDS OPEN NOW, whoever opened them — what
-   * Settle would close (#883). One question to the terminal host, asked when a
-   * surface is about to offer the settle; never on a timer.
-   */
   sessionTerminals(sessionId: string): Promise<{ open: number }> {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals`);
   }
 
-  /**
-   * CLOSE EVERY TERMINAL THIS SESSION HOLDS, AS THE PERSON — the settled row's
-   * "end them" (#883). The same host close a settle makes; `closed` counts them.
-   */
   closeSessionTerminals(sessionId: string): Promise<{ closed: number }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/terminals/close`, {});
   }
@@ -3130,16 +1857,6 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/archive`, {});
   }
 
-  /**
-   * REMOVE A SESSION AND EVERYTHING IT OWNS. There is no undo.
-   *
-   * Distinct from `archiveSession` in the only way that matters: archiving
-   * keeps the record and the transcript, this does not. It exists because
-   * settling is now the way to put a session down, and a lifecycle whose only
-   * exit is the concept you retired has no exit at all.
-   *
-   * Refuses while a turn is in flight — the journal is still being written to.
-   */
   deleteSession(sessionId: string): Promise<{ deleted: boolean }> {
     return this.request("DELETE", `/v2/sessions/${encodeURIComponent(sessionId)}`);
   }
@@ -3150,15 +1867,6 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/release`, {});
   }
 
-  /**
-   * RESUME NOW — don't wait for the limit to lift.
-   *
-   * A HUMAN gesture like release and discard, so no claim token: the person
-   * pressing this is not a worker reporting on a run. The engine checks the
-   * turn really is a `rate_limited` failure; it does NOT check the clock,
-   * because "I know something you don't" (another account, a limit already
-   * lifted) is the entire reason the button exists.
-   */
   resumeRateLimitedTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/resume`, {});
   }
@@ -3167,28 +1875,16 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/discard`, {});
   }
 
-  /** SEND NOW: promote a queued turn into the running one. A promise of
-   *  not-losing, never of delivery — see the engine's `promoteTurn`. */
   promoteTurn(sessionId: string, runId: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(runId)}/promote`, {});
   }
 
-  /** The worker confirming a steered message reached its driver's mailbox.
-   *  `runId` is the PROMOTED turn; the token proves the running claim. */
   ackSteer(sessionId: string, steerRunId: string, claimToken: string): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(steerRunId)}/steer-ack`, {
       claimToken,
     });
   }
 
-  /**
-   * `heartbeatIntervalMs` is the daemon's OWN answer, and the engine has always
-   * sent it — this client simply dropped it from the type. It is the authority
-   * on how long a worker may be out of contact before its lease expires (the
-   * daemon prunes at three intervals), which is the timing contract a
-   * supervisor must obey rather than invent a threshold of its own.
-   * Optional because an older engine does not send it.
-   */
   registerWorker(workerId: string): Promise<{ worker: { workerId: string }; heartbeatIntervalMs?: number }> {
     return this.request("POST", "/v2/workers/register", { workerId }, undefined, "registerWorker");
   }
@@ -3200,21 +1896,10 @@ export class EngineClient {
     return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/heartbeat`, { acknowledgedTaskStops }, signal, "workerHeartbeat");
   }
 
-  /**
-   * `claimSeq` is the worker's per-registration high-watermark. Repeating a
-   * sequence replays its outcome instead of allocating a second turn, which is
-   * what makes a lost claim response safe to retry — see the daemon's route.
-   * `signal` bounds it, so a hung claim cannot pin the caller's loop.
-   */
   claimTurn(workerId: string, claimSeq: number, signal?: AbortSignal): Promise<{ claim?: WorkerClaim }> {
     return this.request("POST", `/v2/workers/${encodeURIComponent(workerId)}/claim`, { claimSeq }, signal, "claimTurn");
   }
 
-  /**
-   * Open a turn the PROVIDER started — a wake-up between turns. Returns a
-   * turn that is already `running` under a claim this worker holds, so the
-   * usual `openRequest`/`reportObservations`/`completeTurn` apply to it.
-   */
   openProviderTurn(sessionId: string, input: ProviderTurnOpenInput): Promise<{ turn: Turn }> {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/turns/provider`, input);
   }
@@ -3255,8 +1940,6 @@ export class EngineClient {
       kind: RequestKind;
       detail: RequestDetail;
       itemId?: string;
-      /** How long this may sit before its `default` is taken (#541 D). Inert
-       *  without one — see `deadlineResolution`. */
       deadlineMs?: number;
       default?: RequestDefault;
     },
@@ -3280,11 +1963,6 @@ export class EngineClient {
     return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}`, input);
   }
 
-  /**
-   * SUBSCRIPTIONS — being woken by another session. The subscriber is the
-   * session in the path; the engine queues a `origin: "session"` turn on it
-   * when the target does one of `events`. See `Subscription`.
-   */
   subscribe(
     sessionId: string,
     input: { targetSessionId: string; events?: WakeKind[]; once?: boolean; completionWake?: Subscription["completionWake"] },
@@ -3296,7 +1974,6 @@ export class EngineClient {
     return this.request("GET", `/v2/sessions/${encodeURIComponent(sessionId)}/subscriptions`);
   }
 
-  /** A COHORT: one wake when every session in `sessionIds` is done. See `Cohort`. */
   subscribeCohort(
     sessionId: string,
     input: { sessionIds: string[]; timeoutMinutes?: number; completionWake?: Cohort["completionWake"] },
