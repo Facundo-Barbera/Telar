@@ -4,3 +4,4 @@ export { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "./orc
 export { mcpOAuthRoutes } from "./routes";
 export { collectTelarWall, type TelarCapabilities, type TelarSocketLease, TelarToolSocket, telarWall, toSdkTools } from "./telar-socket";
 export { clampLimit, err, failure, fillWithin, json, MAX_ANSWER_CHARS, ok, type ToolFactory } from "./tool-kit";
+export { McpOAuthStore, type PendingMcpOAuth } from "./mcp-oauth-store";

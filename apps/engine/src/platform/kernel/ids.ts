@@ -7,3 +7,6 @@ export function assertId(value: unknown, label: string): asserts value is string
     throw new EngineStateError("invalid_request", `${label} must contain only letters, numbers, underscores, or hyphens`);
   }
 }
+
+// Neither half of a composite secret key (ids, env names) can contain a space.
+export const SECRET_KEY_SEPARATOR = " ";
