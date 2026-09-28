@@ -1,4 +1,4 @@
-import { SessionCockpit } from "@/features/sessions";
+import { SessionCockpit } from "@/features/sessions/cockpit";
 
 /**
  * A NEW CONVERSATION ON ANOTHER MAC. Same front door as the local canvas

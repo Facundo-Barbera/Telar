@@ -1,5 +1,5 @@
 "use client";
-import { SessionTurn } from "@/features/sessions";
+import { SessionTurn } from "@/features/sessions/cockpit";
 import type { JournalItem, JournalTurn } from "@/platform/engine";
 const item = (id: string, detail: JournalItem["detail"]): JournalItem => ({ id, runId: "run_sample", sessionId: "session_sample", status: "completed", title: "Message", detail, streamedText: "", openedBy: 1, startedAt: 1 });
 /** The engine's own notice, as `Turn.agentNotice` / `ItemDetail.notice` carry

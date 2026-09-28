@@ -1,4 +1,4 @@
-import { SessionCockpit } from "@/features/sessions";
+import { SessionCockpit } from "@/features/sessions/cockpit";
 
 /**
  * A SOLO CONVERSATION ON ANOTHER MAC — the same chromeless screen at an address
