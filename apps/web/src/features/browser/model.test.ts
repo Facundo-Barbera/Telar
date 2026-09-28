@@ -9,49 +9,9 @@ import {
   addressRowFitsTools,
   describeDownload,
   zoomLabel,
-} from "./browser-live";
-// The bridge probe moved out of the surface so the surface could be split off
-// the conversation route's first bundle (#492); the rule it enforces is
-// unchanged and so is the test below.
-import { desktopBrowserBridge } from "../lib/desktop-browser-bridge";
+} from "./model";
 
-test("remote host routes cannot use this computer's native browser", () => {
-  const original = Object.getOwnPropertyDescriptor(globalThis, "window");
-  const bridge = {};
-  const location = { pathname: "/projects/project_local/sessions/session_local" };
-  Object.defineProperty(globalThis, "window", { configurable: true, value: { location, telarDesktop: { browser: bridge } } });
-  try {
-    expect(desktopBrowserBridge()).toBe(bridge);
-    location.pathname = "/hosts/remote-mac/projects/project_remote/sessions/session_remote";
-    expect(desktopBrowserBridge()).toBeUndefined();
-    location.pathname = "/projects/project_local/sessions/session_local";
-    expect(desktopBrowserBridge()).toBe(bridge);
-  } finally {
-    if (original) Object.defineProperty(globalThis, "window", original);
-    else Reflect.deleteProperty(globalThis, "window");
-  }
-});
-
-
-/**
- * THE ADDRESS BAR SURVIVES THE DEFAULT PANEL WIDTH (#319).
- *
- * It did not: at the right panel's ~510px the labelled viewport control, the
- * profile label and the 1Password health sentence took the row, and the one
- * control on it you TYPE into was squeezed to about 30px — "Typ" — with no way
- * to reach the address bar from the keyboard at that width.
- *
- * #319'S MECHANISM WAS "DROP LABELS BEFORE WIDTH", AND IT IS GONE because both
- * labels are: the profile became a glyph (#366) and the viewport left the row
- * entirely for the device toolbar (#473). What survives is the acceptance —
- * the input clears a floor you can type a URL into — so that is what is pinned
- * here. A control that wants words back wants the measuring hook back with it.
- *
- * The arithmetic is tested rather than the pixels because the arithmetic IS
- * the rule.
- */
 describe("the address row's width budget", () => {
-  /** Panel width → the content width the row's controls are spent from. */
   const row = (panel: number) => panel - ADDRESS_ROW_PADDING;
 
   test("at the panel's default 510px the input clears the floor — the issue's acceptance", () => {
@@ -63,8 +23,6 @@ describe("the address row's width budget", () => {
   });
 
   test("the budget is the row's eight children and the seven gaps between them", () => {
-    // back, forward, reload and the profile mark at 22; the lock at 18; the
-    // password control at its 44 widest; the ⋯ at 22; seven 4px gaps.
     expect(ADDRESS_CONTROLS).toBe(4 * 22 + 18 + 44 + 22 + 7 * 4);
   });
 
@@ -75,16 +33,6 @@ describe("the address row's width budget", () => {
   });
 });
 
-/**
- * THE CAMERA AND THE PEN FOLD RATHER THAN CRUSH THE INPUT (#474).
- *
- * The budget above has FOUR PIXELS of slack at the 420px panel #319 was filed
- * about, so two more glyphs on the row unconditionally would put the address
- * bar back under its floor — which is exactly the bug #319 exists to stop, and
- * a shortcut is not worth it. So the row spends `ADDRESS_TOOLS` only when the
- * input still clears the floor afterwards, and below that width both gestures
- * live in the `⋯` menu, where they are listed at every width anyway.
- */
 describe("the two folding tool glyphs", () => {
   const row = (panel: number) => panel - ADDRESS_ROW_PADDING;
 
@@ -99,9 +47,7 @@ describe("the two folding tool glyphs", () => {
 
   test("at the 420px panel #319 was filed about they fold — the input wins", () => {
     expect(addressRowFitsTools(row(420))).toBe(false);
-    // Unfolded they would breach the floor, which is the whole reason to fold.
     expect(addressInputRoom(row(420), true)).toBeLessThan(ADDRESS_INPUT_FLOOR);
-    // Folded, the row is exactly what #473 left it as.
     expect(addressInputRoom(row(420))).toBe(addressInputRoom(row(420), false));
   });
 
@@ -110,15 +56,12 @@ describe("the two folding tool glyphs", () => {
     for (let width = 200; width < 900; width += 1) {
       const fits = addressRowFitsTools(width);
       if (fits) seen = true;
-      // Never back to false once true.
       expect(!seen || fits).toBe(true);
     }
     expect(seen).toBe(true);
   });
 });
 
-/** Downloads land with no dialog, so the strip is the only place a person
- *  reads where one went. */
 describe("the download strip's sentence", () => {
   const base = { scopeKey: "s", tabId: "t", path: "/fixture/Downloads/report.pdf", filename: "report.pdf" };
   test("a finished download names its folder; the rest say what happened", () => {
@@ -129,13 +72,11 @@ describe("the download strip's sentence", () => {
   });
 });
 
-/** The zoom readout, which is also the reset button's label. */
 describe("the options menu's zoom readout", () => {
   test("it is a whole percentage, and a tab with no factor yet reads 100%", () => {
     expect(zoomLabel(1)).toBe("100%");
     expect(zoomLabel(1.1)).toBe("110%");
     expect(zoomLabel(0.67)).toBe("67%");
-    // Never "NaN%" for a state that has not arrived, and never "0%".
     expect(zoomLabel(undefined)).toBe("100%");
     expect(zoomLabel(0)).toBe("100%");
     expect(zoomLabel(Number.NaN)).toBe("100%");

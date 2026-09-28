@@ -4,7 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { confirmProfileDeletion, describeProfileUse, profileNameProblem, whyUndeletable, type BrowserProfile } from "@/lib/desktop-browser-profiles";
 import { buttonLabelled, click, flush, mount, installTestDom } from "@/lib/testing/dom";
 import { typeInto } from "@/lib/testing/type-into";
-import { NewBrowserProfileDialog } from "../browser-profile-prompt";
+import { NewBrowserProfileDialog } from "@/features/browser/settings";
 import { BrowserProfilesSection } from "./browser-profiles-section";
 import { IntegrationsPage } from "./integrations-page";
 import { Row } from "./settings-shell";

@@ -9,10 +9,11 @@ import { fileURLToPath } from "node:url";
 import { claimNativeView, createOverlayFreezer, nativeViewOverlayHidden, onNativeViewOverlay, type FrozenFrame } from "./native-view-overlay";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
-// The panel's files, however they are split, plus anything else that claims the view.
-const SCANNED = (fs.readdirSync(path.join(here, "../components"), { recursive: true }) as string[]).map((file) => `components/${file}`).filter((file) => {
+const listed = (dir: string) => (fs.readdirSync(path.join(here, "..", dir), { recursive: true }) as string[]).map((file) => `${dir}/${file}`);
+// The panel's and the browser's files, however they are split, plus anything else that claims the view.
+const SCANNED = [...listed("components"), ...listed("features/browser")].filter((file) => {
   if (!file.endsWith(".tsx") || file.includes(".test.")) return false;
-  if (/(^|\/)(right-panel|browser-live)[^/]*(\/|\.tsx$)/.test(file)) return true;
+  if (/(^|\/)right-panel[^/]*(\/|\.tsx$)/.test(file) || file.startsWith("features/browser/")) return true;
   return fs.readFileSync(path.join(here, "..", file), "utf8").includes("useNativeViewOverlay(");
 });
 

@@ -12,7 +12,7 @@ import {
   picksOf,
   undoMark,
   type ElementBox,
-} from "./browser-annotation";
+} from "./annotation";
 
 const page = { url: "https://example.com/pricing", title: "Pricing", width: 1280, height: 800 };
 
@@ -41,8 +41,6 @@ describe("the marks a person leaves", () => {
     let annotation = addMark(emptyAnnotation(), { kind: "rect", box: { x: 0, y: 0, width: 40, height: 40 } });
     const first = annotation.marks[0]!.id;
     annotation = addMark(undoMark(annotation), { kind: "rect", box: { x: 5, y: 5, width: 40, height: 40 } });
-    // Derived from the length this would be "m1" twice, and React would carry
-    // the removed node's state into the new one.
     expect(annotation.marks[0]!.id).not.toBe(first);
   });
 
@@ -85,7 +83,6 @@ describe("the marks a person leaves", () => {
 });
 
 describe("what is under the pointer", () => {
-  // As the shell hands them back: smallest area first.
   const boxes: ElementBox[] = [
     box({ selector: "#save", x: 10, y: 20, width: 80, height: 32 }),
     box({ role: "toolbar", name: "Actions", selector: ".toolbar", x: 0, y: 10, width: 300, height: 60 }),
@@ -135,7 +132,6 @@ describe("what gets written into the message", () => {
     let annotation = addMark(emptyAnnotation(), { kind: "rect", box: { x: 0, y: 0, width: 40, height: 40 } });
     annotation = addMark(annotation, { kind: "arrow", from: { x: 0, y: 0 }, to: { x: 60, y: 60 } });
     annotation = addMark(annotation, { kind: "text", at: { x: 5, y: 5 }, text: "this one" });
-    // Nothing picked: the caption alone, not a heading over an empty list.
     expect(annotationTextBlock(page, annotation)).toBe("Annotated screenshot of https://example.com/pricing (1280×800).");
   });
 

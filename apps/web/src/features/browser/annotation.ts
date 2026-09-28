@@ -1,7 +1,6 @@
 export type Point = { x: number; y: number };
 export type Box = { x: number; y: number; width: number; height: number };
 
-/** Measured in the same CSS pixels as the capture (`browser-manager.js` `elementBoxes`). */
 export type ElementBox = Box & { role: string; name: string; selector: string };
 
 export type Mark =
@@ -20,7 +19,6 @@ export type NewMark =
 
 export type Annotation = {
   marks: readonly Mark[];
-  /** Ids come from this counter, not the list length, so undo-then-draw never reuses a React key. */
   seq: number;
 };
 
@@ -45,7 +43,6 @@ function tidy(text: string, max = 80): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-/** Drops zero-area shapes, empty text and an element that is already picked. */
 export function addMark(annotation: Annotation, mark: NewMark): Annotation {
   if (mark.kind === "rect" && (mark.box.width < MIN_DRAG_PX || mark.box.height < MIN_DRAG_PX)) return annotation;
   if (mark.kind === "arrow" && Math.hypot(mark.to.x - mark.from.x, mark.to.y - mark.from.y) < MIN_DRAG_PX) return annotation;
@@ -69,7 +66,6 @@ export function undoMark(annotation: Annotation): Annotation {
   return { ...annotation, marks: annotation.marks.slice(0, -1) };
 }
 
-/** Keeps the counter so ids stay unique across a clear. */
 export function clearMarks(annotation: Annotation): Annotation {
   return annotation.marks.length === 0 ? annotation : { ...annotation, marks: [] };
 }
@@ -87,7 +83,6 @@ export function boxFromDrag(from: Point, to: Point): Box {
   };
 }
 
-/** Expects `boxes` sorted smallest-area first (as `elementBoxes` returns them), so the first hit is innermost. */
 export function elementAt(boxes: readonly ElementBox[], point: Point): ElementBox | undefined {
   return boxes.find(
     (box) => point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height,
@@ -116,7 +111,6 @@ export function captureFileName(url: string, kind: "screenshot" | "annotated"): 
   try {
     host = new URL(url).hostname || "page";
   } catch {
-    // file://, about:blank and unparseable input keep the generic name.
   }
   return `${kind}-${host.replace(/[^a-z0-9.-]+/gi, "-")}.png`;
 }

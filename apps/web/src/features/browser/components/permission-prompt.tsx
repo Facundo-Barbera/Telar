@@ -1,32 +1,5 @@
 "use client";
 
-/**
- * THE PERMISSION PROMPT, AND THE LOCK POPOVER BEHIND IT — the two halves of
- * "this site would like to use your camera", drawn by Telar rather than by
- * Chromium (#422).
- *
- * WHY TELAR DRAWS IT. The pages live in a native `WebContentsView` glued under
- * this panel; Chromium's own permission bubble would be positioned against a
- * window that is not where the person is looking, in a chrome this app does not
- * have. So the shell asks over IPC and this renders the question where a browser
- * puts it: anchored to the address bar, under the lock icon that later shows what
- * was decided.
- *
- * THREE ANSWERS, AND THE MIDDLE ONE IS THE POINT. Allow is remembered, Block is
- * remembered (that is what the button means in every browser, and an origin you
- * refused should not ask again on every reload), and Allow once is written down
- * nowhere at all — it lives against the page that asked and dies with it.
- *
- * SCREEN SHARING ASKS A DIFFERENT QUESTION. Not "may I" but "which one", so its
- * prompt is the picker: the screens and windows the shell listed, with
- * thumbnails, and Share / Cancel. Cancelling is not a refusal of the site —
- * nothing is remembered either way — which is why it does not say Block.
- *
- * NOTHING HERE CALLS THE BRIDGE. The surface that owns the prompt (the browser
- * panel) does, because it also owns the native view that has to be out of the way
- * while any of this is on screen — see `lib/native-view-overlay.ts`.
- */
-
 import { useState } from "react";
 import { BellIcon, CameraIcon, ClipboardIcon, GlobeIcon, LockIcon, MapPinIcon, MicIcon, ScreenShareIcon, type LucideIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -44,7 +17,6 @@ import {
 } from "@/lib/desktop-site-permissions";
 import { cn } from "@/lib/utils";
 
-/** One glyph per kind — what a prompt shows before it has said a word. */
 const KIND_ICONS: Record<SitePermissionKind, LucideIcon> = {
   camera: CameraIcon,
   microphone: MicIcon,
@@ -59,25 +31,29 @@ export function PermissionKindIcon({ kind, className }: { kind: SitePermissionKi
   return <Icon aria-hidden className={cn("size-3.5", className)} />;
 }
 
-/**
- * THE ADDRESS BAR'S OWN GLYPH. A lock for https, a globe for everything else —
- * the one thing about a scheme worth a person's attention is that it is NOT
- * secure, and a padlock over a plain-http page would be this surface lying.
- */
 export function SiteSecurityIcon({ origin, className }: { origin: string | undefined; className?: string }) {
   const secure = Boolean(origin && origin.startsWith("https://"));
   const Icon = secure ? LockIcon : GlobeIcon;
   return <Icon aria-hidden className={cn("size-3.5", className)} />;
 }
 
+const VARIANTS = ["default", "outline", "ghost"] as const;
+
+/** A prompt's three answers, strongest first. */
+function Answers({ busy, answers }: { busy?: boolean | undefined; answers: [label: string, onClick: () => void, disabled?: boolean][] }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      {answers.map(([label, onClick, disabled], at) => (
+        <Button key={label} size="sm" variant={VARIANTS[at]} disabled={busy || disabled} onClick={onClick}>
+          {label}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 export type PermissionAnswer = { decision: "allow" | "once" | "block"; sourceId?: string };
 
-/**
- * The question, and the three buttons. `busy` covers the round trip to the
- * shell so a double-press cannot answer twice — the shell ignores the second
- * one anyway, but a button that stays live after a decision reads as one that
- * did nothing.
- */
 export function SitePermissionPrompt({
   prompt,
   onAnswer,
@@ -98,36 +74,16 @@ export function SitePermissionPrompt({
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-xs font-medium text-foreground">{permissionPromptTitle(prompt)}</p>
-          {/* THE PROFILE IS PART OF THE QUESTION, not a footnote: an answer is
-              remembered in the cookie jar this session browses in, and the same
-              site in another profile will ask again. */}
           <p className="mt-0.5 text-2xs text-muted-foreground">
             Remembered for this browser profile. “Allow once” is not.
           </p>
         </div>
       </div>
-      <div className="flex items-center gap-1.5">
-        <Button size="sm" disabled={busy} onClick={() => onAnswer({ decision: "allow" })}>
-          Allow
-        </Button>
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAnswer({ decision: "once" })}>
-          Allow once
-        </Button>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAnswer({ decision: "block" })}>
-          Block
-        </Button>
-      </div>
+      <Answers busy={busy} answers={[["Allow", () => onAnswer({ decision: "allow" })], ["Allow once", () => onAnswer({ decision: "once" })], ["Block", () => onAnswer({ decision: "block" })]]} />
     </div>
   );
 }
 
-/**
- * "WHICH SCREEN" — the share picker, which is also the prompt.
- *
- * Screens first, then windows, the order every OS picker uses: sharing a whole
- * display is the coarse, common answer, and hunting for one window among thirty
- * is the case that needs the list.
- */
 function ScreenSharePicker({
   prompt,
   sources,
@@ -171,30 +127,14 @@ function ScreenSharePicker({
           </button>
         ))}
       </div>
-      <div className="flex items-center gap-1.5">
-        <Button size="sm" disabled={busy || !chosen} onClick={() => chosen && onAnswer({ decision: "allow", sourceId: chosen })}>
-          Share
-        </Button>
-        {/* CANCEL IS NOT BLOCK. Changing your mind about which window is not a
-            decision about the site, so nothing is remembered — the separate
-            Block is there for when it is. */}
-        <Button size="sm" variant="outline" disabled={busy} onClick={() => onAnswer({ decision: "allow" })}>
-          Cancel
-        </Button>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAnswer({ decision: "block" })}>
-          Never allow
-        </Button>
-      </div>
+      <Answers
+        busy={busy}
+        answers={[["Share", () => chosen && onAnswer({ decision: "allow", sourceId: chosen }), !chosen], ["Cancel", () => onAnswer({ decision: "allow" })], ["Never allow", () => onAnswer({ decision: "block" })]]}
+      />
     </div>
   );
 }
 
-/**
- * WHAT THIS SITE HOLDS, under the lock icon — and the one button that takes it
- * back. Every browser puts this here, and a permission granted in a prompt
- * mid-task is only half a permission: the other half is finding it again later
- * and saying no.
- */
 export function SitePermissionsPopover({
   origin,
   records,
@@ -261,11 +201,6 @@ export function SitePermissionsPopover({
   );
 }
 
-/**
- * macOS SAID NO AFTER THE PERSON SAID YES — the one failure the page cannot
- * explain, because all it ever sees is NotAllowedError. Rendered on the panel's
- * error strip, with the pane to open named.
- */
 export function describePermissionDenial(denial: { origin: string; kinds: SitePermissionKind[]; reason: string }): string {
   return `${siteLabel(denial.origin)} could not use your ${describePermissionKinds(denial.kinds)}. ${denial.reason}`;
 }

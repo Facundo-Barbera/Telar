@@ -1,30 +1,11 @@
-/**
- * THE BROWSER'S `⋯` MENU AND ITS DEVICE TOOLBAR (#473).
- *
- * WHY THIS FILE MOUNTS AND CLICKS where `browser-live.test.ts` beside it is
- * arithmetic: what this issue changed is WHICH CONTROLS
- * EXIST AND WHERE. A menu that stopped rendering a row, a toolbar that
- * appeared in fit mode, a toggle that sent the wrong mode — none of those are
- * visible to a pure function, and all of them are the bug.
- *
- * The DOM is registered for this file and handed back in `afterAll`, because
- * the suite shares one process and its neighbours are written for a world with
- * no `window` in it. That is late for one thing only — the UI primitives
- * freeze whether they have layout effects at their first import — and the
- * preload (scripts/test-dom.mjs) settles that before any test file loads.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  DesktopBrowserSurface,
-  presentationZoomLabel,
-  type DesktopBrowserBridge,
-  type DesktopBrowserPanelState,
-  type DesktopBrowserTab,
-} from "./browser-live";
+import { presentationZoomLabel } from "../model";
+import type { DesktopBrowserBridge, DesktopBrowserPanelState, DesktopBrowserTab } from "../types";
+import { DesktopBrowserSurface } from "./desktop-browser-surface";
 import { claimNativeView, nativeViewOverlayHidden } from "@/lib/native-view-overlay";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -55,7 +36,6 @@ const panelState = (patch: Partial<DesktopBrowserPanelState> = {}): DesktopBrows
   ...patch,
 });
 
-/** The bridge, recording what the panel asked the shell to do. */
 function makeBridge(state: DesktopBrowserPanelState, extra: Partial<DesktopBrowserBridge> = {}) {
   const actions: Record<string, unknown>[] = [];
   const cleared: string[] = [];
@@ -81,11 +61,8 @@ function makeBridge(state: DesktopBrowserPanelState, extra: Partial<DesktopBrows
   return { actions, bridge, cleared, visibility };
 }
 
-/** A quiet moment — long enough for a frame, when there are frames. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
 
-/** A real mouse press: the events a browser sends, in order, on the deepest
- *  element under the pointer, held long enough for a deferred frame. */
 async function mouseClick(element: Element) {
   const target = element.querySelector("svg") ?? element;
   const init = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, button: 0, detail: 1 };
@@ -102,8 +79,6 @@ async function mouseClick(element: Element) {
   });
 }
 
-/** The surface each test mounted, taken down before the next one runs — it
- *  polls the bridge on an interval, so one left alive keeps working. */
 let mounted: (() => void) | null = null;
 
 afterEach(() => {
@@ -111,8 +86,6 @@ afterEach(() => {
   mounted = null;
 });
 
-// The DOM goes back LAST: React needs a `window` to unmount into, and its
-// scheduler needs one for the task it has already queued.
 afterAll(async () => {
   mounted?.();
   mounted = null;
@@ -120,9 +93,6 @@ afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 
-/** Keep letting React work until `ready` answers true, or give up — the
- *  surface's first state arrives over two awaited hops (a timeout, then the
- *  bridge), so one settle is not reliably enough. */
 async function waitFor(ready: () => boolean) {
   for (let attempt = 0; attempt < 25 && !ready(); attempt += 1) {
     await act(async () => { await settle(); });
@@ -132,9 +102,6 @@ async function waitFor(ready: () => boolean) {
 async function mount(
   state: DesktopBrowserPanelState,
   extra: Partial<DesktopBrowserBridge> = {},
-  /** Where a capture lands (#474). Absent is a panel with no composer, which
-   *  is what hides the camera rather than offering one that captures into
-   *  nowhere. */
   onAttach?: (files: readonly File[], caption?: string) => void,
 ) {
   const recorded = makeBridge(state, extra);
@@ -152,8 +119,6 @@ async function mount(
     );
     await settle();
   });
-  // The chrome is drawn from the shell's state, so nothing this file asserts
-  // exists until that first read has landed.
   await waitFor(() => Boolean(host.querySelector('[role="tab"]')));
   let gone = false;
   const unmount = () => {
@@ -166,17 +131,14 @@ async function mount(
   return { ...recorded, host, root, unmount };
 }
 
-/** The `⋯` at the right end of the address row. */
 const optionsTrigger = (host: Element) => host.querySelector('[aria-label="Browser options"]')!;
 
-/** Every row the open menu is showing, in the order it shows them. */
 const menuRows = () =>
   [...document.querySelectorAll('[aria-label="Browser options"] ~ *, [role="dialog"]')]
     .flatMap((popup) => [...popup.querySelectorAll("button")])
     .map((button) => button.textContent?.trim() ?? "")
     .filter(Boolean);
 
-/** One row of the open menu, by the words on it. */
 const menuRow = (label: string) => {
   const found = [...document.querySelectorAll('[role="dialog"] button')].find((button) => button.textContent?.trim() === label);
   if (!found) throw new Error(`No menu row labelled ${JSON.stringify(label)}; saw ${menuRows().join(" | ")}`);
@@ -190,23 +152,15 @@ describe("the options menu", () => {
 
     const rows = menuRows();
     const order = ["Hard reload", "Open DevTools", "Open separate preview window", "Show device toolbar", "Appearance"];
-    // Each named row is there, and each is after the one before it.
     const positions = order.map((label) => rows.findIndex((row) => row.startsWith(label)));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
-    // Then the zoom readout, the profile, and the two destructive rows.
     expect(rows).toContain("100%");
     expect(rows).toContain("Profile: Work");
     expect(rows).toContain("Clear cookies…");
     expect(rows).toContain("Clear cache…");
   });
 
-  /**
-   * THE RULE EVERY MENU IN THIS PANEL OBEYS (`lib/native-view-overlay.ts`).
-   * The shell composites the page ABOVE this DOM, so a menu that opens without
-   * claiming the overlay opens behind the page — which is the same nothing,
-   * from the chair.
-   */
   test("takes the native browser view down while it is open", async () => {
     const { host, visibility } = await mount(panelState());
     expect(nativeViewOverlayHidden()).toBe(false);
@@ -254,7 +208,6 @@ describe("the options menu", () => {
   test("zoom reads the tab's own factor back, and − / + / reset step it", async () => {
     const { actions, host } = await mount(panelState({ tabs: [tab({ zoom: 1.25 })] }));
     await mouseClick(optionsTrigger(host));
-    // The readout IS the reset button, so it is where the factor is said.
     expect(menuRows()).toContain("125%");
 
     await mouseClick(document.querySelector('[aria-label="Zoom out"]')!);
@@ -268,8 +221,6 @@ describe("the options menu", () => {
   test("appearance is a pane of the three answers, with the tab's own checked", async () => {
     const { actions, host } = await mount(panelState({ tabs: [tab({ colorScheme: "dark" })] }));
     await mouseClick(optionsTrigger(host));
-    // The row says where it already is, so the submenu is not the only way
-    // to find out.
     expect(menuRows().some((row) => row.startsWith("Appearance") && row.includes("Dark"))).toBe(true);
 
     await mouseClick(menuRow("AppearanceDark"));
@@ -279,12 +230,6 @@ describe("the options menu", () => {
     expect(actions.at(-1)).toEqual({ action: "appearance", scheme: "light" });
   });
 
-  /**
-   * CLEARING IS CONFIRMED, AND THE CONFIRM SAYS WHAT IT REALLY DOES. The shell
-   * clears the PARTITION — every site this identity is signed into — so a row
-   * that fired on one press, or a sentence naming only the page in front of
-   * you, would both be this menu lying about its own reach.
-   */
   test("clear cookies asks first, names the profile, and names the page as an example", async () => {
     const { cleared, host } = await mount(panelState());
     await mouseClick(optionsTrigger(host));
@@ -314,17 +259,10 @@ describe("the options menu", () => {
     await mouseClick(optionsTrigger(host));
     expect(menuRows()).not.toContain("Clear cookies…");
     expect(menuRows()).not.toContain("Clear cache…");
-    // The rest of the menu is unaffected.
     expect(menuRows()).toContain("Hard reload");
   });
 });
 
-/**
- * THE DEVICE TOOLBAR REPLACED "Fit panel" (#473). The viewport control was a
- * popover behind a glyph on the address row; it is a row of its own now, and
- * it IS the fixed viewport — off is fit mode, so there is one fact rather than
- * a toggle that can disagree with the page.
- */
 describe("the device toolbar", () => {
   test("is absent in fit mode, and the menu's toggle is what turns it on", async () => {
     const { actions, host } = await mount(panelState());
@@ -333,7 +271,6 @@ describe("the device toolbar", () => {
     await mouseClick(optionsTrigger(host));
     expect(menuRow("Show device toolbar").getAttribute("aria-pressed")).toBe("false");
     await mouseClick(menuRow("Show device toolbar"));
-    // Turning it ON is what puts the tab in fixed mode.
     expect(actions.at(-1)).toEqual({ action: "resize", index: 0, mode: "fixed" });
   });
 
@@ -357,9 +294,6 @@ describe("the device toolbar", () => {
     expect((toolbar.querySelector('[aria-label="Viewport width"]') as HTMLInputElement).value).toBe("390");
     expect((toolbar.querySelector('[aria-label="Viewport height"]') as HTMLInputElement).value).toBe("844");
     expect(toolbar.querySelector('[aria-label="Rotate the viewport"]')).not.toBeNull();
-    // The presentation scale, said out loud: a page laid out at 1280 in a
-    // 640px column is being shown at half size, and that is worth knowing
-    // before judging a layout by it.
     expect(toolbar.textContent).toContain("50%");
   });
 
@@ -396,23 +330,8 @@ describe("the device toolbar", () => {
     expect(actions.at(-1)).toEqual({ action: "resize", index: 0, mode: "fit" });
   });
 
-  /**
-   * A SIZE IS COMMITTED WHEN IT IS A SIZE — the toolbar's fields hold a draft
-   * and commit on submit or on blur, so "1" on the way to "1024" relayouts
-   * nothing. That rule is `sizeFromFields` and it is tested where it lives
-   * (`lib/browser-viewport.test.ts`); what belongs here is that the fields
-   * show the tab's own numbers, which the test above asserts.
-   */
 });
 
-/**
- * #475 — THE PAGE FILLS THE PANEL, AND STAYS PUT BEHIND A MENU.
- *
- * The host used to sit 8px inside a rounded card of its own, because a
- * `WebContentsView` ignores CSS radius and an inset was the only way to clear
- * the panel's corner. The page therefore read as a small box with a margin
- * inside a panel that was already a rounded rectangle.
- */
 const viewportHost = (host: Element) => host.querySelector('[aria-label="Live browser viewport"]')!;
 const frozenImage = (host: Element) => viewportHost(host).querySelector("img");
 
@@ -450,8 +369,6 @@ describe("the frozen frame a menu opens over", () => {
     await waitFor(() => Boolean(frozenImage(host)));
     expect(froze).toEqual(["session_a"]);
     expect(frozenImage(host)!.getAttribute("src")).toBe("data:image/png;base64,cG5n");
-    // Freezing IS the hide — the shell captures and then puts the view down in
-    // one call, so the panel never asks for a plain one alongside it.
     expect(visibility).not.toContain(false);
 
     await mouseClick(optionsTrigger(host));
@@ -460,8 +377,6 @@ describe("the frozen frame a menu opens over", () => {
   });
 
   test("a shell that has nothing to freeze paints nothing, and the view still goes down", async () => {
-    // A blank tab, a capture past its budget, a page with no frame: null is
-    // the shell saying it hid the view with no picture to show for it.
     const { host, visibility } = await mount(panelState(), { freezeView: async () => null });
     await mouseClick(optionsTrigger(host));
     expect(frozenImage(host)).toBeNull();
@@ -476,8 +391,6 @@ describe("the frozen frame a menu opens over", () => {
     const release = claimNativeView();
     await act(async () => {});
 
-    // Picking another panel tab from a menu: the claim is released in the same
-    // commit that unmounts the browser surface.
     await act(async () => {
       release();
       root.unmount();
@@ -489,8 +402,6 @@ describe("the frozen frame a menu opens over", () => {
   });
 });
 
-/** The panel has nothing to draw for a tab that is in a window of its own —
- *  the live view was MOVED there, not copied. */
 describe("a previewed tab", () => {
   test("says where the page went, with the way back on it", async () => {
     const { actions, host } = await mount(panelState({ tabs: [tab({ preview: true })] }));
@@ -502,24 +413,8 @@ describe("a previewed tab", () => {
   });
 });
 
-/**
- * THE CAMERA AND THE PEN (#474).
- *
- * WHAT IS MOUNTED AND CLICKED HERE is the `⋯` menu's three rows, because they
- * are the ones that exist at EVERY width: the row's own two glyphs are gated
- * on a measured `ResizeObserver` width, which a DOM with no layout never
- * reports. The arithmetic that gates them is pinned in `browser-live.test.ts`
- * beside this, and the markup's gate is scanned there too — between the three
- * there is no width at which a capture is unreachable and none at which the
- * address bar is crushed to reach one.
- *
- * A 1×1 PNG stands in for the frame. Nothing here decodes it: what is asserted
- * is the shape that leaves the panel — a `File` on the composer's list, and a
- * caption in the draft carrying the address the picture is of.
- */
 const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-/** A shell that can capture, recording what it was asked for. */
 function capturingBridge(patch: Record<string, unknown> = {}) {
   const asked: Array<{ fullPage?: boolean; elements?: boolean } | undefined> = [];
   return {
@@ -556,7 +451,6 @@ describe("the browser's camera", () => {
     expect(sent!.files).toHaveLength(1);
     expect(sent!.files[0]!.name).toBe("screenshot-example.com.png");
     expect(sent!.files[0]!.type).toBe("image/png");
-    // A real decode, not the base64 handed back: the composer holds bytes.
     expect(sent!.files[0]!.size).toBeGreaterThan(0);
     expect(sent!.caption).toBe("Screenshot of https://example.com/ (1280×800).");
   });
@@ -591,12 +485,10 @@ describe("the browser's camera", () => {
   });
 
   test("with nowhere for a capture to land, the rows are not offered at all", async () => {
-    // A shell that CAN capture, but no composer to capture into.
     const { host } = await mount(panelState(), { capture: capturingBridge().capture });
     await mouseClick(optionsTrigger(host));
     expect(menuRows()).not.toContain("Screenshot the viewport");
     expect(menuRows()).not.toContain("Annotate this page");
-    // ...and the rest of the menu is untouched.
     expect(menuRows()).toContain("Hard reload");
   });
 
@@ -618,13 +510,9 @@ describe("annotate mode", () => {
     await mouseClick(menuRow("Annotate this page"));
     await waitFor(() => Boolean(host.querySelector('[aria-label="Annotate the page"]')));
 
-    // ONE call, carrying both — not a frame and then a snapshot of a page
-    // that has since been hidden.
     expect(shell.asked.at(-1)).toEqual({ elements: true });
-    // The page is down for as long as the overlay is up.
     expect(nativeViewOverlayHidden()).toBe(true);
     expect(visibility.at(-1)).toBe(false);
-    // The frozen frame is what is drawn, at the tab's own viewport.
     const frame = host.querySelector("img[alt^='Frozen frame']") as HTMLImageElement | null;
     expect(frame?.getAttribute("src")).toBe(`data:image/png;base64,${PNG_1PX}`);
     expect(host.textContent).toContain("1280×800");
@@ -640,14 +528,12 @@ describe("annotate mode", () => {
     const overlay = host.querySelector('[aria-label="Annotate the page"]')!;
     const tools = [...overlay.querySelectorAll("button")].map((button) => button.getAttribute("aria-label"));
     expect(tools).toEqual(expect.arrayContaining(["Rectangle", "Arrow", "Freehand", "Text", "Pick element"]));
-    // Undo and Clear start unpressable: there is nothing on the frame yet.
     const undo = overlay.querySelector('[aria-label="Undo the last mark"]') as HTMLButtonElement;
     expect(undo.disabled).toBe(true);
 
     const done = [...overlay.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Done")!;
     await mouseClick(done);
     await waitFor(() => !host.querySelector('[aria-label="Annotate the page"]'));
-    // The page is live again the moment the overlay goes.
     expect(nativeViewOverlayHidden()).toBe(false);
   });
 });
@@ -656,18 +542,11 @@ describe("the panel drag", () => {
   test("republishes bounds SYNCHRONOUSLY on telar:panel-resized — the native view must not trail the handle by a frame", async () => {
     let bounds = 0;
     await mount(panelState(), { setBounds: async () => { bounds += 1; } });
-    // Whatever the mount itself published (the transition follow, the
-    // observer, the republish effect) is the baseline; the drag is what is
-    // being measured.
     const before = bounds;
 
-    // The resize handle's paint runs inside ITS OWN animation frame and
-    // announces the new width there. No `act`, no timer, no frame: if the
-    // listener deferred to a rAF, this count would still read `before`.
     window.dispatchEvent(new Event("telar:panel-resized"));
     expect(bounds).toBe(before + 1);
 
-    // Every frame of the drag, not just the first.
     window.dispatchEvent(new Event("telar:panel-resized"));
     window.dispatchEvent(new Event("telar:panel-resized"));
     expect(bounds).toBe(before + 3);
@@ -678,7 +557,6 @@ describe("the device toolbar's zoom readout", () => {
   test("fit says so with the scale it lands on; a picked zoom is its percentage", () => {
     expect(presentationZoomLabel({ width: 1280, height: 800, scale: 0.5, zoom: "fit", rect: { x: 0, y: 0, width: 640, height: 400 } })).toBe("Fit · 50%");
     expect(presentationZoomLabel({ width: 390, height: 844, scale: 0.75, zoom: 0.75, rect: { x: 0, y: 0, width: 293, height: 633 } })).toBe("75%");
-    // An older shell sends no zoom: it only ever fits.
     expect(presentationZoomLabel({ width: 1280, height: 800, scale: 1, rect: { x: 0, y: 0, width: 1280, height: 800 } })).toBe("Fit · 100%");
     expect(presentationZoomLabel(null)).toBe("Fit · 100%");
   });

@@ -1,12 +1,3 @@
-/**
- * THE PROMPT SAYS WHAT IS BEING ASKED, AND OFFERS THE THREE ANSWERS.
- *
- * The sentences are tested as functions and the markup as markup, the split this
- * app uses everywhere: what a prompt SAYS is the part a person acts on and it is
- * pure, while the part that can silently rot is a button that stopped being
- * rendered. Both matter here for the same reason — a permission prompt that
- * misnames what it is about is worse than no prompt at all.
- */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -21,7 +12,7 @@ import {
   type PermissionPrompt,
   type SitePermissionKind,
 } from "@/lib/desktop-site-permissions";
-import { describePermissionDenial, SitePermissionPrompt, SitePermissionsPopover } from "./browser-permission-prompt";
+import { describePermissionDenial, SitePermissionPrompt, SitePermissionsPopover } from "./permission-prompt";
 
 const prompt = (patch: Partial<PermissionPrompt> = {}): PermissionPrompt => ({
   requestId: "perm_1",
@@ -38,7 +29,6 @@ describe("the words every surface prints", () => {
   test("the kinds are the page's vocabulary, not Chromium's", () => {
     expect(describePermissionKinds(["camera"])).toBe("camera");
     expect(describePermissionKinds(["camera", "microphone"])).toBe("camera and microphone");
-    // "location", not "geolocation" — it is what a person is being asked about.
     expect(describePermissionKinds(["geolocation"])).toBe("location");
     expect(describePermissionKinds(["clipboard-read"])).toBe("clipboard");
     expect(describePermissionKinds(["camera", "microphone", "geolocation"])).toBe("camera, microphone and location");
@@ -46,14 +36,12 @@ describe("the words every surface prints", () => {
 
   test("a site is its host, except when the scheme is the thing worth noticing", () => {
     expect(siteLabel("https://meet.example.com")).toBe("meet.example.com");
-    // An insecure page keeps its scheme rather than passing for a secure one.
     expect(siteLabel("http://localhost:3000")).toBe("http://localhost:3000");
     expect(siteLabel("not an origin")).toBe("not an origin");
   });
 
   test("the title names the site and what it asked for; screen share asks a different question", () => {
     expect(permissionPromptTitle(prompt())).toBe("meet.example.com wants to use your camera and microphone");
-    // Not "may I" but "which one" — so it does not pretend to be the same ask.
     expect(permissionPromptTitle(prompt({ kinds: ["display-capture"] }))).toBe("meet.example.com wants to share your screen");
   });
 
@@ -101,7 +89,6 @@ describe("the prompt", () => {
     const html = render(<SitePermissionPrompt prompt={prompt()} onAnswer={() => {}} />);
     expect(html).toContain("meet.example.com wants to use your camera and microphone");
     for (const label of ["Allow", "Allow once", "Block"]) expect(html).toContain(`>${label}</button>`);
-    // The middle answer's whole meaning, said rather than left to be guessed.
     expect(html).toContain("“Allow once” is not");
   });
 
@@ -111,8 +98,6 @@ describe("the prompt", () => {
 
   test("a decision in flight locks the buttons rather than leaving them live", () => {
     const html = render(<SitePermissionPrompt prompt={prompt()} onAnswer={() => {}} busy />);
-    // `\s` matters: the button primitive also writes `data-disabled`, and a
-    // bare match would count each button twice and pass with two of three.
     expect(html.match(/\sdisabled=""/g) ?? []).toHaveLength(3);
   });
 
@@ -138,18 +123,14 @@ describe("the screen-share picker, which IS the prompt", () => {
 
   test("lists what can be shared, screens first", () => {
     const html = renderToStaticMarkup(<SitePermissionPrompt prompt={sharing} onAnswer={() => {}} />);
-    // Sharing a whole display is the coarse, common answer; the window hunt is
-    // the case that needs the list.
     expect(html.indexOf("Entire screen")).toBeLessThan(html.indexOf("Telar"));
     expect(html).toContain('src="data:image/png;base64,s"');
-    // A source this Mac gave no preview for still gets a row, not a gap.
     expect(html).toContain("No preview");
   });
 
   test("Share is locked until something is chosen, and Cancel is not Block", () => {
     const html = renderToStaticMarkup(<SitePermissionPrompt prompt={sharing} onAnswer={() => {}} />);
     expect(html).toMatch(/disabled=""[^>]*>Share</);
-    // Changing your mind about which window is not a decision about the site.
     expect(html).toContain(">Cancel</button>");
     expect(html).toContain(">Never allow</button>");
     expect(html).not.toContain(">Allow once</button>");
