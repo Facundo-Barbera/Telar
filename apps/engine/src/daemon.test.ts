@@ -10,8 +10,8 @@ import {
   type PublishedAppearance,
 } from "@telar/engine-client";
 import { connectEngine } from "@telar/engine-client/node";
-import { startEngine, type EngineDaemon } from "../src/daemon";
-import { stubModels } from "./stub-models";
+import { startEngine, type EngineDaemon } from "./daemon";
+import { stubModels } from "../test/stub-models";
 
 const roots: string[] = [];
 const daemons: EngineDaemon[] = [];
@@ -665,4 +665,28 @@ test("the gitignore write has a DELETE that undoes it, and takes back only its o
   // Twice is a success with nothing to do, not a failure — the toast can arrive
   // after somebody has already edited the file by hand.
   expect((await client.undoProjectGitignore(project.id)).gitignore.removed).toEqual([]);
+});
+
+test("close clears every interval the engine started", async () => {
+  const realSetInterval = globalThis.setInterval;
+  const realClearInterval = globalThis.clearInterval;
+  const live = new Set<unknown>();
+  globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+    const timer = realSetInterval(...args);
+    live.add(timer);
+    return timer;
+  }) as typeof setInterval;
+  globalThis.clearInterval = ((timer?: Parameters<typeof clearInterval>[0]) => {
+    live.delete(timer);
+    realClearInterval(timer);
+  }) as typeof clearInterval;
+  try {
+    const daemon = await startEngine({ models: stubModels, engineRoot: root() });
+    expect(live.size).toBeGreaterThan(0);
+    await daemon.close();
+    expect(live.size).toBe(0);
+  } finally {
+    globalThis.setInterval = realSetInterval;
+    globalThis.clearInterval = realClearInterval;
+  }
 });
