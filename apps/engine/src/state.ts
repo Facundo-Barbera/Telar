@@ -123,8 +123,6 @@ import {
   type WorktreeReclaimResult,
   CLAUDE_COMPACTION_ENV_NAMES,
   migrateClaudeCompaction,
-  type DictationLanguage,
-  type DictationProviderId,
 } from "@telar/engine-client";
 import { type ProjectPatch, ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { assertId, EngineStateError, Kernel, type JournalEntry } from "./platform/kernel";
@@ -136,7 +134,7 @@ import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
 import { type AttachmentInput, awaitsRateLimitSweep, SessionQueries, createSessionModules, SessionAttachments, workspaceRootOf, delegationSettle, type DeliveryTurn, indexRow, isPeerMail, latestProviderSessionId, newestAssignment, OpenPrefixes, rowIsShelved, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, TELAR_ORIENTATION, TERMINAL_WAKE_KINDS } from "./domains/sessions";
 import { FOLDING_INTENTS, heldDelivery, MAX_TEXT_LENGTH, TurnIntake, type TurnSubmission, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, quotedExcerpt, RELAY_RULE, summariseTurn, wakeNotification, withoutWakesFrom } from "./domains/turns";
-import { cleanDictationVocabulary, dictationCredential, dictationLanguages, isDictationLanguage, isDictationProviderId, lastKeytermFit, readDictationKey, readDictationSettings, writeDictationKey, writeDictationSettings, type DictationContext, type KeytermFit } from "./domains/dictation";
+import { Dictation } from "./domains/dictation";
 import { withComputerUse, type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
 import { listWorkspaceFilesAsync, readFenced, readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
@@ -727,6 +725,7 @@ export class EngineStore {
   private readonly subscriptions: SessionSubscriptions;
   private readonly lifecycle: SessionLifecycle;
   private readonly schedules: ScheduleBook;
+  readonly dictation: Dictation;
   private readonly dataScienceOps: DataScienceOps;
   private readonly latexOps: LatexOps;
 
@@ -1284,164 +1283,6 @@ export class EngineStore {
     return this.settings.setSessionDefaults(patch);
   }
 
-  /* ---------------------------------------------------------------- *
-   * THE DICTATION KEY — issue #544.
-   *
-   * A 0600, write-only key in its own directory. See
-   * `dictation/credentials.ts`.
-   * ---------------------------------------------------------------- */
-
-  /** `<engineRoot>/dictation` — the key lives in it, and nothing else does
-   *  yet. */
-  private get dictationDir(): string {
-    return path.join(this.paths.root, "dictation");
-  }
-
-  /** WHETHER THERE IS A KEY, which is the whole of what a client may know. No
-   *  source ladder here: there is exactly one rung, so "configured" says it
-   *  all. */
-  dictationCredential(): { configured: boolean } {
-    return dictationCredential(this.dictationDir);
-  }
-
-  /**
-   * WHO TRANSCRIBES ON THIS MAC, AND WHETHER IT COULD — the whole of what any
-   * client is told about dictation.
-   *
-   * `configured` IS ANSWERED EVEN WHEN THE PROVIDER IS OFF, on purpose: a key
-   * pasted before dictation was switched off is still there, and a pane that
-   * claimed otherwise would have somebody paste it a second time. Switching a
-   * provider off does not throw a credential away.
-   */
-  dictationState(): {
-    provider: DictationProviderId;
-    configured: boolean;
-    language: string;
-    languages: readonly DictationLanguage[];
-    vocabulary: string[];
-    keyterms?: KeytermFit;
-  } {
-    // `languages` RIDES THE SAME ANSWER rather than getting a route of its own
-    // (#560). It is the vocabulary the `language` beside it is written in, and
-    // a client that had to fetch the two separately could draw a picker with
-    // nothing in it, or with the stored code missing from the list. One
-    // document, one moment.
-    //
-    // AND SO DOES WHAT THE LAST MINT ACTUALLY SENT (#712), for a different
-    // reason: it is not a setting, it is what HAPPENED to the setting. The
-    // provider may shorten the glossary to fit its own budget, and the pane
-    // that holds the vocabulary box is the one place a person would go about
-    // it. NOT STORED — see `lastKeytermFit`: it describes this engine's current
-    // glossary, and a value that outlived a restart would be a claim about a
-    // list nobody has checked.
-    const fit = lastKeytermFit();
-    return {
-      ...readDictationSettings(this.dictationDir),
-      ...this.dictationCredential(),
-      languages: dictationLanguages(),
-      ...(fit ? { keyterms: fit } : {}),
-    };
-  }
-
-  /** Choose a provider, or switch dictation off. The only writer, so `off` is
-   *  a value somebody chose rather than a state derived from an empty key. */
-  setDictationProvider(provider: unknown): void {
-    if (!isDictationProviderId(provider)) throw new EngineStateError("invalid_request", "that is not a dictation provider this engine knows");
-    writeDictationSettings(this.dictationDir, { ...readDictationSettings(this.dictationDir), provider });
-  }
-
-  /**
-   * Which language to transcribe, or `multi` for all of them at once.
-   *
-   * REFUSED BY NAME rather than stored and discovered at the socket: an
-   * unsupported code would come back from the provider as a failed handshake
-   * with nothing on screen saying which setting caused it, and the person who
-   * typed it would be three panes away by then.
-   */
-  setDictationLanguage(language: unknown): void {
-    if (!isDictationLanguage(language)) {
-      throw new EngineStateError("invalid_request", "that is not a language this engine's transcription provider can transcribe");
-    }
-    writeDictationSettings(this.dictationDir, { ...readDictationSettings(this.dictationDir), language });
-  }
-
-  /**
-   * THE PERSON'S OWN GLOSSARY — the words nothing on this Mac could have
-   * guessed (#581).
-   *
-   * TIDIED RATHER THAN REFUSED, which is the opposite of the language above and
-   * deliberately so: a code the provider cannot transcribe is a setting that
-   * will fail at a handshake three panes away, whereas a blank line in a list of
-   * words is a person pressing return. `cleanDictationVocabulary` drops the
-   * blanks and the repeats and stores the rest.
-   */
-  setDictationVocabulary(vocabulary: unknown): void {
-    if (!Array.isArray(vocabulary)) throw new EngineStateError("invalid_request", "the dictation vocabulary must be a list of terms");
-    writeDictationSettings(this.dictationDir, {
-      ...readDictationSettings(this.dictationDir),
-      vocabulary: cleanDictationVocabulary(vocabulary),
-    });
-  }
-
-  /**
-   * WHAT THIS MAC IS CURRENTLY ABOUT, for whoever is about to transcribe it
-   * (#581).
-   *
-   * IT IS THE RAIL'S OWN LIST, `liveSessionRows`, and not a second fold written
-   * here. The question is the same one a sidebar asks — which conversations are
-   * unsettled, newest first — so asking it the same way means the words the
-   * recogniser is primed with are exactly the rows a person can see, on both
-   * storage backends, forever. A private walk over the sqlite index would have
-   * been cheaper and would have answered NOTHING on a JSON-backed store, which
-   * is every test that does not ask for sqlite.
-   *
-   * UNSETTLED ONLY, which is that method's default: a conversation the rail has
-   * shelved is one nobody has looked at in days, and forty of them would crowd
-   * out the seven that are on screen.
-   *
-   * ONCE PER PRESS OF A MIC BUTTON, against a read every connected cockpit
-   * already makes every three seconds. The cost is the settled rows it does not
-   * open, which is the whole of #493.
-   */
-  dictationContext(): DictationContext {
-    const { sessions } = this.liveSessionRows();
-    // THE RAW REGISTRY, not `listProjects`: that probes every checkout for a
-    // branch and an icon, and this wants a name. Several `git` calls per project
-    // to prime a recogniser would be the cost of the feature.
-    const projects = this.projectRegistry.read().projects;
-    return {
-      sessionTitles: sessions.flatMap((session) => (session.title ? [session.title] : [])),
-      // A REMOVED PROJECT IS NOT ONE ANYBODY IS TALKING ABOUT — the same filter
-      // every picker and the rail apply, and the reason `listProjects` exists.
-      projectNames: projects.flatMap((project) => (project.removedAt === undefined ? [project.name] : [])),
-      // ONLY A WORKTREE SESSION HAS A BRANCH OF ITS OWN. A `local` one is
-      // working on whatever branch the checkout happens to be on, which belongs
-      // to the project rather than to the conversation.
-      branches: sessions.flatMap((session) => (session.workspace.mode === "worktree" ? [session.workspace.branch] : [])),
-    };
-  }
-
-  /** Store the pasted key, or clear it with an empty string. The one write, so
-   *  the 0600 file has exactly one author. */
-  setDictationKey(key: unknown): { configured: boolean } {
-    if (typeof key !== "string") throw new EngineStateError("invalid_request", "the dictation key must be text");
-    if (key.length > 4096) throw new EngineStateError("invalid_request", "that key is too long");
-    writeDictationKey(this.dictationDir, key);
-    return this.dictationCredential();
-  }
-
-  /**
-   * THE KEY ITSELF, FOR THE ONE CALLER THAT SPENDS IT.
-   *
-   * Read at call time and handed straight to `grantDictationToken`, which puts
-   * it in an `Authorization` header and nowhere else. It is never returned to a
-   * client, never logged and never cached — the route that calls this answers
-   * with the short-lived token Deepgram mints, not with this.
-   */
-  dictationKey(): string | undefined {
-    return readDictationKey(this.dictationDir);
-  }
-
   getSidebarLayout(): SidebarLayout {
     return this.settings.sidebarLayout();
   }
@@ -1700,6 +1541,10 @@ export class EngineStore {
     this.intake = this.createIntake();
     this.worktrees = this.worktreeMaintenance();
     ({ dataScienceOps: this.dataScienceOps, latexOps: this.latexOps } = this.createPluginOps());
+    this.dictation = new Dictation(this.paths.root, {
+      liveSessions: () => this.liveSessionRows().sessions,
+      projects: () => this.projectRegistry.read().projects,
+    });
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
       submitTurn: (sessionId, input) => this.submitTurn(sessionId, input),
