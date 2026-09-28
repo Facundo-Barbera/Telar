@@ -3,7 +3,7 @@
  *
  * The owner's screenshot showed Grove, Ember, Tide and Iris as four identical
  * grey tiles with one dark bar across each: no light half, no dark half, no
- * accent rail. THE CAUSE WAS SIZE, NOT RESOLUTION, and this file says so
+ * accent. THE CAUSE WAS SIZE, NOT RESOLUTION, and this file says so
  * plainly — "write a test that fails first" only means something against a bug
  * a test can hold, and neither suspected bug was there:
  *
@@ -12,17 +12,17 @@
  *     so a flat look's canvas lands at oklch(0.975 0.007 h) in light and
  *     oklch(0.145 0.014 h) in dark. Grove is hue 150/155 and Iris 300/295: the
  *     values genuinely differ, and always did, at a chroma nobody can see.
- *   - The accent rail already resolved the LOOK's accent rather than the
+ *   - The accent (then a rail, now a line) already resolved the LOOK's accent rather than the
  *     window's. globals.css carries `[data-accent=…]` and `.dark
- *     [data-accent=…]` for all eight, and a rule matching the rail beats one
+ *     [data-accent=…]` for all eight, and a rule matching it beats one
  *     inherited from <html>.
  *
  * What was wrong is that at 40px, with a mini panel spanning 64% × 40% of a
  * 40×22 tile, almost nothing of either canvas survived — and between two FLAT
- * looks the only element that differs visibly is a 3px rail. So the fix is a
+ * looks the only element that differs visibly is the accent. So the fix is a
  * 56px cell and a smaller panel, and these tests guard what that fix is for:
  * that each tile is compiled from its own look, that its two halves are its own
- * two states, and that the rail carries that look's accent. No test can judge
+ * two states, and that the accent line carries that look's accent. No test can judge
  * whether a tile looks right; this settles that it is wired to the right look.
  *
  * WHY THE MARKUP IS PARSED INTO THE DOM RATHER THAN MOUNTED WITH `createRoot`.
@@ -79,7 +79,7 @@ function halfBackground(tile: HTMLElement, mode: string): string {
 
 // Two built-ins whose bases are as far apart as this table goes — green against
 // violet — and both FLAT, so there is no scene to tell them apart by and the
-// halves and the rail are all the tile has.
+// halves and the accent line are all the tile has.
 const grove = tileFor("grove");
 const iris = tileFor("iris");
 
@@ -107,35 +107,40 @@ test("a tile's two halves are its own two states, not one colour twice", () => {
   }
 });
 
-test("the accent rail carries the look's own accent, not the window's", () => {
+test("the accent line carries the look's own accent, not the window's", () => {
   for (const [tile, id] of [
     [grove, "grove"],
     [iris, "iris"],
   ] as const) {
-    const rail = one(tile, "[data-rail]");
+    const line = one(tile, "[data-accent-line]");
     // The attribute is what globals.css keys on, and it is the LOOK's — <html>
     // carries whatever the window happens to be wearing.
-    expect(rail.dataset.accent).toBe(builtIn(id).accent);
-    expect(rail.getAttribute("style")).toBe("background:var(--primary)");
+    expect(line.dataset.accent).toBe(builtIn(id).accent);
+    expect(line.getAttribute("style")).toBe("background:var(--primary)");
   }
   // Which is only a claim worth making because these two differ.
   expect(builtIn("grove").accent).not.toBe(builtIn("iris").accent);
 });
 
-test("the rail reads its accent in the half the panel is painted in", () => {
+test("the accent line reads its accent in the half the panel is painted in", () => {
   // The mini panel is the DARK card, so a light window resolving the bare
   // attribute would paint the light accent (L 0.488) onto it. The `.dark` scope
-  // is what makes the rail the same colour in either window.
-  const panel = one(grove, "[data-rail]").parentElement;
+  // is what makes the line the same colour in either window.
+  const panel = one(grove, "[data-accent-line]").parentElement;
   expect(panel).not.toBeNull();
   expect(panel!.className.split(" ")).toContain("dark");
+});
+
+test("the mini panel draws no left rail, like the cockpit's rows", () => {
+  expect(grove.querySelector("[data-rail]")).toBeNull();
+  expect(one(grove, "[data-accent-line]").className).not.toContain("w-[3px]");
 });
 
 test("the mini panel leaves both canvases showing around it", () => {
   // happy-dom lays nothing out, so this is the geometry rather than the pixels:
   // insets small enough to leave a band of canvas above, below and either side.
   // The values it shipped with — 18% / 30% / 40% — did not.
-  const panel = one(grove, "[data-rail]").parentElement!;
+  const panel = one(grove, "[data-accent-line]").parentElement!;
   expect(panel.className).toContain("inset-x-[24%]");
   expect(panel.className).toContain("top-[34%]");
   expect(panel.className).toContain("h-[32%]");
