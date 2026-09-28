@@ -22,7 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EngineStore } from "../src/state";
-import { MAX_DELIVERIES } from "../src/notification";
+import { MAX_DELIVERIES } from "../src/domains/turns/notification";
 
 const homes: string[] = [];
 const stores: EngineStore[] = [];
