@@ -1,50 +1,45 @@
-import { readDeviceCookie } from "@/lib/remote/cookie";
-import { identifyCaller } from "@/lib/remote/gate";
-import { readRemote } from "@/lib/remote/store";
-import { activityReport, parseRegistration, pushConfigured, PushInputError, readPushRecords, saveRegistration } from "@/lib/mobile/push";
-import { sendRelayTest, startMobilePushWorker } from "@/lib/mobile/worker";
+import { identifyCaller } from "@/features/remote/server";
+import { engineCall, engineForward, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function caller(request: Request) {
-  return identifyCaller({ authorization: request.headers.get("authorization"), deviceCookie: readDeviceCookie(request) }, readRemote());
-}
-/** What this Mac knows about the caller's automatic Live Activity, for the
- *  phone's Settings to say WHY a card has or has not appeared. */
-function activityFor(deviceId: string, topic?: string) {
-  const record = readPushRecords().find(r => r.deviceId === deviceId && (topic === undefined || r.topic === topic));
-  return record ? { activity: activityReport(record) } : {};
-}
-export function GET(request: Request) {
-  const device = caller(request);
+const REGISTRATION_MAX_BYTES = 32768;
+
+const caller = async (request: Request) => (await identifyCaller(request)).device;
+
+const devicePath = (deviceId: string) => `/v2/push/devices/${encodeURIComponent(deviceId)}`;
+
+export const GET = engineRoute(async (request: Request) => {
+  const device = await caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
-  return Response.json({ configured: pushConfigured(), ...activityFor(device.id) });
-}
-export async function PUT(request: Request) {
-  const device = caller(request);
+  return engineForward(request, devicePath(device.id));
+});
+
+export const PUT = engineRoute(async (request: Request) => {
+  const device = await caller(request);
   if (!device) return Response.json({ error: { message: "Pair this device first." } }, { status: 401 });
   if (device.role !== "full") return Response.json({ error: { message: "Full access is required." } }, { status: 403 });
-  // Bound reads even when Content-Length is missing or untrusted.
   const reader = request.body?.getReader();
   if (!reader) return Response.json({ error: { message: "Missing registration." } }, { status: 400 });
-  const chunks: Uint8Array[] = []; let bytes = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read(); if (done) break;
-      bytes += value.byteLength;
-      if (bytes > 32768) { await reader.cancel(); return Response.json({ error: { message: "Registration too large." } }, { status: 413 }); }
-      chunks.push(value);
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > REGISTRATION_MAX_BYTES) {
+      await reader.cancel();
+      return Response.json({ error: { message: "Registration too large." } }, { status: 413 });
     }
-    const registration = parseRegistration(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-    saveRegistration(device.id, registration);
-    startMobilePushWorker();
-    // Not awaited: the phone is not kept waiting on APNs to hear it registered.
-    if (registration.relay) void sendRelayTest(device.id, registration.topic);
-    // A phone that brought a relay v2 credential needs nothing from this Mac.
-    return Response.json({ configured: registration.relay !== undefined || pushConfigured(), ...activityFor(device.id, registration.topic) });
-  } catch (error) {
-    if (error instanceof PushInputError || error instanceof SyntaxError) return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
-    return Response.json({ error: { message: "Couldn't save push registration." } }, { status: 503 });
+    chunks.push(value);
   }
-}
+  let registration: unknown;
+  try {
+    registration = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    return Response.json({ error: { message: "Invalid push registration." } }, { status: 400 });
+  }
+  const answer = await engineCall("PUT", devicePath(device.id), registration);
+  return Response.json(answer.body, { status: answer.status });
+});

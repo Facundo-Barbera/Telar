@@ -1,0 +1,467 @@
+import fs from "node:fs";
+import path from "node:path";
+import {
+  isShelved,
+  settlingActivityOf,
+  type Project,
+  type Session,
+  type WorktreeInventory,
+  type WorktreeReclaimItem,
+  type WorktreeReclaimResult,
+} from "@telar/engine-client";
+import type { AsyncGitRunner } from "../../platform/git/runner";
+import type { Kernel } from "../../platform/kernel";
+import type { ProjectAvailability } from "../../platform/fs/volumes";
+import { parseSession, sessionDir, sessionMetadataFile, storedSession, type SessionRecords } from "../sessions";
+import { diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizes, type CleanupStore, type ReapCandidate } from "../storage";
+import { lockSessionWorktree, removeUnregisteredCheckout } from "./checkout";
+import { buildInventory, type InventoryProject, type InventorySession } from "./inventory";
+import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./location";
+import { moveCheckouts, type Checkout, type MoveOutcome } from "./move";
+import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./release";
+import { removeSessionWorktreeAsync, type WorktreeQueue } from "./session-worktree";
+
+type MaintenanceDeps = {
+  records: SessionRecords;
+  git: AsyncGitRunner;
+  queue: WorktreeQueue;
+  cleanup: CleanupStore;
+  checkoutSizes: CheckoutSizes;
+  getProject: (projectId: string) => Project;
+  listProjects: () => Project[];
+  availability: (project: Project) => ProjectAvailability;
+  forgetGitReadsUnder: (root: string) => void;
+  setupRunning: (sessionId: string) => boolean;
+  startSetup: (sessionId: string, worktree: string) => Promise<void>;
+  openTerminals: (sessionId: string) => number;
+  hasLiveBackgroundWork: (sessionId: string) => boolean;
+  autoSettleAfterHours: () => number | null;
+  archiveSession: (sessionId: string, options: { releaseCheckout: boolean }) => unknown;
+};
+
+/** The checkouts a store holds after they are cut: release, restore, sweep, lock, move, inventory and reclaim. */
+export class WorktreeMaintenance {
+  private cleanupRunning = false;
+
+  constructor(
+    private readonly kernel: Kernel,
+    private readonly deps: MaintenanceDeps,
+  ) {}
+
+  /** Gives a session's checkout back, keeping its branch; refused with nothing touched while anything could still use it. `strict` is the sweep's. */
+  async release(
+    sessionId: string,
+    reason: "manual" | "inactive" | "unchanged" | "archived",
+    options: { strict?: boolean } = {},
+  ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
+    const session = this.deps.records.get(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.projectId) return { ok: false, refusal: "not-worktree" };
+    if (session.workspace.released) return { ok: true };
+    if (session.activity !== "idle" || session.preparation !== undefined || this.deps.setupRunning(sessionId)) {
+      return { ok: false, refusal: "in-use" };
+    }
+    const openTerminals = this.deps.openTerminals(sessionId);
+    if (openTerminals > 0) {
+      return { ok: false, refusal: "process", detail: `${openTerminals} terminal${openTerminals === 1 ? " is" : "s are"} open in this session` };
+    }
+    const project = this.deps.getProject(session.projectId);
+    const workspace = session.workspace;
+    const location = readWorktreesRoot(this.kernel.paths.root);
+    const configured = rootOf(location);
+    const roots = [defaultWorktreesRoot(this.kernel.paths.root), ...(configured ? [configured] : [])];
+    const processes = await checkoutsWithProcesses([workspace.path]);
+    const checked = await releaseRefusal(this.deps.git, {
+      projectRoot: project.root,
+      worktreesRoots: roots,
+      path: workspace.path,
+      branch: workspace.branch,
+      process: processes === undefined ? undefined : processes.has(workspace.path),
+      strict: options.strict === true,
+    });
+    if (checked.refusal) return { ok: false, refusal: checked.refusal, ...(checked.detail ? { detail: checked.detail } : {}) };
+
+    const removed = await this.deps.queue(project.root, () =>
+      removeSessionWorktreeAsync(this.deps.git, project.root, workspace.path, this.deps.availability(project)),
+    );
+    this.deps.forgetGitReadsUnder(project.root);
+    this.deps.forgetGitReadsUnder(workspace.path);
+    if (!removed) return { ok: false, refusal: "not-found", detail: "the checkout is still there" };
+
+    // Re-read: seconds passed while git ran.
+    const current = this.deps.records.get(sessionId);
+    if (current.workspace.mode !== "worktree") return { ok: true };
+    const updated: Session = {
+      ...current,
+      workspace: { ...current.workspace, released: { at: this.kernel.now(), reason } },
+      updatedAt: this.kernel.now(),
+    };
+    this.kernel.writeDocument(sessionMetadataFile(this.kernel.paths, sessionId), storedSession(updated));
+    this.kernel.appendEvent(sessionId, { type: "session.updated", session: updated });
+    return { ok: true };
+  }
+
+  /** One sweep of the Storage switches; a second call while one runs does nothing. */
+  async runCleanup(): Promise<void> {
+    if (this.cleanupRunning) return;
+    this.cleanupRunning = true;
+    try {
+      const policy = this.deps.cleanup.policy();
+      const now = this.kernel.now();
+      const sessions = this.deps.records.read();
+      const candidates = sessions.flatMap((session) =>
+        session.workspace.mode === "worktree" && session.projectId
+          ? [
+              {
+                sessionId: session.id,
+                archived: session.state === "archived",
+                released: session.workspace.released !== undefined,
+                lastActiveAt: Math.max(session.updatedAt, session.lastTurnEndedAt ?? 0, session.activityAt ?? 0),
+              },
+            ]
+          : [],
+      );
+      let freedBytes = 0;
+      let released = 0;
+      let skipped = 0;
+      for (const { sessionId, reason } of planWorktreeCleanup(candidates, policy, now)) {
+        const session = this.deps.records.get(sessionId);
+        if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+        if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
+        if (!fs.existsSync(session.workspace.path)) continue;
+        const bytes = await diskUsage(session.workspace.path);
+        const result = await this.release(sessionId, reason, { strict: true });
+        if (result.ok) {
+          released += 1;
+          freedBytes += bytes;
+        } else {
+          skipped += 1;
+        }
+      }
+      let logs = 0;
+      if (policy.logsDays !== null) {
+        const gone = new Set(
+          sessions.filter((session) => session.workspace.mode === "worktree" && session.workspace.released).map((session) => session.id),
+        );
+        const swept = await sweepLogs({
+          logDirectories: [this.kernel.paths.diagnostics],
+          setupLogs: [...gone].map((sessionId) => path.join(sessionDir(this.kernel.paths, sessionId), "setup.log")),
+          days: policy.logsDays,
+          now,
+        });
+        logs = swept.count;
+        freedBytes += swept.bytes;
+      }
+      this.deps.cleanup.record({ at: this.kernel.now(), freedBytes, released, logs, skipped });
+    } finally {
+      this.cleanupRunning = false;
+    }
+  }
+
+  isCleanupRunning(): boolean {
+    return this.cleanupRunning;
+  }
+
+  // Zero commits past the default branch; a git read that did not answer counts as changed, since this licenses a delete.
+  private async branchUnchanged(projectId: string, branch: string): Promise<boolean> {
+    const project = this.deps.getProject(projectId);
+    for (const base of ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
+      const exists = await this.deps.git(project.root, ["rev-parse", "--verify", "--quiet", base]);
+      if (exists.status !== 0) continue;
+      const ahead = await this.deps.git(project.root, ["rev-list", "--count", `${base}..refs/heads/${branch}`]);
+      return ahead.status === 0 && !ahead.timedOut && ahead.stdout.trim() === "0";
+    }
+    return false;
+  }
+
+  /** Re-cuts a released checkout at the same path and branch, then runs its setup; idempotent. */
+  restore(sessionId: string): Session {
+    const session = this.deps.records.get(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.workspace.released || session.preparation?.state === "preparing") {
+      return session;
+    }
+    if (!session.projectId) return session;
+    const project = this.deps.getProject(session.projectId);
+    const { released: _released, ...workspace } = session.workspace;
+    const updated: Session = {
+      ...session,
+      workspace,
+      preparation: { state: "preparing", at: this.kernel.now() },
+      updatedAt: this.kernel.now(),
+    };
+    this.kernel.writeDocument(sessionMetadataFile(this.kernel.paths, sessionId), storedSession(updated));
+    this.kernel.appendEvent(sessionId, { type: "session.updated", session: updated });
+    void this.deps.queue(project.root, async () => {
+      try {
+        await reattachSessionWorktreeAsync(this.deps.git, {
+          projectRoot: project.root,
+          path: workspace.path,
+          branch: workspace.branch,
+        });
+        this.settle(sessionId, undefined);
+        void this.deps.startSetup(sessionId, workspace.path);
+      } catch (error) {
+        this.settle(sessionId, error instanceof Error ? error.message : String(error));
+      } finally {
+        this.deps.forgetGitReadsUnder(project.root);
+        this.deps.forgetGitReadsUnder(workspace.path);
+      }
+    });
+    return updated;
+  }
+
+  /** Records how a cut ended on the row as it is now, since the session may have changed while git ran. */
+  settle(sessionId: string, failure: string | undefined): void {
+    const existing = this.kernel.readDocument(sessionMetadataFile(this.kernel.paths, sessionId));
+    if (existing === undefined) return;
+    const session = parseSession(existing);
+    const updated: Session = {
+      ...session,
+      // Absent is READY. A success clears the key rather than writing a third
+      // state, so every reader's "is this ready" is one question.
+      ...(failure === undefined ? {} : { preparation: { state: "failed" as const, error: failure, at: this.kernel.now() } }),
+      updatedAt: this.kernel.now(),
+    };
+    if (failure === undefined) delete updated.preparation;
+    this.kernel.writeDocument(sessionMetadataFile(this.kernel.paths, sessionId), storedSession(updated));
+    this.kernel.appendEvent(sessionId, { type: "session.updated", session: updated });
+  }
+
+  /** Checkouts on available disks, with whether anything live is using them. */
+  reapable(): ReapCandidate[] {
+    const candidates: ReapCandidate[] = [];
+    for (const session of this.deps.records.all()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      let project: Project;
+      try { project = this.deps.getProject(session.projectId); } catch { continue; }
+      if (this.deps.availability(project) !== "available") continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      const activity = settlingActivityOf(this.kernel.executionStore.sessionRow(session.id) ?? { activity: session.activity });
+      candidates.push({
+        sessionId: session.id,
+        worktree: session.workspace.path,
+        archived: session.state === "archived",
+        live:
+          activity.working === true ||
+          activity.waitingOnYou === true ||
+          this.deps.hasLiveBackgroundWork(session.id) ||
+          // A dev server in an open terminal is reading those node_modules.
+          this.deps.openTerminals(session.id) > 0,
+      });
+    }
+    return candidates;
+  }
+
+  lockLive(): { locked: number } {
+    let locked = 0;
+    for (const session of this.deps.records.all()) {
+      if (session.state === "archived") continue;
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      let project: Project;
+      try {
+        project = this.deps.getProject(session.projectId);
+      } catch {
+        continue;
+      }
+      // The same question `releaseWorktree` asks, and for the same reason: git
+      // run against a repository nobody can read answers about a repository
+      // nobody can read. See `worktree.ts`'s header.
+      if (this.deps.availability(project) !== "available") continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      locked++;
+      const worktreePath = session.workspace.path;
+      // ON THE QUEUE so a lock cannot race a cut or a removal on the same
+      // repository, and NOT AWAITED so a machine with forty worktrees does not
+      // hold the boot open while git walks every one of them.
+      void this.deps.queue(project.root, () => lockSessionWorktree(this.deps.git, project.root, worktreePath));
+    }
+    return { locked };
+  }
+
+  /** Re-cuts every checkout on disk under a new root, on the per-project queues so a move never races a cut. */
+  async move(destination: string): Promise<MoveOutcome> {
+    const checkouts: Checkout[] = [];
+    for (const session of this.deps.records.read()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      if (!fs.existsSync(session.workspace.path)) continue;
+      let project: Project;
+      try {
+        project = this.deps.getProject(session.projectId);
+      } catch {
+        continue; // A removed project is not one to re-cut against.
+      }
+      checkouts.push({
+        sessionId: session.id,
+        path: session.workspace.path,
+        branch: session.workspace.branch ?? "",
+        projectRoot: project.root,
+        busy: session.activity !== "idle",
+      });
+    }
+    const roots = [...new Set(checkouts.map((checkout) => checkout.projectRoot))];
+    const run = () =>
+      moveCheckouts(this.deps.git, {
+        checkouts,
+        destination,
+        onMoved: (sessionId, to) => this.recordMove(sessionId, to),
+      });
+    // One queue is enough to serialise against cuts; with several projects the
+    // queues nest, which is the same ordering guarantee one at a time.
+    return roots.reduce<() => Promise<MoveOutcome>>((next, root) => () => this.deps.queue(root, next), run)();
+  }
+
+  /** The facts only the store knows, handed to `buildInventory`, which decides what may be reclaimed. */
+  async inventory(): Promise<WorktreeInventory> {
+    const location = readWorktreesRoot(this.kernel.paths.root);
+    const configured = rootOf(location);
+    const fallback = defaultWorktreesRoot(this.kernel.paths.root);
+    const roots = configured && configured !== fallback ? [configured, fallback] : [fallback];
+    const at = { now: this.kernel.now(), autoSettleAfterHours: this.deps.autoSettleAfterHours() };
+
+    const projects: InventoryProject[] = this.deps.listProjects().map((project) => ({
+      id: project.id,
+      name: project.name,
+      root: project.root,
+      available: this.deps.availability(project) === "available",
+    }));
+
+    const sessions: InventorySession[] = [];
+    for (const session of this.deps.records.read()) {
+      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      const settleable = { ...session, archived: session.state === "archived", draft: session.draft !== undefined };
+      const lifecycle =
+        session.state === "archived" ? "archived" : isShelved(settleable, settlingActivityOf(session), at) ? "settled" : "live";
+      sessions.push({
+        id: session.id,
+        ...(session.title ? { title: session.title } : {}),
+        path: session.workspace.path,
+        ...(session.workspace.branch ? { branch: session.workspace.branch } : {}),
+        projectId: session.projectId,
+        lifecycle,
+        // `moveWorktrees`' predicate, and #671's rung 1. See
+        // `worktree-inventory.ts` for why this is a policy asserted up front
+        // rather than a git lock waiting to refuse.
+        busy: session.activity !== "idle",
+      });
+    }
+
+    return buildInventory(
+      {
+        git: this.deps.git,
+        measure: async (target) => this.deps.checkoutSizes.peek(target, roots),
+      },
+      {
+        // Both roots while a #642 move is half-done — `readStorage`'s reason,
+        // and the same pair it passes.
+        roots,
+        rootsReadable: location.kind !== "absent" && location.kind !== "unreadable",
+        ...(worktreesRootBlocker(location) ? { blocker: worktreesRootBlocker(location)! } : {}),
+        sessions,
+        projects,
+        // The tree this daemon is executing from, when it is executing from
+        // one. On the machine Telar is developed on that is a worktree of
+        // Telar, and it must never be offered for reclamation.
+        engineRoot: process.cwd(),
+        now: at.now,
+      },
+    );
+  }
+
+  /** Releases, archives or removes each item, re-proving every refusal here rather than trusting the listing. */
+  async reclaim(items: readonly WorktreeReclaimItem[]): Promise<WorktreeReclaimResult[]> {
+    const inventory = await this.inventory();
+    const byPath = new Map(inventory.rows.map((row) => [path.resolve(row.path), row]));
+    const results: WorktreeReclaimResult[] = [];
+
+    for (const item of items) {
+      const row = byPath.get(path.resolve(item.path));
+      if (!row) {
+        results.push({ path: item.path, ok: false, refusal: "not-found" });
+        continue;
+      }
+      if (row.verdict.kind === "locked") {
+        results.push({ path: row.path, ok: false, refusal: row.verdict.reason });
+        continue;
+      }
+      if (row.verdict.kind === "needs-force") {
+        // THE BASENAME, TYPED. Not ceremony: these are the rows where Telar
+        // could NOT prove the work is safe, so the person is being asked to say
+        // they looked — which a checkbox cannot express.
+        if (item.confirm === undefined) {
+          results.push({ path: row.path, ok: false, refusal: "needs-confirm" });
+          continue;
+        }
+        if (item.confirm.trim() !== row.basename) {
+          results.push({ path: row.path, ok: false, refusal: "confirm-mismatch" });
+          continue;
+        }
+      }
+
+      const bytes = row.bytes;
+      try {
+        if (row.owner.kind === "session" && row.owner.lifecycle === "settled" && item.settled !== "archive") {
+          // RELEASE IS THE DEFAULT: the checkout goes, the
+          // session and its branch stay, and the next message brings it back.
+          const released = await this.release(row.owner.sessionId, "manual");
+          results.push(
+            released.ok
+              ? { path: row.path, ok: true, action: "released", sessionId: row.owner.sessionId, ...(bytes === undefined ? {} : { bytes }) }
+              : {
+                  path: row.path,
+                  ok: false,
+                  refusal:
+                    released.refusal === "in-use" || released.refusal === "dirty" || released.refusal === "unpushed" || released.refusal === "process" || released.refusal === "not-found"
+                      ? released.refusal
+                      : "failed",
+                  ...(released.detail ? { detail: released.detail } : {}),
+                },
+          );
+          continue;
+        }
+        if (row.owner.kind === "session" && row.owner.lifecycle === "settled") {
+          // The supported path, which releases the checkout on the project
+          // queue as part of putting the session down.
+          this.deps.archiveSession(row.owner.sessionId, { releaseCheckout: true });
+          results.push({
+            path: row.path,
+            ok: true,
+            action: "archived",
+            sessionId: row.owner.sessionId,
+            ...(bytes === undefined ? {} : { bytes }),
+          });
+          continue;
+        }
+        const project = row.projectId ? this.deps.getProject(row.projectId) : undefined;
+        const removed =
+          row.registered && project
+            ? await this.deps.queue(project.root, () =>
+                removeSessionWorktreeAsync(this.deps.git, project.root, row.path, this.deps.availability(project)),
+              )
+            : removeUnregisteredCheckout(row.path, inventory.roots);
+        if (!removed) {
+          results.push({ path: row.path, ok: false, refusal: "failed", detail: "the checkout is still there" });
+          continue;
+        }
+        results.push({ path: row.path, ok: true, action: "removed", ...(bytes === undefined ? {} : { bytes }) });
+      } catch (cause) {
+        results.push({
+          path: row.path,
+          ok: false,
+          refusal: "failed",
+          detail: cause instanceof Error ? cause.message : "the checkout could not be given back",
+        });
+      }
+    }
+    return results;
+  }
+
+  private recordMove(sessionId: string, to: string): void {
+    const session = this.deps.records.get(sessionId);
+    const updated: Session = {
+      ...session,
+      workspace: { ...session.workspace, path: to } as Session["workspace"],
+      updatedAt: this.kernel.now(),
+    };
+    this.kernel.writeDocument(sessionMetadataFile(this.kernel.paths, sessionId), storedSession(updated));
+    this.kernel.appendEvent(sessionId, { type: "session.updated", session: updated });
+  }
+}

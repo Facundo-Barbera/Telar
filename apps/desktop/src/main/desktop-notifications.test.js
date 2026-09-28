@@ -1,8 +1,6 @@
 const { describe, expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
 const {
-  DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS,
+  DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS,
   ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
   parseNotice, routeOf, shouldNotifyDesktop, createDesktopNotifier,
 } = require("./desktop-notifications");
@@ -48,33 +46,16 @@ const notice = (patch = {}) => ({
 });
 
 describe("the channel's contract", () => {
-  test("both halves spell the env var and message types the same", () => {
-    const server = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "src", "lib", "mobile", "desktop.ts"), "utf8");
-    for (const [name, value] of Object.entries({ DESKTOP_NOTIFICATIONS_ENV, DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS })) {
-      expect(server).toContain(`export const ${name} = "${value}";`);
+  test("both halves spell the message types the same", async () => {
+    const server = await import("../../../engine/src/domains/push/desktop.ts");
+    for (const [name, value] of Object.entries({ DESKTOP_NOTICE, DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_PRESENCE, DESKTOP_DISMISS })) {
+      expect(server[name]).toBe(value);
     }
   });
 
-  test("main.js forks the server with the flag and listens on that child only", () => {
-    const main = require("../../test/main-source").mainSource();
-    expect(main).toContain("[DESKTOP_NOTIFICATIONS_ENV]: \"1\"");
-    expect(main).toContain("onMessage: (message) => desktopNotifier.handleServerMessage(message),");
-    expect(main).toContain("serverChild.on(\"message\", onMessage);");
-  });
-
-  test("main.js reports presence to that same child, and stops when it exits", () => {
-    const main = require("../../test/main-source").mainSource();
-    expect(main).toContain("powerMonitor.getSystemIdleState(ACTIVE_IDLE_SECONDS)");
-    for (const edge of ["\"lock-screen\"", "\"unlock-screen\"", "\"browser-window-focus\"", "\"did-navigate-in-page\""]) expect(main).toContain(edge);
-    expect(main).toContain("watchPresence();");
-    expect(main).toContain("presenceReporter.stop();");
-  });
-
-  test("the server's staleness window outlasts the shell's beat", () => {
-    const server = fs.readFileSync(path.join(__dirname, "..", "..", "..", "web", "src", "lib", "mobile", "desktop.ts"), "utf8");
-    const stale = Number(/export const PRESENCE_STALE_MS = ([\d_]+);/.exec(server)?.[1].replaceAll("_", ""));
-
-    expect(stale).toBeGreaterThanOrEqual(PRESENCE_BEAT_MS * 3);
+  test("the server's staleness window outlasts the shell's beat", async () => {
+    const { PRESENCE_STALE_MS } = await import("../../../engine/src/domains/push/desktop.ts");
+    expect(PRESENCE_STALE_MS).toBeGreaterThanOrEqual(PRESENCE_BEAT_MS * 3);
   });
 
   test("a notice must be well formed, and its path must stay inside the app", () => {

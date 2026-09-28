@@ -1,6 +1,7 @@
 import os from "node:os";
 import { fail, ok, type Route } from "../../platform/http/route";
 import { parsePairingUrl } from "./book";
+import { forwardRoute } from "./forward";
 import { publicHost, type HostsStore } from "./store";
 
 const EXCHANGE_TIMEOUT_MS = 8_000;
@@ -83,5 +84,6 @@ export function hostsRoutes(store: HostsStore, fetcher: typeof fetch = fetch): R
       auth: "engine",
       handle: ({ params: [id] }) => (store.remove(id!) ? ok({ ok: true }) : notFound()),
     },
+    forwardRoute(store, fetcher),
   ];
 }

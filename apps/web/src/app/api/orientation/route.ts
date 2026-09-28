@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Whether Telar may tell an agent where it is — the orientation preamble and
@@ -17,26 +17,18 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).orientation());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).orientation());
+});
 
-export async function PATCH(request: Request) {
-  try {
-    const body = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).setOrientation({
-        // By PRESENCE, not truthiness: `false` is the whole point of this
-        // route, and an absent key means "leave that one alone".
-        ...("preamble" in body ? { preamble: body.preamble as boolean } : {}),
-        ...("skill" in body ? { skill: body.skill as boolean } : {}),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PATCH = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).setOrientation({
+      // By PRESENCE, not truthiness: `false` is the whole point of this
+      // route, and an absent key means "leave that one alone".
+      ...("preamble" in body ? { preamble: body.preamble as boolean } : {}),
+      ...("skill" in body ? { skill: body.skill as boolean } : {}),
+    }),
+  );
+});

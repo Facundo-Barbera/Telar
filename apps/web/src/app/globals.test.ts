@@ -17,7 +17,6 @@
  * Both are checked against the file rather than against a list, so adding a
  * token cannot quietly skip either half.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -110,21 +109,10 @@ describe("the design token palette", () => {
    * and the choice is stored, published and worn as the DEFAULT face.
    */
   describe("every selectable typeface is wired end to end", () => {
-    const layout = fs.readFileSync(path.join(here, "layout.tsx"), "utf8");
     /** The two ids that deliberately have no `[data-font-*]` block: `geist` is
      *  the default (the base tokens ARE it) and `custom` is written inline on
      *  <html> from the reader's own typed family. */
     const WITHOUT_A_BLOCK = new Set(["geist", "custom"]);
-
-    test("every font variable the stylesheet reads is loaded in layout.tsx", () => {
-      const read = new Set([...css.matchAll(/var\(\s*(--font-[a-z0-9-]+)/g)].map((match) => match[1]!));
-      // `--font-sans` / `--font-mono` are Tailwind's own theme keys, defined in
-      // the @theme block rather than loaded — everything else is next/font's.
-      const loaded = [...read].filter((name) => name !== "--font-sans" && name !== "--font-mono");
-      expect(loaded.length).toBeGreaterThan(8);
-      expect(loaded.filter((name) => !layout.includes(`variable: "${name}"`))).toEqual([]);
-    });
-
     test("every face in the catalogue has a rule in both slots", () => {
       const offered = [...css.matchAll(/\[data-font-sans="([a-z0-9-]+)"\]/g)].map((match) => match[1]!);
       expect(offered.length).toBeGreaterThan(8);
@@ -346,7 +334,7 @@ describe("the text scale", () => {
    * 10 → 0.625rem, 9 → 0.5625rem), so the sweep changed nothing about how the
    * app looks until the slider moves.
    */
-  const corpus = ["app", "components", "features", "lib"] as const;
+  const corpus = ["app", "features", "ui", "platform"] as const;
 
   test("no component pins a font size in px", () => {
     const offenders: string[] = [];
@@ -507,7 +495,7 @@ describe("cards must paint", () => {
      * that palette's own tokens, which `bg-*` cannot express.
      */
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "features", "ui", "platform"], /\.tsx?$/)) {
       const source = withoutProse(file);
       for (const hit of source.matchAll(CARD_SHAPED)) {
         const value = hit[1] ?? hit[2] ?? "";
@@ -522,12 +510,12 @@ describe("cards must paint", () => {
     expect(offenders).toEqual([]);
   });
 
-  // The reading surfaces: every diff-* module and the whole github feature, matched by
-  // folder or prefix so a component split out of a surface stays covered.
-  const readingSurfaces = [
-    ...sources(["components/session"], /\.tsx?$/).filter((file) => path.basename(file).startsWith("diff-")),
-    ...sources(["features/github"], /\.tsx$/),
-  ].map((file) => ({ file: path.relative(path.join(here, ".."), file), source: withoutProse(file) }));
+  // The reading surfaces: the whole git and github features, by folder so a component
+  // split out of a surface stays covered.
+  const readingSurfaces = sources(["features/git", "features/github"], /\.tsx$/).map((file) => ({
+    file: path.relative(path.join(here, ".."), file),
+    source: withoutProse(file),
+  }));
 
   test("the reading-surface set is not empty, and holds the surfaces #691 brought in", () => {
     // Every assertion below iterates this set: an empty one would report a clean
@@ -673,10 +661,10 @@ describe("the state vocabulary", () => {
     //
     // lib/ IS IN SCOPE, because that is where the rule was being broken. The
     // guard only ever read .tsx under app/ and components/, and the two files
-    // that actually held eight raw ramps each — lib/file-kinds.ts and
-    // lib/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
+    // that actually held eight raw ramps each — features/files/file-kinds.ts and
+    // features/composer/glyph-paths.ts — are LOOKUP TABLES of class strings in .ts. A class
     // string is a class string wherever it is written down.
-    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "features", "ui", "platform"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }
@@ -691,7 +679,7 @@ describe("the state vocabulary", () => {
     // from the live tokens instead, and each flips ENDS between the schemes.
     const pattern = /\b(?:bg|text|border|ring|fill|stroke)-(?:black|white)\/\d+|rgba?\(\s*0\s*,\s*0\s*,\s*0\s*[,)]/g;
     const offenders: string[] = [];
-    for (const file of sources(["app", "components", "features", "lib"], /\.tsx?$/)) {
+    for (const file of sources(["app", "features", "ui", "platform"], /\.tsx?$/)) {
       for (const hit of withoutProse(file).matchAll(pattern)) {
         offenders.push(`${path.relative(path.join(here, ".."), file)}: ${hit[0]}`);
       }

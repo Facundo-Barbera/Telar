@@ -48,49 +48,16 @@ struct RootView: View {
                     SessionSidebar(settings: settings, inbox: inbox, selection: $selection,
                         newSession: { resumedDraft = nil; showNewSession = true }, openSettings: { showSettings = true },
                         resumeDraft: { resumedDraft = $0; showNewSession = true })
-                        // ONE WIDTH, NO DRAG. Dragging the sidebar's edge felt
-                        // wrong because it bought the reader nothing and moved
-                        // everything: the transcript is capped at
-                        // `Theme.readingMeasure` and CENTRED, so widening the
-                        // sidebar does not widen the conversation — it slides
-                        // the same column sideways under your finger. With the
-                        // panel open it is worse: the detail is squeezed from
-                        // both ends at once, and past a point the conversation
-                        // drops below its measure and re-lays-out mid-drag
-                        // while the panel keeps its width.
-                        //
-                        // What the extra 80pt would buy is a few more
-                        // characters of a session title that is truncated to
-                        // one line anyway. So the drag is removed rather than
-                        // smoothed: min = ideal = max, and 300 is the width
-                        // `syncSidebar` already assumes when it works out
-                        // whether sidebar, conversation and panel fit at once.
                         .navigationSplitViewColumnWidth(300)
                 } detail: {
                     NavigationStack {
                         if let ref = selection, let api = settings.api(for: ref.hostId) {
                             SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId,
-                                        // WHICH MAC, for the header strip (#244).
-                                        // The host book lives here, so the two
-                                        // facts are handed down and `HostLabel`
-                                        // decides whether they are worth drawing.
                                         hostName: settings.host(ref.hostId)?.name, hostCount: settings.hosts.count,
                                         cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId),
-                                        // The one place both surfaces are in
-                                        // scope: a read confirmed in the
-                                        // transcript clears the dot on the
-                                        // sidebar row beside it, rather than
-                                        // waiting out that host's next poll.
                                         onRead: { answer in inbox.applyRead(ref, answer: answer) })
                                 .id("\(settings.apiFingerprint(ref.hostId)):\(ref.sessionId)")
-                                // The session can hide the sidebar when its
-                                // panel needs the room, and put it back.
                                 .environment(\.columnVisibility, $columnVisibility)
-                                // THE WAY BACK. The split view's own toggle is a
-                                // system placement the detail's toolbar can
-                                // displace, and once it did there was no control
-                                // left that could show the sidebar again. This
-                                // one appears only while the sidebar is hidden.
                                 .toolbar {
                                     if columnVisibility == .detailOnly {
                                         ToolbarItem(placement: .topBarLeading) {
@@ -160,8 +127,6 @@ struct RootView: View {
                 inbox.start()
                 MobileNotifications.shared.startAutomaticCards(inbox.working)
                 Task { await MobileNotifications.shared.syncRegistrations() }
-                // A phone that slept at home may wake on cellular: pick the
-                // address that answers now, and learn any the Mac gained (#832).
                 Task { await settings.refreshAddresses() }
             } else { inbox.stop() }
         }
@@ -170,8 +135,6 @@ struct RootView: View {
                let parsed = Pairing.parsePairingURL(link),
                let paired = try? await Pairing.exchange(base: parsed.base, token: parsed.token, deviceName: UIDevice.current.name) {
                 settings.upsert(baseURLString: parsed.base.absoluteString, token: paired.deviceToken, addresses: paired.addresses ?? [])
-                // A MAC ADDED IS A MAC WORTH BEING NOTIFIED BY (#579) — the
-                // same once-per-install ask the two pairing screens make.
                 await MobileNotifications.shared.promptAfterPairing()
             }
             if let id = UserDefaults.standard.string(forKey: "openSession") {
@@ -183,17 +146,12 @@ struct RootView: View {
                 selection = pending; preferredColumn = .detail
                 MobileNotifications.shared.destination = nil
             }
-            // The phase the app launched in never arrives as a change, so the
-            // foreground refresh above would miss a cold start.
             await settings.refreshAddresses()
         }
     }
 }
 
 extension ScopedSessionID {
-    /// Launch-arg resolution, pure for tests: no hint = first host (the
-    /// single-host behavior); a hint matches the host's name, then its URL
-    /// host, case-insensitively.
     static func resolveLaunchArg(sessionId: String, hostHint: String?, hosts: [Host]) -> ScopedSessionID? {
         let host: Host?
         if let hint = hostHint?.lowercased(), !hint.isEmpty {

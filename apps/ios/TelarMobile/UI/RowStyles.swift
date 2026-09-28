@@ -1,7 +1,5 @@
 import SwiftUI
 
-/// Row surface responds to interaction only — pressed state is the hover
-/// fill. Used by request-card action buttons.
 struct RowButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -11,7 +9,6 @@ struct RowButtonStyle: ButtonStyle {
     }
 }
 
-/// Kept for the session header, where only the dot fits.
 struct ActivityBadge: View {
     let activity: SessionActivity
 

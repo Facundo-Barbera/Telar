@@ -1,4 +1,4 @@
-import { optionalString, requestObject, requiredString, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { optionalString, requestObject, requiredString, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Sign-in state for the MCP servers in one scope, and the two writes that
@@ -15,33 +15,25 @@ import { optionalString, requestObject, requiredString, engineClient, engineErro
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const projectId = new URL(request.url).searchParams.get("projectId")?.trim();
-    return Response.json(await (await engineClient()).mcpOAuthStatus(projectId || undefined));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const projectId = new URL(request.url).searchParams.get("projectId")?.trim();
+  return Response.json(await (await engineClient()).mcpOAuthStatus(projectId || undefined));
+});
 
-export async function POST(request: Request) {
-  try {
-    const body = await requestObject(request);
-    const serverId = requiredString(body.serverId, "Server id");
-    const projectId = optionalString(body.projectId, "Project id");
-    if (body.action === "disconnect") {
-      return Response.json(
-        await (await engineClient()).disconnectMcpOAuth({ serverId, ...(projectId ? { projectId } : {}) }),
-      );
-    }
+export const POST = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  const serverId = requiredString(body.serverId, "Server id");
+  const projectId = optionalString(body.projectId, "Project id");
+  if (body.action === "disconnect") {
     return Response.json(
-      await (await engineClient()).connectMcpOAuth({
-        serverId,
-        ...(projectId ? { projectId } : {}),
-        redirectOrigin: new URL(request.url).origin,
-      }),
+      await (await engineClient()).disconnectMcpOAuth({ serverId, ...(projectId ? { projectId } : {}) }),
     );
-  } catch (error) {
-    return engineErrorResponse(error);
   }
-}
+  return Response.json(
+    await (await engineClient()).connectMcpOAuth({
+      serverId,
+      ...(projectId ? { projectId } : {}),
+      redirectOrigin: new URL(request.url).origin,
+    }),
+  );
+});

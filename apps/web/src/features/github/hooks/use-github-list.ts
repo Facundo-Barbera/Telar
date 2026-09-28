@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GitHubFacets, GitHubSnapshot } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import type { ForgeFilterChip } from "@/lib/github-forge";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import type { ForgeFilterChip } from "../github-forge";
 import { clearChip, githubQuery, toggleLabel, type ForgeFilter, type ForgeListKind } from "../model";
 
 const api = createEngineApi();

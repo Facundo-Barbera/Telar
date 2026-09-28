@@ -1,9 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { MessageResponse } from "@/components/ui/message";
-import { CodeSurface } from "@/components/ui/code-surface";
-import { OverlayEditor } from "@/components/session/overlay-editor";
+import { MessageResponse } from "@/ui/message";
+import { CodeSurface } from "@/ui/code-surface";
+import { OverlayEditor } from "@/features/files";
 
 const SHORT_TS = "```ts\nconst a = 1;\nexport default a;\n```";
 const SHORT_PLAIN = "```\ncheckpoint-before-provider-failure\ncheckpoint-after-continuation\n```";

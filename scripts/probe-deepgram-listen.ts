@@ -29,7 +29,7 @@
  * that bound currently is — it can show a refusal but it cannot find a
  * boundary. That question is `probe-deepgram-keyterm-bound.ts`.
  */
-import { deepgramKeyterms } from "../apps/engine/src/dictation/keyterms";
+import { deepgramKeyterms } from "../apps/engine/src/domains/dictation";
 import { handshake, listenQuery, requireKey, said } from "./deepgram-handshake";
 
 const key = requireKey();

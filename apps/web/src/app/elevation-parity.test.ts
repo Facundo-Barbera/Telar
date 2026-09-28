@@ -18,7 +18,6 @@
  * it. Each step is converted from globals.css rather than compared against a
  * remembered hex.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 

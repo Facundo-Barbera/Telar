@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Every checkout this install is keeping, classified — issue #671.
@@ -19,10 +19,6 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    return Response.json(await (await engineClient()).worktrees({ signal: request.signal }));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  return Response.json(await (await engineClient()).worktrees({ signal: request.signal }));
+});

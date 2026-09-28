@@ -6,8 +6,6 @@ struct ComposerFile: Equatable, Identifiable {
     var name: String
     var mediaType: String
     var id: String { "\(name):\(data.count)" }
-
-    var isImage: Bool { mediaType.hasPrefix("image/") }
 }
 
 enum ComposerIntake {

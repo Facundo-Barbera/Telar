@@ -15,9 +15,9 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { Spinner } from "@/components/ui/spinner";
-import { filterChips } from "@/lib/github-forge";
+} from "@/ui/dropdown-menu";
+import { Spinner } from "@/ui/spinner";
+import { filterChips } from "../github-forge";
 import type { GitHubList } from "../hooks/use-github-list";
 import { STATES, type ForgeFilter, type ForgeListKind } from "../model";
 

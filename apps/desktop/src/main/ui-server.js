@@ -90,7 +90,7 @@ async function seatHostCookie(url) {
 }
 
 /** Forks the UI server. `env` is the caller's environment; the server's own keys are laid over it. */
-function startServer(port, home, { execPath, env, onMessage, onExit }) {
+function startServer(port, home, { execPath, env, onExit }) {
   const serverJs = resolveServerJs();
   serverChild = fork(serverJs, [], {
     cwd: path.dirname(serverJs),
@@ -107,16 +107,11 @@ function startServer(port, home, { execPath, env, onMessage, onExit }) {
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
-  serverChild.on("message", onMessage);
   serverChild.on("exit", (code, signal) => {
     serverChild = null;
     onExit(code, signal);
   });
   return serverChild;
-}
-
-function sendToServer(message) {
-  if (serverChild?.connected) serverChild.send(message);
 }
 
 function stopServer() {
@@ -156,12 +151,12 @@ function waitForServer(port, { timeoutMs = 30_000, intervalMs = 250 } = {}) {
 }
 
 module.exports = {
+  HOST_TOKEN,
   findFreePort,
   getStablePort,
   seatHostHeader,
   seatHostCookie,
   startServer,
-  sendToServer,
   stopServer,
   waitForServer,
 };

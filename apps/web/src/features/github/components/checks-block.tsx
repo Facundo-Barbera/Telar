@@ -3,12 +3,12 @@
 import { useMemo, useState } from "react";
 import { CheckIcon, ChevronRightIcon, CircleSlashIcon, ClockIcon, ExternalLinkIcon, GripVerticalIcon, XIcon } from "lucide-react";
 import type { GitHubCheck } from "@telar/engine-client";
-import { PanelDivider } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
-import { checkReference, failingChecksReference, startReferenceDrag } from "@/lib/drag-reference";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import { checkHeadline, checkSummary } from "@/lib/github-forge";
-import { cn } from "@/lib/utils";
+import { PanelDivider } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
+import { checkReference, failingChecksReference, startReferenceDrag } from "@/features/composer";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import { checkHeadline, checkSummary } from "../github-forge";
+import { cn } from "@/ui/utils";
 import { checkRunning, hasFailed, isNotable, type CheckLogState } from "../model";
 
 const api = createEngineApi();

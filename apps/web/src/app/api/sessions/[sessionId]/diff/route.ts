@@ -1,6 +1,6 @@
 import { parseDiffBaseQuery, parseFilePatchQuery } from "@telar/engine-client";
 
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * The session's review — what it has done to the repository since it started.
@@ -23,17 +23,13 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const url = new URL(request.url);
-    const engine = await engineClient();
-    const target = url.searchParams.get("path");
-    if (target) {
-      return Response.json(await engine.sessionFilePatch(sessionId, target, parseFilePatchQuery(url.searchParams)));
-    }
-    return Response.json(await engine.sessionDiff(sessionId, parseDiffBaseQuery(url.searchParams)));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const url = new URL(request.url);
+  const engine = await engineClient();
+  const target = url.searchParams.get("path");
+  if (target) {
+    return Response.json(await engine.sessionFilePatch(sessionId, target, parseFilePatchQuery(url.searchParams)));
   }
-}
+  return Response.json(await engine.sessionDiff(sessionId, parseDiffBaseQuery(url.searchParams)));
+});

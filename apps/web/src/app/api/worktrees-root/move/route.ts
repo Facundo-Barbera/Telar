@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Move the checkouts already cut to the configured root.
@@ -14,10 +14,6 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST() {
-  try {
-    return Response.json(await (await engineClient()).moveWorktrees());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async () => {
+  return Response.json(await (await engineClient()).moveWorktrees());
+});

@@ -50,9 +50,7 @@ function readJson(request) {
   });
 }
 
-function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartbeatMs = HEARTBEAT_MS }) {
-  if (!token) throw new Error("A run terminal token is required.");
-
+function createEventStream(heartbeatMs) {
   const listeners = new Set();
 
   const backlog = [];
@@ -73,6 +71,91 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
     }
   };
 
+  const attach = (request, response) => {
+    response.writeHead(200, {
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+    });
+
+    response.write(`event: attached\ndata: {"heartbeatMs":${heartbeatMs}}\n\n`);
+    for (const frame of backlog.splice(0)) response.write(frame);
+    const beat = setInterval(() => {
+      try {
+        response.write(": hb\n\n");
+      } catch {
+      }
+    }, heartbeatMs);
+
+    if (typeof beat.unref === "function") beat.unref();
+    listeners.add(response);
+    const drop = () => {
+      clearInterval(beat);
+      listeners.delete(response);
+    };
+    request.on("close", drop);
+    response.on("close", drop);
+    response.on("error", drop);
+  };
+
+  const endAll = () => {
+    for (const listener of listeners) {
+      try {
+        listener.end();
+      } catch {
+      }
+    }
+    listeners.clear();
+  };
+
+  return { broadcast, attach, endAll };
+}
+
+async function runHostRoute(route, request, host) {
+  if (route === "GET /state") return { terminals: host.list(ENGINE) };
+  if (route === "GET /sessions") return { sessions: host.countBySession() };
+  const input = await readJson(request);
+  if (route === "POST /open") {
+    return host.open({
+      shell: input.shell,
+      args: Array.isArray(input.args) ? input.args : [],
+      cwd: input.cwd,
+      env: input.env && typeof input.env === "object" ? input.env : undefined,
+      cols: input.cols,
+      rows: input.rows,
+      owner: ENGINE,
+
+      origin: input.origin ?? undefined,
+      sessionId: input.sessionId,
+      title: input.title,
+    });
+  }
+  if (route === "POST /kill") return { signalled: host.kill(String(input.id ?? ""), input.signal || "SIGTERM", ENGINE) };
+  if (route === "POST /close") return { closed: await host.close(String(input.id ?? ""), ENGINE) };
+  if (route === "POST /close-session") return { closed: await host.killBySession(input.sessionId) };
+  if (route === "POST /active") {
+    return { terminals: await host.activeProcesses({ owner: ENGINE, ids: Array.isArray(input.ids) ? input.ids : undefined }) };
+  }
+  if (route === "POST /write") return { ok: host.write(String(input.id ?? ""), typeof input.data === "string" ? input.data : "", ENGINE) };
+  if (route === "POST /resize") return { ok: host.resize(String(input.id ?? ""), input.cols, input.rows, ENGINE) };
+  return undefined;
+}
+
+async function mirror(request, onMirror) {
+  const input = await readJson(request);
+  const id = String(input.id ?? "");
+  const data = typeof input.data === "string" ? input.data : "";
+  const cursor = Number.isFinite(input.cursor) ? Number(input.cursor) : undefined;
+  const mirrored = Boolean(id && data);
+  if (mirrored) onMirror?.(id, data, cursor);
+  return { mirrored };
+}
+
+function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartbeatMs = HEARTBEAT_MS }) {
+  if (!token) throw new Error("A run terminal token is required.");
+
+  const events = createEventStream(heartbeatMs);
+
   const server = http.createServer(async (request, response) => {
     if (request.headers.authorization !== `Bearer ${token}`) {
       json(response, 401, { error: "Unauthorized." });
@@ -92,42 +175,13 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
     }
 
     if (route === "GET /events") {
-      response.writeHead(200, {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-store",
-        Connection: "keep-alive",
-      });
-
-      response.write(`event: attached\ndata: {"heartbeatMs":${heartbeatMs}}\n\n`);
-      for (const frame of backlog.splice(0)) response.write(frame);
-      const beat = setInterval(() => {
-        try {
-          response.write(": hb\n\n");
-        } catch {
-        }
-      }, heartbeatMs);
-
-      if (typeof beat.unref === "function") beat.unref();
-      listeners.add(response);
-      const drop = () => {
-        clearInterval(beat);
-        listeners.delete(response);
-      };
-      request.on("close", drop);
-      response.on("close", drop);
-      response.on("error", drop);
+      events.attach(request, response);
       return;
     }
 
     try {
       if (route === "POST /mirror") {
-        const input = await readJson(request);
-        const id = String(input.id ?? "");
-        const data = typeof input.data === "string" ? input.data : "";
-        const cursor = Number.isFinite(input.cursor) ? Number(input.cursor) : undefined;
-        const mirrored = Boolean(id && data);
-        if (mirrored) onMirror?.(id, data, cursor);
-        json(response, 200, { mirrored });
+        json(response, 200, await mirror(request, onMirror));
         return;
       }
       const host = getTerminalHost();
@@ -135,56 +189,8 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
         json(response, 503, { error: "This Telar shell has no terminal host." });
         return;
       }
-      if (route === "GET /state") {
-        json(response, 200, { terminals: host.list(ENGINE) });
-        return;
-      }
-      if (route === "GET /sessions") {
-        json(response, 200, { sessions: host.countBySession() });
-        return;
-      }
-      const input = await readJson(request);
-      if (route === "POST /open") {
-        const opened = host.open({
-          shell: input.shell,
-          args: Array.isArray(input.args) ? input.args : [],
-          cwd: input.cwd,
-          env: input.env && typeof input.env === "object" ? input.env : undefined,
-          cols: input.cols,
-          rows: input.rows,
-          owner: ENGINE,
-
-          origin: input.origin ?? undefined,
-          sessionId: input.sessionId,
-          title: input.title,
-        });
-        json(response, 200, opened);
-        return;
-      }
-      if (route === "POST /kill") {
-        json(response, 200, { signalled: host.kill(String(input.id ?? ""), input.signal || "SIGTERM", ENGINE) });
-        return;
-      }
-      if (route === "POST /close") {
-        json(response, 200, { closed: await host.close(String(input.id ?? ""), ENGINE) });
-        return;
-      }
-      if (route === "POST /close-session") {
-        json(response, 200, { closed: await host.killBySession(input.sessionId) });
-        return;
-      }
-      if (route === "POST /active") {
-        json(response, 200, { terminals: await host.activeProcesses({ owner: ENGINE, ids: Array.isArray(input.ids) ? input.ids : undefined }) });
-        return;
-      }
-      if (route === "POST /write") {
-        json(response, 200, { ok: host.write(String(input.id ?? ""), typeof input.data === "string" ? input.data : "", ENGINE) });
-        return;
-      }
-      if (route === "POST /resize") {
-        json(response, 200, { ok: host.resize(String(input.id ?? ""), input.cols, input.rows, ENGINE) });
-        return;
-      }
+      const body = await runHostRoute(route, request, host);
+      if (body !== undefined) json(response, 200, body);
     } catch (error) {
       json(response, 400, { error: error instanceof Error ? error.message : String(error) });
     }
@@ -198,16 +204,10 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
       resolve({
         port: typeof address === "object" && address ? address.port : port,
 
-        onData: (id, data) => broadcast("data", { id, data }),
-        onExit: (id, ending) => broadcast("exit", ending),
+        onData: (id, data) => events.broadcast("data", { id, data }),
+        onExit: (id, ending) => events.broadcast("exit", ending),
         close: () => {
-          for (const listener of listeners) {
-            try {
-              listener.end();
-            } catch {
-            }
-          }
-          listeners.clear();
+          events.endAll();
           return new Promise((done) => server.close(done));
         },
       });

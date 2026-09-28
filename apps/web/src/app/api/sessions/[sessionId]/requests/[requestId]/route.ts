@@ -1,9 +1,4 @@
-import {
-  requestObject,
-  requiredString,
-  engineClient,
-  engineErrorResponse,
-} from "@/lib/engine/engine-server";
+import { requestObject, requiredString, engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -17,18 +12,14 @@ type Context = { params: Promise<{ sessionId: string; requestId: string }> };
  * conflict, because a worker blocked inside canUseTool is waiting on its
  * answer and two parties deciding what "accept" means is how that deadlocks.
  */
-export async function POST(request: Request, context: Context) {
-  try {
-    const [{ sessionId, requestId }, body] = await Promise.all([context.params, requestObject(request)]);
-    const answers = body.answers && typeof body.answers === "object" ? (body.answers as Record<string, unknown>) : undefined;
-    return Response.json(
-      await (await engineClient()).resolveRequest(sessionId, requestId, {
-        decision: requiredString(body.decision, "Decision") as "accept" | "acceptForSession" | "decline" | "cancel",
-        ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
-        ...(answers ? { answers } : {}),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const [{ sessionId, requestId }, body] = await Promise.all([context.params, requestObject(request)]);
+  const answers = body.answers && typeof body.answers === "object" ? (body.answers as Record<string, unknown>) : undefined;
+  return Response.json(
+    await (await engineClient()).resolveRequest(sessionId, requestId, {
+      decision: requiredString(body.decision, "Decision") as "accept" | "acceptForSession" | "decline" | "cancel",
+      ...(typeof body.reason === "string" ? { reason: body.reason } : {}),
+      ...(answers ? { answers } : {}),
+    }),
+  );
+});

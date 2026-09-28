@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// What a transcript row's long press is ABOUT — each item drawn only when the
-/// row carries that datum. Pinned against the web's `rowPath`/`toolOutput`,
-/// because the two menus are meant to be the same menu.
 @Suite struct TranscriptRowMenuTests {
     private func item(_ id: EngineID, _ detail: ItemDetail, streamed: String = "") -> JournalItem {
         let item = Item(
@@ -21,7 +18,6 @@ import Testing
         #expect(row.rowCommand == "bun test")
         #expect(row.rowBody == "12 pass")
         #expect(row.rowBodyIsPatch == false)
-        // Nothing to open or reference: a command is not a file.
         #expect(row.rowPath == nil)
     }
 
@@ -37,8 +33,6 @@ import Testing
     }
 
     @Test func aDeletedFileStillHasAPathWorthCopying() {
-        // Only "Open file in the Editor" has nothing to open on one; the path
-        // and the reference are as good as any other row's.
         let row = item("i3", .fileChange(FileChangeDetail(
             path: "gone.ts", kind: "delete", renamedFrom: nil,
             unifiedDiff: nil, linesAdded: nil, linesRemoved: 1
@@ -54,8 +48,6 @@ import Testing
     }
 
     @Test func streamedDeltasWinWhileTheRowIsLive() {
-        // The engine only folds text into the item when it closes, so a row
-        // mid-stream must copy what is on screen rather than the stale preview.
         let row = item("i5", .commandExecution(CommandExecutionDetail(
             command: "tail -f log", cwd: nil, exitCode: nil, outputPreview: "old", durationMs: nil
         )), streamed: "line one\nline two")
@@ -71,8 +63,6 @@ import Testing
 @Suite struct TableCellValueTests {
     @Test func copyWritesTheWholeValueNotTheRenderedOne() {
         #expect(tableCellValue(.string("a long, clipped value")) == "a long, clipped value")
-        // A blank cell is DRAWN as `""` so it is distinguishable from a missing
-        // one; copying it must give the empty string that is actually there.
         #expect(tableCellValue(.string("")) == "")
         #expect(tableCellValue(.null) == "null")
         #expect(tableCellValue(.bool(true)) == "true")

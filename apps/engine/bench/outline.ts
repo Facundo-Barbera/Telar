@@ -9,7 +9,7 @@
  * time, which is precisely what the projection exists to replace.
  *
  * ── WHY A SWEEP AND NOT TWO NUMBERS ────────────────────────────────────────
- * `query-acceptance.test.ts` asserts the comparison at two journal sizes,
+ * `domains/agent-tools/query-acceptance.test.ts` asserts the comparison at two journal sizes,
  * because a test wants the cheapest reading that can fail. A bench is read by a
  * person deciding whether to believe it, and a person is better served by the
  * SHAPE of the two curves than by either endpoint: a flat line beside one that
@@ -21,7 +21,7 @@
  * and the run refuses to print a table in which it is not above a millisecond —
  * folding 60,000 events cannot be free, and a zero there is the instrument
  * speaking rather than the code. The same check is a test in
- * `query-acceptance.test.ts`, which is where CI reads it.
+ * `domains/agent-tools/query-acceptance.test.ts`, which is where CI reads it.
  *
  * The fixture is the test's own (`test/query-fixture.ts`), deliberately: a
  * bench that priced a different fixture would let the PR's table and the thing

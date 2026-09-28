@@ -1,0 +1,669 @@
+import { describe, expect, test } from "bun:test";
+import type { EngineEvent, Item, Session, SnapshotWindow, Task, Turn } from "@telar/engine-client";
+import {
+  INITIAL_TURNS,
+  OLDER_PAGE_TURNS,
+  TAIL_LIVE_MS,
+  TAIL_SETTLED_MS,
+  hydrateSession,
+  loadOlderTurns,
+  mergeOlderPage,
+  mergeRows,
+  needsSessionSnapshot,
+  tailIntervalMs,
+  tailSession,
+} from "./session-sync";
+import { projectJournal } from "./journal";
+import { itemText } from "./journal-items";
+
+const session: Session = {
+  id: "session_1",
+  projectId: "project_1",
+  environmentId: "local",
+  title: "Test",
+  state: "active",
+  createdAt: 1,
+  updatedAt: 1,
+  providerInstanceId: "claude:default",
+  driver: "claude",
+  workspace: { mode: "local", path: "/repo" },
+  envMode: "local",
+  runtimeMode: "auto",
+  interactionMode: "default",
+  detached: true,
+  activity: "idle",
+};
+const turn: Turn = {
+  runId: "run_1",
+  sessionId: "session_1",
+  sequence: 1,
+  input: "Prompt",
+  state: "queued",
+  acceptedAt: 1,
+  updatedAt: 1,
+};
+const items: Item[] = [];
+const envelope = { at: 1, sessionId: "session_1", runId: "run_1" } as const;
+const accepted: EngineEvent = { ...envelope, id: 1, type: "turn.accepted", turn, replayed: false };
+const started: EngineEvent = { ...envelope, id: 2, at: 2, type: "turn.started" };
+
+describe("session hydration", () => {
+  test("opens on the snapshot and tails from its cursor — never from zero", async () => {
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: after === 0 ? [accepted, started] : [started] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { cursor: 1, session, turns: [{ ...turn, state: "running" as const }], items, requests: [], tasks: [] };
+      },
+    };
+    const result = await hydrateSession(api, session.id);
+    expect(calls).toEqual(["session", "events:1"]);
+    expect(result.events).toEqual([started]);
+    expect(result.turns).toEqual([{ ...turn, state: "running" }]);
+    expect(result.cursor).toBe(2);
+  });
+
+  test("an open item's lower prefix watermark does NOT rewind the tail", async () => {
+    /** A prefix ending below the cursor is complete through it; rewinding would replay closed items. */
+    const asked: number[] = [];
+    const open: Item = {
+      id: "i1",
+      runId: "run_1",
+      sessionId: "session_1",
+      status: "inProgress",
+      startedAt: 1,
+      detail: { type: "assistant_message", text: "" },
+      streamed: "Once upon ",
+      streamedThrough: 4,
+    };
+    await hydrateSession(
+      {
+        events: async (_sessionId: string, after: number) => {
+          asked.push(after);
+          return { events: [] };
+        },
+        session: async () => ({ cursor: 9, session, turns: [turn], items: [open], requests: [], tasks: [] }),
+      },
+      session.id,
+    );
+    expect(asked).toEqual([9]);
+  });
+
+  test("a closed item's leftover prefix changes nothing", async () => {
+    const asked: number[] = [];
+    const closed: Item = {
+      id: "i1",
+      runId: "run_1",
+      sessionId: "session_1",
+      status: "completed",
+      startedAt: 1,
+      detail: { type: "assistant_message", text: "Once upon a time" },
+      streamed: "Once upon ",
+      streamedThrough: 4,
+    };
+    await hydrateSession(
+      {
+        events: async (_sessionId: string, after: number) => {
+          asked.push(after);
+          return { events: [] };
+        },
+        session: async () => ({ cursor: 9, session, turns: [turn], items: [closed], requests: [], tasks: [] }),
+      },
+      session.id,
+    );
+    expect(asked).toEqual([9]);
+  });
+
+  test("a quiet session's cursor is the snapshot's, not zero", async () => {
+    const result = await hydrateSession(
+      {
+        events: async () => ({ events: [] }),
+        session: async () => ({ cursor: 7, session, turns: [], items, requests: [], tasks: [] }),
+      },
+      session.id,
+    );
+    expect(result.cursor).toBe(7);
+  });
+
+  test("an engine without the stamp falls back to asking the journal where it ends", async () => {
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: after === 0 ? [accepted, started] : [] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { session, turns: [turn], items, requests: [], tasks: [] };
+      },
+    };
+    const result = await hydrateSession(api, session.id);
+    expect(calls).toEqual(["session", "events:0", "events:2"]);
+    expect(result.cursor).toBe(2);
+  });
+
+  test("refreshes the companion snapshot for every queue state event", async () => {
+    expect(needsSessionSnapshot([accepted])).toBeTrue();
+    expect(needsSessionSnapshot([started])).toBeTrue();
+    expect(
+      needsSessionSnapshot([{ ...envelope, id: 3, type: "turn.completed", resultText: "done" }]),
+    ).toBeTrue();
+
+    const result = await tailSession(
+      {
+        events: async () => ({ events: [started] }),
+        session: async () => ({ session, turns: [{ ...turn, state: "running" as const }], items, requests: [], tasks: [] }),
+      },
+      session.id,
+      1,
+    );
+    expect(result.snapshot?.turns.at(0)?.state).toBe("running");
+    expect(result.cursor).toBe(2);
+  });
+
+  test("the window rides through hydrate and the tail's companion snapshot", async () => {
+    const windows: (SnapshotWindow | undefined)[] = [];
+    const api = {
+      events: async () => ({ events: [] as EngineEvent[] }),
+      session: async (_sessionId: string, window?: SnapshotWindow) => {
+        windows.push(window);
+        return { cursor: 1, session, turns: [], items, requests: [], tasks: [] };
+      },
+    };
+    await hydrateSession(api, session.id, { turns: INITIAL_TURNS });
+    expect(windows).toEqual([{ turns: INITIAL_TURNS }]);
+
+    windows.length = 0;
+    await tailSession({ ...api, events: async () => ({ events: [started] }) }, session.id, 1, { turns: INITIAL_TURNS });
+    expect(windows).toEqual([{ turns: INITIAL_TURNS }]);
+  });
+
+  test("loadOlderTurns asks for one page above the cursor", async () => {
+    const windows: (SnapshotWindow | undefined)[] = [];
+    const older = await loadOlderTurns(
+      {
+        events: async () => ({ events: [] }),
+        session: async (_sessionId: string, window?: SnapshotWindow) => {
+          windows.push(window);
+          return {
+            cursor: 9,
+            session,
+            turns: [turn],
+            items,
+            requests: [],
+            tasks: [],
+            page: { before: null, more: false },
+          };
+        },
+      },
+      session.id,
+      "run_5",
+    );
+    expect(windows).toEqual([{ turns: OLDER_PAGE_TURNS, before: "run_5" }]);
+    expect(older).toEqual({ turns: [turn], items: [], tasks: [], page: { before: null, more: false } });
+  });
+
+  test("high-frequency item and delta events do NOT trigger a snapshot refetch", async () => {
+    // A streaming turn emits one delta per token; a snapshot per delta would storm.
+    expect(
+      needsSessionSnapshot([{ ...envelope, id: 4, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "x" }]),
+    ).toBeFalse();
+    expect(
+      needsSessionSnapshot([
+        {
+          ...envelope,
+          id: 5,
+          type: "item.started",
+          item: {
+            id: "i1",
+            runId: "run_1",
+            sessionId: "session_1",
+            status: "inProgress",
+            startedAt: 1,
+            detail: { type: "assistant_message", text: "" },
+          },
+        },
+      ]),
+    ).toBeFalse();
+  });
+});
+
+/** A quiet tick costs one request; a tick after a sleep keeps paging until `more` is false. */
+describe("paging the journal", () => {
+  const event = (id: number): EngineEvent => ({ ...envelope, id, at: id, type: "turn.started" });
+
+  test("a tick that gets a full page keeps paging, and asks from the last id it saw", async () => {
+    const asked: number[] = [];
+    const pages = [
+      { events: [event(11), event(12)], more: true },
+      { events: [event(13), event(14)], more: true },
+      { events: [event(15)], more: false },
+    ];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        asked.push(after);
+        return pages.shift()!;
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const tail = await tailSession(api, session.id, 10);
+    // Keyset, not offset: a delta landing mid-walk can't be skipped or counted twice.
+    expect(asked).toEqual([10, 12, 14]);
+    expect(tail.events.map((each) => each.id)).toEqual([11, 12, 13, 14, 15]);
+    expect(tail.cursor).toBe(15);
+  });
+
+  test("the quiet second still costs exactly one request", async () => {
+    let calls = 0;
+    const api = {
+      events: async () => {
+        calls += 1;
+        return { events: [], more: false };
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const tail = await tailSession(api, session.id, 42);
+    expect(calls).toBe(1);
+    expect(tail.events).toEqual([]);
+    expect(tail.cursor).toBe(42);
+  });
+
+  /** `unchanged` means keep what you have; folding it as an empty reset would blank the transcript. */
+  describe("the conditional tick (#586)", () => {
+    test("an unchanged tail asks once, folds nothing, and keeps the cursor", async () => {
+      let conditional = 0;
+      let unconditional = 0;
+      const api = {
+        events: async () => {
+          unconditional += 1;
+          return { events: [], more: false };
+        },
+        eventsIfChanged: async () => {
+          conditional += 1;
+          return { unchanged: true as const, etag: 'W/"events-9-42-200"' };
+        },
+        session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+      };
+      const tail = await tailSession(api, session.id, 42, undefined, 'W/"events-9-42-200"');
+      expect(conditional).toBe(1);
+      expect(unconditional).toBe(0);
+      expect(tail.unchanged).toBe(true);
+      expect(tail.events).toEqual([]);
+      expect(tail.cursor).toBe(42);
+      expect(tail.etag).toBe('W/"events-9-42-200"');
+    });
+
+    test("with NO tag to spend it is the unconditional tail, unchanged from before", async () => {
+      // `unchanged` must be absent, not falsy by accident.
+      let unconditional = 0;
+      const api = {
+        events: async () => {
+          unconditional += 1;
+          return { events: [event(7)], more: false };
+        },
+        eventsIfChanged: async () => {
+          throw new Error("must not be asked without a tag");
+        },
+        session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+      };
+      const tail = await tailSession(api, session.id, 6);
+      expect(unconditional).toBe(1);
+      expect(tail.events.map((each) => each.id)).toEqual([7]);
+      expect(tail.unchanged).toBeUndefined();
+    });
+
+    test("a conditional page that is FULL still pages the rest", async () => {
+      /** A tag plus a backlog: the drain continues from the conditional page. */
+      const asked: number[] = [];
+      const api = {
+        events: async (_sessionId: string, after: number) => {
+          asked.push(after);
+          return { events: [event(13), event(14)], more: false };
+        },
+        eventsIfChanged: async () => ({
+          unchanged: false as const,
+          payload: { events: [event(11), event(12)], more: true },
+          etag: 'W/"events-14-10-200"',
+        }),
+        session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+      };
+      const tail = await tailSession(api, session.id, 10, undefined, 'W/"events-10-10-200"');
+      expect(asked).toEqual([12]);
+      expect(tail.events.map((each) => each.id)).toEqual([11, 12, 13, 14]);
+      expect(tail.cursor).toBe(14);
+      expect(tail.unchanged).toBeUndefined();
+    });
+  });
+
+  test("an engine that never sends `more` is read exactly as it always was", async () => {
+    let calls = 0;
+    const api = {
+      events: async () => {
+        calls += 1;
+        return { events: [event(7)] };
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    expect((await tailSession(api, session.id, 6)).events.map((each) => each.id)).toEqual([7]);
+    expect(calls).toBe(1);
+  });
+
+  test("a page that claims `more` but moves nothing ends the walk instead of spinning", async () => {
+    let calls = 0;
+    const api = {
+      events: async () => {
+        calls += 1;
+        return { events: [], more: true };
+      },
+      session: async () => ({ cursor: 0, session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const tail = await tailSession(api, session.id, 5);
+    expect(calls).toBe(1);
+    expect(tail.cursor).toBe(5);
+  });
+
+  test("the cursorless fallback walks to the END of the journal, not to the end of page one", async () => {
+    /** A page answers from the beginning, so a pre-cursor engine must drain to find the end. */
+    const asked: number[] = [];
+    const pages = [
+      { events: [event(1), event(2)], more: true },
+      { events: [event(3)], more: false },
+      { events: [], more: false },
+    ];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        asked.push(after);
+        return pages.shift()!;
+      },
+      session: async () => ({ session, turns: [], items: [], requests: [], tasks: [] }),
+    };
+    const hydrated = await hydrateSession(api, session.id);
+    expect(asked).toEqual([0, 2, 3]);
+    expect(hydrated.cursor).toBe(3);
+    expect(hydrated.events).toEqual([]);
+  });
+});
+
+describe("mergeOlderPage", () => {
+  const makeTurn = (runId: string, sequence: number): Turn => ({ ...turn, runId, sequence });
+  const makeItem = (id: string, runId: string): Item => ({
+    id,
+    runId,
+    sessionId: "session_1",
+    status: "completed",
+    startedAt: 1,
+    detail: { type: "assistant_message", text: id },
+  });
+  const makeTask = (id: string): Task => ({
+    id,
+    sessionId: "session_1",
+    runId: "run_1",
+    kind: "agent",
+    state: "running",
+    startedAt: 1,
+    updatedAt: 1,
+  });
+
+  test("prepends the older page: oldest-first after merge, items and tasks included", () => {
+    const current = {
+      turns: [makeTurn("run_3", 3), makeTurn("run_4", 4)],
+      items: [makeItem("i_3", "run_3")],
+      tasks: [makeTask("t_new")],
+    };
+    const page = {
+      turns: [makeTurn("run_1", 1), makeTurn("run_2", 2)],
+      items: [makeItem("i_1", "run_1")],
+      tasks: [makeTask("t_old")],
+    };
+    const merged = mergeOlderPage(current, page);
+    expect(merged.turns.map((t) => t.runId)).toEqual(["run_1", "run_2", "run_3", "run_4"]);
+    expect(merged.items.map((i) => i.id)).toEqual(["i_1", "i_3"]);
+    expect(merged.tasks.map((t) => t.id)).toEqual(["t_old", "t_new"]);
+  });
+
+  test("an overlapping page is not duplicated — the already-loaded row wins", () => {
+    const freshRun2 = { ...makeTurn("run_2", 2), state: "completed" as const };
+    const current = { turns: [freshRun2, makeTurn("run_3", 3)], items: [makeItem("i_2", "run_2")], tasks: [] };
+    const page = {
+      turns: [makeTurn("run_1", 1), makeTurn("run_2", 2)],
+      items: [makeItem("i_1", "run_1"), makeItem("i_2", "run_2")],
+      tasks: [],
+    };
+    const merged = mergeOlderPage(current, page);
+    expect(merged.turns.map((t) => t.runId)).toEqual(["run_1", "run_2", "run_3"]);
+    expect(merged.turns[1]).toBe(freshRun2);
+    expect(merged.items.map((i) => i.id)).toEqual(["i_1", "i_2"]);
+  });
+
+  test("is pure — neither input is mutated", () => {
+    const current = { turns: [makeTurn("run_2", 2)], items: [], tasks: [] };
+    const page = { turns: [makeTurn("run_1", 1)], items: [], tasks: [] };
+    mergeOlderPage(current, page);
+    expect(current.turns.map((t) => t.runId)).toEqual(["run_2"]);
+    expect(page.turns.map((t) => t.runId)).toEqual(["run_1"]);
+  });
+});
+
+describe("opening in one read", () => {
+  test("asks once where the engine offers it, and still meets the journal exactly", async () => {
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: [] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { cursor: 1, session, turns: [turn], items, requests: [], tasks: [] };
+      },
+      sessionBootstrap: async (_sessionId: string, window?: SnapshotWindow) => {
+        calls.push(`bootstrap:${window?.turns ?? "all"}`);
+        return {
+          cursor: 1,
+          session,
+          turns: [{ ...turn, state: "running" as const }],
+          items,
+          requests: [],
+          tasks: [],
+          events: [started],
+          subscriptions: [],
+        };
+      },
+    };
+
+    const result = await hydrateSession(api, session.id, { turns: INITIAL_TURNS });
+    expect(calls).toEqual([`bootstrap:${INITIAL_TURNS}`]);
+    expect(result.events).toEqual([started]);
+    // Tail resumes from the higher of the snapshot's stamp and its journal.
+    expect(result.cursor).toBe(2);
+    expect(result.turns[0]?.state).toBe("running");
+    expect(result.subscriptions).toEqual([]);
+  });
+
+  test("an engine without the route is not a failed switch", async () => {
+    const calls: string[] = [];
+    const api = {
+      events: async (_sessionId: string, after: number) => {
+        calls.push(`events:${after}`);
+        return { events: after === 0 ? [accepted] : [started] };
+      },
+      session: async () => {
+        calls.push("session");
+        return { cursor: 1, session, turns: [turn], items, requests: [], tasks: [] };
+      },
+    };
+    const result = await hydrateSession(api, session.id);
+    expect(calls).toEqual(["session", "events:1"]);
+    expect(result.events).toEqual([started]);
+  });
+});
+
+/**
+ * The join between snapshot prefix and tailed deltas, with the snapshot derived
+ * from the journal as the engine derives it, so an off-by-one shows as a
+ * duplicated or missing chunk.
+ */
+describe("a remount mid-stream", () => {
+  const open: Item = {
+    id: "i1",
+    runId: "run_1",
+    sessionId: "session_1",
+    status: "inProgress",
+    startedAt: 1,
+    // The engine doesn't rewrite detail per token, so mid-flight it is stale.
+    detail: { type: "assistant_message", text: "" },
+  };
+  const journal: EngineEvent[] = [
+    { ...envelope, id: 1, type: "turn.accepted", turn, replayed: false },
+    { ...envelope, id: 2, type: "turn.started" },
+    { ...envelope, id: 3, type: "item.started", item: open },
+    { ...envelope, id: 4, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "Once upon " },
+    { ...envelope, id: 5, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "a time, " },
+    { ...envelope, id: 6, type: "content.delta", itemId: "i1", stream: "assistant_text", text: "there was" },
+  ];
+  const live: Turn = { ...turn, state: "running" };
+
+  /** Mirrors the engine's `openItemPrefix`. */
+  const snapshotAt = (cursor: number) => {
+    const deltas = journal.filter((event) => event.id <= cursor && event.type === "content.delta" && event.itemId === "i1");
+    const last = deltas.at(-1);
+    return {
+      cursor,
+      session,
+      turns: [live],
+      items: [
+        {
+          ...open,
+          ...(last
+            ? { streamed: deltas.map((event) => (event.type === "content.delta" ? event.text : "")).join(""), streamedThrough: last.id }
+            : {}),
+        },
+      ],
+      requests: [],
+      tasks: [],
+    };
+  };
+  const tailFrom = (after: number) => ({ events: journal.filter((event) => event.id > after) });
+  const textOf = (turns: ReturnType<typeof projectJournal>) => itemText(turns[0]!.items[0]!);
+
+  const uninterrupted = textOf(projectJournal([live], [], journal));
+
+  test("the snapshot's prefix and the deltas since reproduce the reply exactly, in one read or two", async () => {
+    expect(uninterrupted).toBe("Once upon a time, there was");
+
+    for (const cursor of [3, 4, 5, 6]) {
+      const snapshot = snapshotAt(cursor);
+      const two = await hydrateSession(
+        { events: async (_id: string, after: number) => tailFrom(after), session: async () => snapshot },
+        session.id,
+      );
+      expect(textOf(projectJournal(two.turns, two.items, two.events))).toBe(uninterrupted);
+
+      const one = await hydrateSession(
+        {
+          events: async (_id: string, after: number) => tailFrom(after),
+          session: async () => snapshot,
+          sessionBootstrap: async () => ({ ...snapshot, ...tailFrom(snapshot.cursor), subscriptions: [] }),
+        },
+        session.id,
+      );
+      expect(textOf(projectJournal(one.turns, one.items, one.events))).toBe(uninterrupted);
+    }
+  });
+
+  test("a tail that re-delivers what the prefix already holds does not double it", async () => {
+    /** Tail asked from below the prefix's watermark; the watermark separates old deltas from new. */
+    const snapshot = snapshotAt(5);
+    const hydrated = await hydrateSession(
+      { events: async () => tailFrom(2), session: async () => snapshot },
+      session.id,
+    );
+    expect(textOf(projectJournal(hydrated.turns, hydrated.items, hydrated.events))).toBe(uninterrupted);
+  });
+
+  test("switching back twice during the same reply is the same answer each time", async () => {
+    const api = (cursor: number) => ({
+      events: async (_id: string, after: number) => tailFrom(after),
+      session: async () => snapshotAt(cursor),
+    });
+    const first = await hydrateSession(api(4), session.id);
+    expect(textOf(projectJournal(first.turns, first.items, first.events))).toBe(uninterrupted);
+    const second = await hydrateSession(api(6), session.id);
+    expect(textOf(projectJournal(second.turns, second.items, second.events))).toBe(uninterrupted);
+  });
+});
+
+describe("mergeRows", () => {
+  const a: Turn = { ...turn, runId: "run_a" };
+  const b: Turn = { ...turn, runId: "run_b" };
+  const id = (row: Turn) => row.runId;
+
+  test("a merge that changed nothing hands back the array it was given", () => {
+    /** A quiet tick returns the same rows; a new array would re-render the whole cockpit. */
+    const held = [a, b];
+    expect(mergeRows(held, [a, b], id)).toBe(held);
+    expect(mergeRows(held, [b], id)).toBe(held);
+  });
+
+  test("a row that actually moved still produces a new array", () => {
+    const held = [a, b];
+    const moved = { ...b, state: "running" as const };
+    const merged = mergeRows(held, [moved], id);
+    expect(merged).not.toBe(held);
+    expect(merged).toEqual([a, moved]);
+  });
+
+  test("a new row is appended, and is a change", () => {
+    const held = [a];
+    const merged = mergeRows(held, [b], id);
+    expect(merged).not.toBe(held);
+    expect(merged).toEqual([a, b]);
+  });
+});
+
+/** The state list is exhaustive so a new turn state doesn't silently take the settled branch. */
+describe("how fast the cockpit should tail a conversation in this state", () => {
+  const at = (state: Turn["state"]): Turn => ({
+    runId: `run_${state}`,
+    sessionId: "session_1",
+    sequence: 1,
+    input: "ask",
+    state,
+    acceptedAt: 1,
+    updatedAt: 1,
+  });
+
+  test("a conversation with nothing in it tails slowly", () => {
+    expect(tailIntervalMs([])).toBe(TAIL_SETTLED_MS);
+  });
+
+  test.each([["queued"], ["claimed"], ["running"]] as const)("a %s turn is live, so 1s", (state: Turn["state"]) => {
+    expect(tailIntervalMs([at(state)])).toBe(TAIL_LIVE_MS);
+  });
+
+  /** A steering turn's running turn carries the cadence beside it. */
+  test.each([["completed"], ["failed"], ["stopped"], ["ambiguous"], ["discarded"], ["steering"], ["steered"]] as const)(
+    "a %s turn is not, so 3s",
+    (state: Turn["state"]) => {
+      expect(tailIntervalMs([at(state)])).toBe(TAIL_SETTLED_MS);
+    },
+  );
+
+  test("and a steering turn beside the running one it is joining is live", () => {
+    expect(tailIntervalMs([at("running"), at("steering")])).toBe(TAIL_LIVE_MS);
+  });
+
+  test("one live turn among many settled ones is enough", () => {
+    expect(tailIntervalMs([at("completed"), at("failed"), at("running")])).toBe(TAIL_LIVE_MS);
+  });
+
+  /** The mounted cadence test derives its windows from these constants. */
+  test("and the two periods are the ones iOS uses", () => {
+    expect(TAIL_LIVE_MS).toBe(1_000);
+    expect(TAIL_SETTLED_MS).toBe(3_000);
+  });
+});

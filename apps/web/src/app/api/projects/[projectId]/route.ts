@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse, requestObject } from "@/lib/engine/engine-server";
+import { engineClient, requestObject, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -27,19 +27,15 @@ type Context = { params: Promise<{ projectId: string }> };
  */
 type ProjectPatch = Parameters<Awaited<ReturnType<typeof engineClient>>["updateProject"]>[1];
 
-export async function PATCH(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const body = await requestObject(request);
-    const patch: ProjectPatch = {};
-    for (const field of ["name", "iconName", "iconEmoji", "defaultModel", "envMode", "dataScience", "latex", "plugins"] as const) {
-      if (field in body) (patch as Record<string, unknown>)[field] = body[field];
-    }
-    return Response.json(await (await engineClient()).updateProject(projectId, patch));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const PATCH = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const body = await requestObject(request);
+  const patch: ProjectPatch = {};
+  for (const field of ["name", "iconName", "iconEmoji", "defaultModel", "envMode", "dataScience", "latex", "plugins"] as const) {
+    if (field in body) (patch as Record<string, unknown>)[field] = body[field];
   }
-}
+  return Response.json(await (await engineClient()).updateProject(projectId, patch));
+});
 
 /**
  * Unregister. A DELETE ON THE REGISTRATION, not on the project — the engine
@@ -47,11 +43,7 @@ export async function PATCH(request: Request, context: Context) {
  * engine owns the refusal when a session on this project is mid-turn, and
  * `engineErrorResponse` carries its 409 through unchanged.
  */
-export async function DELETE(_request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    return Response.json(await (await engineClient()).unregisterProject(projectId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const DELETE = engineRoute(async (_request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  return Response.json(await (await engineClient()).unregisterProject(projectId));
+});

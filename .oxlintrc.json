@@ -20,8 +20,7 @@
       "files": [
         "apps/desktop/src/browser/browser-downloads.js",
         "apps/engine/src/domains/remote/routes.ts",
-        "apps/engine/src/state.ts",
-        "apps/engine/src/worker-diagnostics.ts"
+        "apps/engine/src/worker/diagnostics.ts"
       ],
       "rules": {
         "no-control-regex": "off"
@@ -29,7 +28,7 @@
     },
     {
       "files": [
-        "apps/engine/src/state.ts"
+        "apps/engine/src/platform/process/daemon-lock.ts"
       ],
       "rules": {
         "no-unsafe-finally": "off"
@@ -39,7 +38,7 @@
       "files": [
         "apps/engine/src/domains/providers/models.ts",
         "apps/engine/src/domains/providers/skills.ts",
-        "apps/engine/test/driver.test.ts"
+        "apps/engine/src/drivers/claude/run.test.ts"
       ],
       "rules": {
         "require-yield": "off"
@@ -47,7 +46,7 @@
     },
     {
       "files": [
-        "apps/engine/src/ds/kernel-host.ts"
+        "apps/engine/src/domains/plugins/data-science/kernel-host.ts"
       ],
       "rules": {
         "typescript/triple-slash-reference": "off"
@@ -55,10 +54,10 @@
     },
     {
       "files": [
-        "apps/engine/src/claude-runtime.ts",
+        "apps/engine/src/domains/turns/claims.ts",
+        "apps/engine/src/drivers/claude/runtime.ts",
         "apps/engine/src/platform/kernel/kernel.ts",
-        "apps/engine/src/state.ts",
-        "apps/engine/src/worker.ts"
+        "apps/engine/src/worker/worker.ts"
       ],
       "rules": {
         "unicorn/no-useless-spread": "off"
@@ -66,7 +65,7 @@
     },
     {
       "files": [
-        "packages/engine-client/src/index.ts"
+        "packages/engine-client/src/platform/client.ts"
       ],
       "rules": {
         "typescript/no-unsafe-declaration-merging": "off"

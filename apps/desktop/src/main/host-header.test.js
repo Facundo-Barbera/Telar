@@ -1,18 +1,13 @@
 const { describe, expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
-const { mainSource } = require("../../test/main-source");
+const { electron } = require("../../test/fake-electron");
 
 const { HOST_HEADER, isOwnServer, attachHostHeader } = require("./host-header");
 
-const hostTokenTs = path.join(__dirname, "..", "..", "..", "web", "src", "lib", "remote", "host-token.ts");
 
 describe("the shell and the gate name the same header", () => {
-  test("host-token.ts declares the header this module exports", () => {
-    const source = fs.readFileSync(hostTokenTs, "utf8");
-    const declared = source.match(/export const HOST_HEADER = "([^"]+)"/)?.[1];
-    expect(declared).toBeDefined();
-    expect(declared).toBe(HOST_HEADER);
+  test("the web gate reads the header this module writes", async () => {
+    const gate = await import("../../../web/src/features/remote/server/host-token.ts");
+    expect(gate.HOST_HEADER).toBe(HOST_HEADER);
   });
 
   test("the name is lower-case — the shell writes it verbatim and Headers.get is not", () => {
@@ -87,11 +82,16 @@ describe("attachHostHeader", () => {
   });
 });
 
-describe("main.js wires it to the default session only", () => {
-  const main = mainSource();
-
-  test("attachHostHeader is called with session.defaultSession and the host token", () => {
-    expect(main).toMatch(/attachHostHeader\(session\.defaultSession, \{ appUrl: url, token: HOST_TOKEN \}\)/);
-    expect(main.match(/attachHostHeader\(/g)).toHaveLength(1);
+describe("the cockpit's session carries it", () => {
+  test("seating the header hooks the default session, for the window's own server only", () => {
+    const hooks = [];
+    electron.session.defaultSession.webRequest.onBeforeSendHeaders = (hook) => hooks.push(hook);
+    const { HOST_TOKEN, seatHostHeader } = require("./ui-server");
+    seatHostHeader("http://127.0.0.1:42731/");
+    expect(hooks).toHaveLength(1);
+    const sent = [];
+    hooks[0]({ url: "http://localhost:42731/api", requestHeaders: {} }, (result) => sent.push(result));
+    hooks[0]({ url: "https://example.com/", requestHeaders: {} }, (result) => sent.push(result));
+    expect(sent).toEqual([{ requestHeaders: { [HOST_HEADER]: HOST_TOKEN } }, { requestHeaders: {} }]);
   });
 });

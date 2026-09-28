@@ -1,9 +1,11 @@
 const { ipcMain, app, BrowserWindow } = require("electron");
 const { windowVisible } = require("./window-visibility");
 const { windowTargetUrl } = require("./window-target");
+const { lastWindowUrl } = require("./browser-hosts");
+const { linkRouting } = require("./window-links");
+const { lastRunawayNotice, processMetricsReader } = require("./renderer-watch");
 
-function registerAppIpc(main) {
-  const { createWindow, linkRouting, processMetricsReader } = main;
+function registerAppIpc({ createWindow }) {
   ipcMain.handle("telar:app:relaunch", () => {
     app.relaunch();
     app.quit();
@@ -11,7 +13,7 @@ function registerAppIpc(main) {
 
   ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
 
-  ipcMain.handle("telar:metrics:runaway", () => main.lastRunawayNotice);
+  ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice());
 
   ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 
@@ -29,7 +31,7 @@ function registerAppIpc(main) {
     if (!asking || event.senderFrame !== event.sender.mainFrame) {
       throw new Error("Only a Telar window may open another one.");
     }
-    const target = windowTargetUrl(asking.webContents.getURL() || main.lastWindowUrl, input?.path);
+    const target = windowTargetUrl(asking.webContents.getURL() || lastWindowUrl(), input?.path);
     if (!target) return { ok: false, error: "A new window only opens on a page inside Telar." };
     createWindow(target);
     return { ok: true };

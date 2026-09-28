@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * The retention window, and what each candidate window would take — #542, #646.
@@ -18,20 +18,12 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const bytes = new URL(request.url).searchParams.get("bytes") === "1";
-    return Response.json(await (await engineClient()).retention({ ...(bytes ? { bytes: true } : {}), signal: request.signal }));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const bytes = new URL(request.url).searchParams.get("bytes") === "1";
+  return Response.json(await (await engineClient()).retention({ ...(bytes ? { bytes: true } : {}), signal: request.signal }));
+});
 
-export async function PUT(request: Request) {
-  try {
-    const patch = (await request.json()) as { idleAfterDays?: number | null; exportTo?: string | null };
-    return Response.json(await (await engineClient()).setRetention(patch));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request) => {
+  const patch = (await request.json()) as { idleAfterDays?: number | null; exportTo?: string | null };
+  return Response.json(await (await engineClient()).setRetention(patch));
+});

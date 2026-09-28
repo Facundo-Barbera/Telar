@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { TurnState, WorkspaceFile } from "@telar/engine-client";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft, type DraftOwner } from "@/lib/editor-drafts";
-import { hostFetcher, LOCAL_HOST_ID } from "@/lib/hosts/client";
-import type { EditorViewState } from "@/lib/editor-workspace";
-import { createFileWriter, type FileWriter } from "@/lib/file-writer";
-import { detectNewline, withNewline } from "@/lib/line-endings";
-import { applyMarkdownEdit, type MarkdownEditAction } from "@/lib/markdown-edit";
-import { SaveCoordinator } from "@/lib/save-coordinator";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import { claimDraft, draftScope, forgetDraft, newDraftOwner, rememberDraft, type DraftOwner } from "../editor-drafts";
+import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
+import type { EditorViewState } from "../editor-workspace";
+import { createFileWriter, type FileWriter } from "../file-writer";
+import { detectNewline, withNewline } from "../line-endings";
+import { applyMarkdownEdit, type MarkdownEditAction } from "../markdown-edit";
+import { SaveCoordinator } from "../save-coordinator";
 import { useHighlightedLines, useRestoredView } from "./use-file-view";
 
 const SAVE_DEBOUNCE_MS = 500;

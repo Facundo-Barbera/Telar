@@ -1,14 +1,8 @@
 import pkg from "../../../package.json" with { type: "json" };
-import {
-  mintDeviceToken,
-  RemoteStoreError,
-  type DeviceIdentity,
-  type DevicePlatform,
-  type PairedDevice,
-  type PairingRefusal,
-  type RemoteStore,
-} from "./store";
+import type { DeviceIdentity, DevicePlatform, PairingRefusal, RemoteDevice, RemoteState } from "@telar/engine-client";
+import { mintDeviceToken, RemoteStoreError, type PairedDevice, type RemoteStore } from "./store";
 import { fail, ok, type Route } from "../../platform/http/route";
+import { authRoutes } from "./auth";
 
 type Body = Record<string, unknown>;
 
@@ -33,7 +27,7 @@ function identityOf(value: unknown): DeviceIdentity | undefined {
   return identity;
 }
 
-const publicDevice = ({ id, name, createdAt, lastSeenAt, role, platform, identity }: PairedDevice) => ({
+const publicDevice = ({ id, name, createdAt, lastSeenAt, role, platform, identity }: PairedDevice): RemoteDevice => ({
   id,
   name,
   createdAt,
@@ -57,13 +51,14 @@ export function remoteRoutes(store: RemoteStore): Route[] {
       auth: "engine",
       handle() {
         const file = store.read();
-        return ok({
+        const state: RemoteState = {
           requireAuth: file.requireAuth,
           exposure: file.exposure ?? "local-only",
           tailscaleServe: file.tailscaleServe === true,
           devices: file.devices.map(publicDevice),
           ...(file.pairing ? { pairing: { expiresAt: file.pairing.expiresAt } } : {}),
-        });
+        };
+        return ok(state);
       },
     },
     {
@@ -166,17 +161,8 @@ export function remoteRoutes(store: RemoteStore): Route[] {
       auth: "engine",
       handle: ({ params: [id] }) => (store.revokeDevice(id!) ? ok({ ok: true }) : fail(404, "not_found", "No such device.")),
     },
-    {
-      method: "POST",
-      path: /^\/v2\/remote\/devices\/([^/]+)\/seen$/,
-      auth: "engine",
-      handle({ body, params: [id] }) {
-        store.touchDevice(id!, Date.now(), text(body.address, 256));
-        return ok({ ok: true });
-      },
-    },
   ];
-  return routes.map((route) => ({ ...route, handle: (input) => refusalsAsBadRequest(() => route.handle(input)) }));
+  return [...routes, ...authRoutes(store)].map((route) => ({ ...route, handle: (input) => refusalsAsBadRequest(() => route.handle(input)) }));
 }
 
 function refusalsAsBadRequest(run: () => ReturnType<Route["handle"]>): ReturnType<Route["handle"]> {

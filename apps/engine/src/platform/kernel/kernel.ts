@@ -1,12 +1,25 @@
 import fs from "node:fs";
 import type { EngineEvent } from "@telar/engine-client";
 import type { ExecutionStore } from "../db/execution-store";
-import type { EngineStatePaths } from "../../state-paths";
+import type { EngineStatePaths } from "../fs/state-paths";
 import { arrayElementRanges, parseSpan, type DocumentIndex } from "../db/document-window";
 import { atomicWrite } from "../fs/atomic";
 import { EngineStateError } from "./errors";
 
 export const STATE_VERSION = 2 as const;
+
+export function assertStateVersion(value: unknown, document: string): void {
+  const version = (value as { version?: unknown } | null)?.version;
+  if (version === STATE_VERSION) return;
+  if (version === 1) {
+    throw new EngineStateError(
+      "invalid_request",
+      `this ${document} was written by protocol v1, which this engine no longer reads. ` +
+        `v2 is a deliberate hard break with no migration — clear the engine state root (TELAR_HOME/engine) and start fresh.`,
+    );
+  }
+  throw new EngineStateError("invalid_request", `invalid ${document}`);
+}
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 /** A journal record before the engine stamps its envelope. */

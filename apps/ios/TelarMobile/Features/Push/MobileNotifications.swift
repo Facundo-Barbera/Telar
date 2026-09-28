@@ -21,14 +21,10 @@ struct PushRegistration: Encodable {
     var liveActivities: Bool = false
     var pushToStartToken: String? = nil
     var hostName: String? = nil
-    /// How this Mac sends to this phone through the push relay. Nil when this
-    /// phone cannot register there; the raw tokens above then reach only a Mac
-    /// with its own developer APNs key, and every other Mac sends nothing.
     var relay: RelayCredential? = nil
 }
 struct PushStatus: Decodable {
     var configured: Bool
-    /// Absent from a Mac older than the field.
     var activity: ActivityReport?
 }
 
@@ -38,16 +34,10 @@ struct PushStatus: Decodable {
     var visibleSession: ScopedSessionID?
     var settings: AppSettings?
     var status = "Notifications are off"
-    /// WHICH MACS CANNOT PUSH, AND WHY — issue #579. A Mac that will not send
-    /// and a Mac that did not answer are kept apart so the status line can say
-    /// which — see `PushReadiness`.
     var readiness = PushReadiness()
     var activityError: String?
     var followed: Set<ScopedSessionID> = []
-    /// Each Mac's word on this phone's automatic Live Activity, from the last sync.
     var activityReports: [HostID: ActivityReport] = [:]
-    /// The latest refused start already answered with a forced re-send, so one
-    /// refusal costs one extra sync rather than a loop.
     private var resyncedForStartAt: Double = 0
     private var token: String? = UserDefaults.standard.string(forKey: "telar.apns.token")
     private var activityTokens: [String: String] = [:]
@@ -57,25 +47,20 @@ struct PushStatus: Decodable {
     private var synchronizing = false
     private var syncAgain = false
     private var attemptedRegistration = false
-    /// Only a token iOS confirmed during THIS launch — see `StartTokenPolicy`.
     private var startToken: String?
-    /// iOS reported a token Apple has already refused, so none is sent.
     private var startTokenRejected = false
     private var rejectedStartTokens = UserDefaults.standard.stringArray(forKey: "telar.activity.rejectedStartTokens") ?? []
     private var handledStartRejectionAt: Double = 0
     private var startTokenWatcher: Task<Void, Never>?
     private var incomingActivityWatcher: Task<Void, Never>?
-    /// Macs whose automatic card was swiped away during their current stretch of work.
     private var dismissedCards: Set<HostID> = []
     var liveActivities = UserDefaults.standard.object(forKey: "telar.activities.enabled") as? Bool ?? true {
         didSet { defaults.set(liveActivities, forKey: "telar.activities.enabled") }
     }
 
-    // Installed during App initialization, including an APNs background launch.
     func start(settings: AppSettings) {
         self.settings = settings
         guard startTokenWatcher == nil else { return }
-        // Earlier builds cached the token across launches; that copy is never trusted.
         defaults.removeObject(forKey: "telar.activity.startToken")
         if let data = Activity<SessionActivityAttributes>.pushToStartToken { saveStartToken(data) }
         startTokenWatcher = Task { [weak self] in
@@ -92,8 +77,6 @@ struct PushStatus: Decodable {
         }
         restoreActivities()
         Task { await syncRegistrations() }
-        // The read-sync safety net: alerts for sessions the Mac already has as
-        // read, which a throttled or missed silent push left behind.
         Task { await ReadSync.reconcile(settings: settings) }
     }
     private func saveStartToken(_ data: Data) {
@@ -101,7 +84,6 @@ struct PushStatus: Decodable {
         startToken = StartTokenPolicy.usable(confirmed, rejected: Set(rejectedStartTokens))
         startTokenRejected = startToken == nil
     }
-    /// The Live Activities status lines for Settings — see `LiveActivityDiagnosis`.
     var liveActivityDiagnosis: [String] {
         LiveActivityDiagnosis.lines(systemAllowed: ActivityAuthorizationInfo().areActivitiesEnabled, toggle: liveActivities,
                                     hasStartToken: startToken != nil, startTokenRejected: startTokenRejected,
@@ -121,10 +103,6 @@ struct PushStatus: Decodable {
     var enabled = UserDefaults.standard.bool(forKey: "telar.notifications.enabled") {
         didSet { defaults.set(enabled, forKey: "telar.notifications.enabled") }
     }
-    /// ON BY DEFAULT (owner's decision, #584). `bool(forKey:)` answers `false`
-    /// for a key nobody has written, so every phone that had never opened this
-    /// setting was silently opted OUT of the completion alert it was told it
-    /// would get. `object(forKey:)` distinguishes "off" from "never set".
     var completions = UserDefaults.standard.object(forKey: "telar.notifications.completions") as? Bool ?? true {
         didSet { defaults.set(completions, forKey: "telar.notifications.completions") }
     }
@@ -173,7 +151,6 @@ struct PushStatus: Decodable {
             UIApplication.shared.registerForRemoteNotifications()
         }
         guard let token else {
-            // No device token and no relay: nothing can ever reach this phone.
             if PushRelayClient.shared.unavailable { status = PushReadiness.unsupportedLine }
             return
         }
@@ -203,8 +180,6 @@ struct PushStatus: Decodable {
                     mutedSessions: mutedSessions, activities: subscriptions,
                     liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
                     pushToStartToken: startToken, hostName: host.name, relay: relay))
-                // REGISTERED, AND TOLD IT WILL HEAR NOTHING: this phone gave the
-                // Mac no relay credential, and it has no APNs key of its own.
                 if !reply.configured { next.notSending.insert(host.id) }
                 if let report = reply.activity { reports[host.id] = report }
             } catch { next.unreachable.insert(host.id) }
@@ -212,8 +187,6 @@ struct PushStatus: Decodable {
         next.deviceUnsupported = PushRelayClient.shared.unavailable
         readiness = next
         activityReports = reports
-        // A Mac says the relay has no start token for this phone: re-read it from
-        // ActivityKit and push the tokens again, once per refused start.
         let refused = reports.values.filter(LiveActivityDiagnosis.startTokenMissingAtRelay).compactMap { $0.lastStart?.at }
         if let latest = refused.max(), latest > resyncedForStartAt {
             resyncedForStartAt = latest
@@ -221,10 +194,6 @@ struct PushStatus: Decodable {
             PushRelayClient.shared.forceRefresh()
             syncAgain = true
         }
-        // APPLE REFUSED THE START TOKEN ITSELF (410 Unregistered and the like):
-        // stop sending it, and take a new one only when iOS offers a different one.
-        // Only THE token that start used is condemned: a refusal of an old token
-        // must not throw away a newer one iOS has since issued.
         let rejected = reports.values.compactMap { report -> ActivityReport.Start? in
             LiveActivityDiagnosis.startTokenRejectedByApple(report) ? report.lastStart : nil
         }
@@ -242,8 +211,6 @@ struct PushStatus: Decodable {
         status = next.statusLine(enabled: enabled, allowed: allowed)
     }
 
-    /// What the relay should hold for this phone: one list across every Mac,
-    /// each Live Activity named by its session id (the name a Mac sends by).
     private func currentRelayTokens(_ token: String) -> RelayTokens {
         let activities = Activity<SessionActivityAttributes>.activities.compactMap { activity -> RelayTokens.Activity? in
             guard let pushToken = activityTokens[activity.id],
@@ -252,27 +219,9 @@ struct PushStatus: Decodable {
             else { return nil }
             return .init(id: activity.attributes.sessionId, token: pushToken)
         }
-        // THE START TOKEN IS ALWAYS SENT WHEN THERE IS ONE. Omitting it makes the
-        // relay drop its copy, and a moment where Live Activities read as off (the
-        // toggle, or iOS reporting them disabled while it settles) then left every
-        // later start refused `not_registered`. Whether to start a card is the
-        // Mac's decision, from `liveActivities` in the registration it gets.
         return RelayTokens(token: token, pushToStartToken: startToken, activities: Array(activities.prefix(8)))
     }
 
-    /**
-     ASK ONCE, AFTER PAIRING — issue #579.
-
-     Nothing on this phone ever raised the system prompt. The only path to it
-     was the toggle in Settings ▸ Notifications, so an owner who never opened
-     that screen had an app which had never appeared in iOS's own Notifications
-     list, and no reason to suspect it. Pairing a Mac is the moment the app
-     first has something to notify anybody ABOUT, so it is the moment to ask.
-
-     ONCE PER INSTALL, AND NEVER AFTER AN ANSWER — see `NotificationPrompt`.
-     When it does not ask it still REGISTERS, because that round trip is how
-     the phone learns whether that Mac can push at all.
-     */
     func promptAfterPairing() async {
         guard NotificationPrompt.shouldAsk(asked: defaults.bool(forKey: NotificationPrompt.askedKey), enabled: enabled) else {
             await syncRegistrations()
@@ -282,8 +231,6 @@ struct PushStatus: Decodable {
         await enable()
     }
 
-    /// The Approve action on an alert: accept exactly the request it named.
-    /// False when that Mac is unknown here or refused, so the caller can say so.
     func approve(_ approval: NotificationActions.Approval) async -> Bool {
         guard let api = settings?.api(for: approval.ref.hostId) else { return false }
         do {
@@ -306,29 +253,6 @@ struct PushStatus: Decodable {
         }
     }
 
-    func follow(_ ref: ScopedSessionID, session: Session) async {
-        activityError = nil
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { activityError = "Enable Live Activities for Telar in system Settings."; return }
-        guard session.activity != .idle else { activityError = "Follow a session while it is working, queued, monitoring, or waiting for you."; return }
-        guard !followed.contains(ref) else { return }
-        let now = Date()
-        let state = SessionActivityAttributes.ContentState(title: previews ? session.title : "Telar session", status: label(session), updatedAt: now, startedAt: now, ended: false)
-        var pushType: PushType? = .token
-        #if DEBUG
-        // Unsigned simulator UI tests exercise rendering/lifecycle separately
-        // from signed-device APNs acceptance. Never enabled in a Release build.
-        if UserDefaults.standard.bool(forKey: "localActivityPreview"),
-           let url = UserDefaults.standard.string(forKey: "mobilePreviewURL").flatMap(URL.init(string:)),
-           url.scheme == "http", ["localhost", "127.0.0.1"].contains(url.host ?? "") { pushType = nil }
-        #endif
-        do {
-            let activity = try Activity.request(attributes: SessionActivityAttributes(hostId: ref.hostId.uuidString, sessionId: ref.sessionId, hostName: settings?.host(ref.hostId)?.name ?? "Mac"), content: ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale)), pushType: pushType)
-            watch(activity)
-            UIApplication.shared.registerForRemoteNotifications()
-        } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
-    }
-    /// Starts each working Mac's automatic card from the phone — see `AutomaticCard`.
-    /// Only while Telar is in the foreground: iOS refuses `Activity.request` otherwise.
     func startAutomaticCards(_ active: [HostedSession]) {
         guard UIApplication.shared.applicationState == .active else { return }
         let working = Set(active.filter { $0.session.activity != .idle }.map(\.hostId))
@@ -347,9 +271,6 @@ struct PushStatus: Decodable {
                 watch(activity)
             } catch { activityError = "Couldn't start a Live Activity: \(error.localizedDescription)" }
         }
-        // Cards already showing follow the inbox straight away rather than
-        // waiting for the Mac's push. A Mac whose work has gone is left to the
-        // Mac's own end push: missing from `working` may only mean unreachable.
         for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.sessionId == AutomaticCard.sessionId {
             guard activity.activityState == .active || activity.activityState == .stale,
                   let host = UUID(uuidString: activity.attributes.hostId), working.contains(host) else { continue }
@@ -358,8 +279,6 @@ struct PushStatus: Decodable {
             Task { await activity.update(ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale))) }
         }
     }
-    /// Seconds until a card with no update reads as stale: the Mac's
-    /// `ACTIVITY_STALE_S`, which its two-minute heartbeat stays well inside.
     static let activityStale: TimeInterval = 300
     func removeHost(_ host: HostID, api: HTTPEngineAPI?) async {
         if let token, let api {
@@ -420,7 +339,6 @@ struct PushStatus: Decodable {
         guard watchers[activity.id] == nil else { return }
         stateWatchers[activity.id] = Task { [weak self] in
             for await state in activity.activityStateUpdates {
-                // Dismissed without ending first: the person swiped it away.
                 if state == .dismissed && activity.attributes.sessionId == AutomaticCard.sessionId { self?.dismissedCards.insert(host) }
                 if state == .ended || state == .dismissed {
                     self?.followed.remove(.init(hostId: host, sessionId: activity.attributes.sessionId))
@@ -471,17 +389,9 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
             let ref = url.flatMap(ScopedSessionID.init(url:))
             if let ref { MobileNotifications.shared.destination = ref }
             completionHandler()
-            // OPENING ONE IS LOOKING AT ALL OF THEM: the session's older alerts
-            // come down with the one tapped. The Mac hears of it through the
-            // ordinary receipt once the answer is actually on screen
-            // (`ReadReceiptCourier`) — never from the tap alone, which is the
-            // "marking on appear" `ReadReceipt.swift` refuses.
             if let ref { await ReadSync.clearDelivered([ref]) }
         }
     }
-    /// THE SILENT READ-SYNC PUSH: the Mac saw these sessions read. Take their
-    /// alerts down and answer at once — iOS allows about thirty seconds and
-    /// budgets future wakes on how promptly this returns.
     func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
         let reads = Set(ReadSync.reads(from: userInfo))
         guard !reads.isEmpty else { completionHandler(.noData); return }

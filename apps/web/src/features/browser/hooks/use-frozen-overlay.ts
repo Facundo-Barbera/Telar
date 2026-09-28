@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, type RefObject } from "react";
-import { createOverlayFreezer, onNativeViewOverlay, type FrozenFrame } from "@/lib/native-view-overlay";
+import { createOverlayFreezer, onNativeViewOverlay, type FrozenFrame } from "@/platform/desktop/native-view-overlay";
 
 type OverlayBridge = {
   setVisible(scopeKey: string, visible: boolean): Promise<void>;
@@ -10,15 +10,9 @@ type OverlayBridge = {
 
 type FrozenOverlayFrame = { src: string; left: number; top: number; width: number; height: number };
 
-/**
- * While a panel menu is open the native view is down, and the page's last frame is
- * painted in its place at `hostRef`. `overlayRef` mirrors whether a menu holds the view.
- */
 export function useFrozenOverlay(bridge: OverlayBridge, scopeKey: string, hostRef: RefObject<HTMLElement | null>, overlayRef: RefObject<boolean>) {
   const [frozenFrame, setFrozenFrame] = useState<FrozenOverlayFrame>();
   useEffect(() => {
-    // A menu released in the commit that unmounts this surface queues a show
-    // that would run after the unmount's hide; an unmounted surface shows nothing.
     let mounted = true;
     const swap = createOverlayFreezer({
       freeze: async () => {
@@ -38,7 +32,6 @@ export function useFrozenOverlay(bridge: OverlayBridge, scopeKey: string, hostRe
           setFrozenFrame(undefined);
           return;
         }
-        // The frame's rect is in this page's CSS pixels, so it is placed relative to the host.
         const rect = host.getBoundingClientRect();
         setFrozenFrame({
           src: `data:${frame.mimeType};base64,${frame.data}`,

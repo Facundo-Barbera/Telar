@@ -1,9 +1,9 @@
-import { SessionCockpit } from "@/components/session-cockpit";
+import { SessionCockpit } from "@/features/sessions/cockpit";
 
 /**
  * A SOLO CONVERSATION ON ANOTHER MAC — the same chromeless screen at an address
  * that names the Mac, exactly as the ordinary session page has its own remote
- * twin. Every api call is routed by the address bar (lib/hosts/client.ts), so
+ * twin. Every api call is routed by the address bar (platform/engine/host-client.ts), so
  * the component still needs to know nothing; the route prefix is the whole
  * difference (#576).
  */

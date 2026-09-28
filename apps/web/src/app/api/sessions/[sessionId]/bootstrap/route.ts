@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * ONE READ TO OPEN A CONVERSATION (#407).
@@ -15,16 +15,12 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    // The window rides through as given; the engine validates it.
-    const params = new URL(request.url).searchParams;
-    const turns = params.get("turns");
-    const before = params.get("before");
-    const window = turns === null ? undefined : { turns: Number(turns), ...(before === null ? {} : { before }) };
-    return Response.json(await (await engineClient()).sessionBootstrap(sessionId, window));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  // The window rides through as given; the engine validates it.
+  const params = new URL(request.url).searchParams;
+  const turns = params.get("turns");
+  const before = params.get("before");
+  const window = turns === null ? undefined : { turns: Number(turns), ...(before === null ? {} : { before }) };
+  return Response.json(await (await engineClient()).sessionBootstrap(sessionId, window));
+});

@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 import { ExternalLinkIcon } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { PanelDivider } from "@/components/ui/panel";
-import { fmtAgo } from "@/lib/format";
-import { reviewLabel, type ForgeEntry } from "@/lib/github-forge";
-import { cn } from "@/lib/utils";
+import { Badge } from "@/ui/badge";
+import { PanelDivider } from "@/ui/panel";
+import { fmtAgo } from "@/ui/format";
+import { reviewLabel, type ForgeEntry } from "../github-forge";
+import { cn } from "@/ui/utils";
 import { exactTime } from "../model";
 import { GitHubAvatar } from "./github-avatar";
 import { Markdown, READING_MEASURE } from "./markdown";

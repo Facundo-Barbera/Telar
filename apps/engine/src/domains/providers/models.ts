@@ -2,8 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Effort, ModelCatalogue, ProviderDriverKind, ProviderModel } from "@telar/engine-client";
 import { refuseCliSpawnUnderTest, requireCli, resolveCliAsync } from "./cli";
-import { CodexAppServer, resolveCodexBinary } from "../../codex/app-server";
-import { readCodexWindows, withCodexLongRows, type CodexWindow } from "../../codex/windows";
+import { CodexAppServer, readCodexWindows, resolveCodexBinary, withCodexLongRows, type CodexWindow } from "../../drivers/codex";
 
 const MODEL_LIST_TIMEOUT_MS = 10_000;
 
@@ -217,7 +216,7 @@ export function parseCodexModels(payload: unknown): ProviderModel[] {
 }
 
 async function readCodexModels(
-  spawnServer: () => CodexAppServer = () => new CodexAppServer(resolveCodexBinary(), dropUndefined(process.env)),
+  spawnServer: () => CodexAppServer = () => new CodexAppServer(resolveCodexBinary(), process.env),
   readWindows: () => Promise<ReadonlyMap<string, CodexWindow>> = async () => readCodexWindows(resolveCodexBinary()),
 ): Promise<{ models: ProviderModel[]; message?: string }> {
   let client: CodexAppServer;
@@ -270,10 +269,4 @@ export async function readModelCatalogue(
     ...(answer.cliVersion ? { cliVersion: answer.cliVersion } : {}),
     readAt: now(),
   };
-}
-
-function dropUndefined(env: NodeJS.ProcessEnv): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) if (value !== undefined) out[key] = value;
-  return out;
 }

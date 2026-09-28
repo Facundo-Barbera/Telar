@@ -1,8 +1,9 @@
 const { ipcMain, nativeTheme } = require("electron");
 const { keymapOverrides, mergeKeymap } = require("./command-keys");
+const { applyTranslucency, readUiPrefs, supportsTranslucency, writeUiPrefs } = require("./appearance");
+const { buildApplicationMenu, chords, readKeybindingOverrides, writeKeybindingOverrides } = require("./app-menu");
 
-function registerPrefsIpc(main) {
-  const { applyTranslucency, buildApplicationMenu, chordScopes, readKeybindingOverrides, readUiPrefs, supportsTranslucency, writeKeybindingOverrides, writeUiPrefs } = main;
+function registerPrefsIpc() {
   ipcMain.handle("telar:appearance:setTheme", (_event, theme) => {
     if (theme === "light" || theme === "dark" || theme === "system") nativeTheme.themeSource = theme;
   });
@@ -10,13 +11,13 @@ function registerPrefsIpc(main) {
   ipcMain.handle("telar:keybindings:get", () => readKeybindingOverrides());
 
   ipcMain.handle("telar:keybindings:capture", (_event, capturing) => {
-    main.chordCapture = Boolean(capturing);
+    chords.capturing = Boolean(capturing);
     buildApplicationMenu();
-    return main.chordCapture;
+    return chords.capturing;
   });
 
-  ipcMain.handle("telar:keybindings:scope", (_event, chords) => {
-    const accepted = chordScopes.setRenderer(chords);
+  ipcMain.handle("telar:keybindings:scope", (_event, requested) => {
+    const accepted = chords.scopes.setRenderer(requested);
     buildApplicationMenu();
 
     return accepted;

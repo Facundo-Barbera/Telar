@@ -3,13 +3,13 @@
 import { useState, useSyncExternalStore } from "react";
 import { EyeIcon, FileIcon, PencilIcon, RotateCwIcon, WrapTextIcon } from "lucide-react";
 import type { TurnState } from "@telar/engine-client";
-import { EditorAddressRow } from "@/components/session/editor-chrome";
-import { MessageResponse } from "@/components/ui/message";
-import { PanelEmpty } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
-import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/components/ui/context-menu";
-import type { TelarReference } from "@/lib/drag-reference";
-import type { EditorViewState } from "@/lib/editor-workspace";
+import { EditorAddressRow } from "./editor-chrome";
+import { MessageResponse } from "@/ui/message";
+import { PanelEmpty } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from "@/ui/context-menu";
+import type { TelarReference } from "@/features/composer";
+import type { EditorViewState } from "../editor-workspace";
 import {
   isProseFile,
   NOWRAP_CLASS,
@@ -18,11 +18,11 @@ import {
   WRAP_CLASS,
   wrapLinesSnapshot,
   writeWrapLines,
-} from "@/lib/editor-wrap";
-import { fileKind } from "@/lib/file-kinds";
-import { rawFileUrl } from "@/lib/file-urls";
-import { useWorkspaceFileMenu, workspaceFilePath } from "@/lib/workspace-open";
-import { cn } from "@/lib/utils";
+} from "../editor-wrap";
+import { fileKind } from "../file-kinds";
+import { rawFileUrl } from "../file-urls";
+import { useWorkspaceFileMenu, workspaceFilePath } from "../workspace-open";
+import { cn } from "@/ui/utils";
 import { useFileEditor, type SaveState } from "../hooks/use-file-editor";
 import { formatBytes } from "../model";
 import { BinaryFile, CodeEditor, MarkdownToolbar, SaveRefusal } from "./file-body";

@@ -1,4 +1,4 @@
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * One hub: saved, or forgotten.
@@ -13,29 +13,21 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sourceId: string }> };
 
-export async function PUT(request: Request, context: Context) {
-  try {
-    const { sourceId } = await context.params;
-    const body = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).saveUsageLimitSource({
-        id: sourceId,
-        ...(body.label === undefined ? {} : { label: body.label as string | null }),
-        ...(body.url === undefined ? {} : { url: body.url as string }),
-        ...(body.managementKey === undefined ? {} : { managementKey: body.managementKey as string }),
-        ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request, context: Context) => {
+  const { sourceId } = await context.params;
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).saveUsageLimitSource({
+      id: sourceId,
+      ...(body.label === undefined ? {} : { label: body.label as string | null }),
+      ...(body.url === undefined ? {} : { url: body.url as string }),
+      ...(body.managementKey === undefined ? {} : { managementKey: body.managementKey as string }),
+      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+    }),
+  );
+});
 
-export async function DELETE(_request: Request, context: Context) {
-  try {
-    const { sourceId } = await context.params;
-    return Response.json(await (await engineClient()).removeUsageLimitSource(sourceId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const DELETE = engineRoute(async (_request: Request, context: Context) => {
+  const { sourceId } = await context.params;
+  return Response.json(await (await engineClient()).removeUsageLimitSource(sourceId));
+});

@@ -1,9 +1,9 @@
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const {
-  REMOTE_FILE_VERSION,
   readRemotePosture,
   serverBindHost,
   tailscaleServeRequested,
@@ -111,12 +111,15 @@ describe("a known version is honoured, with both conditions", () => {
   });
 });
 
-describe("the version tracks the store's", () => {
-  test("store.ts declares the version this module knows", () => {
-    const storeTs = path.join(__dirname, "..", "..", "..", "web", "src", "lib", "remote", "store.ts");
-    const source = fs.readFileSync(storeTs, "utf8");
-    const declared = source.match(/version:\s*(\d+);/)?.[1];
-    expect(declared).toBeDefined();
-    expect(Number(declared)).toBe(REMOTE_FILE_VERSION);
+describe("the shell reads the file the engine writes", () => {
+  test("a file the engine's store wrote is trusted, not an unknown version", async () => {
+    const { createRemoteStore, mintDeviceToken } = await import("../../../engine/src/domains/remote/store.ts");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-remote-file-"));
+    try {
+      createRemoteStore(path.join(home, "remote")).addDevice("phone", mintDeviceToken());
+      expect(readRemotePosture(home).state).toBe("trusted");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

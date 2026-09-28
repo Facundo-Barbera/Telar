@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { ExternalPluginManifest, parsePluginPanelView } from "../src/protocol/plugins";
+import { ExternalPluginManifest, parsePluginPanelView } from "../src/plugins/schema";
 import { parseToolName, registerPluginToolPrefixes } from "../src/protocol/tools";
 
 const manifest = {

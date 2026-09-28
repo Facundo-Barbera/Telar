@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Merge a pull request.
@@ -27,17 +27,13 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string; number: string }> };
 
-export async function POST(request: Request, context: Context) {
-  try {
-    const { projectId, number } = await context.params;
-    const input = (await request.json()) as { method?: unknown; expectedHeadOid?: unknown };
-    return Response.json(
-      await (await engineClient()).mergeProjectPull(projectId, Number(number), {
-        method: input.method as "merge" | "squash" | "rebase",
-        expectedHeadOid: String(input.expectedHeadOid ?? ""),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { projectId, number } = await context.params;
+  const input = (await request.json()) as { method?: unknown; expectedHeadOid?: unknown };
+  return Response.json(
+    await (await engineClient()).mergeProjectPull(projectId, Number(number), {
+      method: input.method as "merge" | "squash" | "rebase",
+      expectedHeadOid: String(input.expectedHeadOid ?? ""),
+    }),
+  );
+});

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * A TOKEN FOR ONE DICTATION, PROXIED (#544).
@@ -17,7 +17,7 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
  *
  * THE PHONE REACHES IT THROUGH THE HOST PROXY unchanged: `/api/hosts/:id/*`
  * forwards any path to that Mac's `/api/*` with its bearer (see
- * `lib/hosts/proxy.ts`), so `/api/hosts/:id/dictation/token` is this route on
+ * `features/hosts/server/proxy.ts`), so `/api/hosts/:id/dictation/token` is this route on
  * the other Mac. Nothing had to be allowlisted — the proxy is path-agnostic on
  * purpose, and the timeout table only names the rail's polling reads.
  *
@@ -34,10 +34,6 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST() {
-  try {
-    return Response.json(await (await engineClient()).dictationToken());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async () => {
+  return Response.json(await (await engineClient()).dictationToken());
+});

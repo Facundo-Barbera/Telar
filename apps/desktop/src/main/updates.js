@@ -5,9 +5,32 @@ const desktopHandoff = require("../handoff/desktop-handoff");
 const { writePlannedRestart, createInstallGate, clearPlannedRestart } = require("./update-install");
 const path = require("node:path");
 const devUpdate = require("../dev/dev-update");
+const { DEV_BUILD } = require("./flags");
+const { logShell } = require("./shell-log");
+const { requireCockpitSender } = require("./browser-hosts");
+const { readUpdatePrefs, UPDATE_CHANNELS, updateLogPath, updateProxyKey, writeUpdatePrefs } = require("./update-prefs");
 
-function registerUpdates(main) {
-  const { DEV_BUILD, UPDATE_CHANNELS, logShell, readUpdatePrefs, requireCockpitSender, telarHome, updateLogPath, updateProxyKey, writeUpdatePrefs } = main;
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+function updateLogger() {
+  const write = (level, message) => {
+    const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
+    try {
+      require("node:fs").appendFileSync(updateLogPath(), line);
+    } catch {
+    }
+    console.log(`[telar-updates] ${level} ${message}`);
+  };
+  return {
+    info: (m) => write("info", m),
+    warn: (m) => write("warn", m),
+    error: (m) => write("error", m),
+    debug: () => {},
+  };
+}
+
+function createUpdater(main) {
+  const { telarHome } = main;
   let lastUpdateStatus = null;
 
   function broadcastUpdateStatus(status, extra = {}) {
@@ -76,25 +99,6 @@ function registerUpdates(main) {
     return null;
   }
 
-  const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
-
-  function updateLogger() {
-    const write = (level, message) => {
-      const line = `[${new Date().toISOString()}] ${level} ${message}\n`;
-      try {
-        require("node:fs").appendFileSync(updateLogPath(), line);
-      } catch {
-      }
-      console.log(`[telar-updates] ${level} ${message}`);
-    };
-    return {
-      info: (m) => write("info", m),
-      warn: (m) => write("warn", m),
-      error: (m) => write("error", m),
-      debug: () => {},
-    };
-  }
-
   function applyUpdatePrefs(prefs) {
     autoUpdater.channel = prefs.channel;
 
@@ -158,6 +162,23 @@ function registerUpdates(main) {
     app.quit();
   }
 
+  return {
+    abandonDownload,
+    applyUpdatePrefs,
+    broadcastUpdateStatus,
+    checkForUpdates,
+    configureAutoUpdater,
+    downloadWatch,
+    lastStatus: () => lastUpdateStatus,
+    updatesConfigured,
+  };
+}
+
+function registerUpdates(main) {
+  const { telarHome } = main;
+  const updater = createUpdater(main);
+  const { abandonDownload, applyUpdatePrefs, broadcastUpdateStatus, checkForUpdates, configureAutoUpdater, downloadWatch, updatesConfigured } = updater;
+
   ipcMain.handle("telar:updates:check", async () => {
     if (!updatesConfigured()) return { status: "unsupported" };
     const plan = downloadWatch.plan();
@@ -178,7 +199,7 @@ function registerUpdates(main) {
     const decision = installGate.press({ packaged: app.isPackaged, devBuild: DEV_BUILD });
     if (decision === "unsupported") return { status: "unsupported" };
 
-    broadcastUpdateStatus("restarting", { version: lastUpdateStatus?.version });
+    broadcastUpdateStatus("restarting", { version: updater.lastStatus()?.version });
 
     if (decision === "pending") return { status: "restarting" };
 
@@ -207,13 +228,13 @@ function registerUpdates(main) {
       clearPlannedRestart(engineRoot);
       const message = err && err.message ? err.message : String(err);
       autoUpdater.logger?.error?.(`quitAndInstall failed: ${message}`);
-      broadcastUpdateStatus("error", { version: lastUpdateStatus?.version, message });
+      broadcastUpdateStatus("error", { version: updater.lastStatus()?.version, message });
       return { status: "error", message };
     }
     return { status: "restarting" };
   });
 
-  ipcMain.handle("telar:updates:status", () => lastUpdateStatus);
+  ipcMain.handle("telar:updates:status", () => updater.lastStatus());
 
   ipcMain.handle("telar:updates:busy", async (event) => {
     requireCockpitSender(event, "ask what a restart would end");

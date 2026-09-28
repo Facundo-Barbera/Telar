@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { classifyPushFailure, pullRequestBlockedBy, PUSH_ENV, PUSH_TIMEOUT_MS, pushArgv, pushMovedNothing, pushSessionBranch, sessionBranchFacts } from "./push";
-import { GIT_TIMEOUT_STATUS } from "../../worktree";
-import type { AsyncGitRunner, GitResult, GitRunOptions } from "../../worktree";
+import { GIT_TIMEOUT_STATUS } from "../../platform/git/runner";
+import type { AsyncGitRunner, GitResult, GitRunOptions } from "../../platform/git/runner";
 
 const ok = (stdout = ""): GitResult => ({ status: 0, stdout, stderr: "" });
 const fail = (stderr = "fatal", status = 1): GitResult => ({ status, stdout: "", stderr });

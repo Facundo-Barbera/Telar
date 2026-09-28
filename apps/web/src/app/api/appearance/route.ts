@@ -1,5 +1,5 @@
 import { parsePublishedAppearance } from "@telar/engine-client";
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineRoute, invalidRequest } from "@/platform/engine/server";
 
 /**
  * The host cockpit's resolved look, published to the engine and read back by
@@ -24,7 +24,7 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
  * choke on; a GET is re-parsed on the client (`EngineClient.appearance`).
  *
  * WHO READS IT. A remote browser window wears it automatically until its
- * person customises (components/host-look-follower.tsx). Every OTHER client —
+ * person customises (features/appearance). Every OTHER client —
  * the iOS app, another desktop — is offered the same `GET` and decides for
  * itself what to do with it; nothing is pushed onto a device that did not ask.
  *
@@ -38,30 +38,18 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).appearance());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).appearance());
+});
 
-export async function PUT(request: Request) {
-  try {
-    const blob = parsePublishedAppearance(await requestObject(request));
-    if (!blob) {
-      return Response.json({ error: { code: "invalid_request", message: "That is not a publishable appearance." } }, { status: 400 });
-    }
-    return Response.json(await (await engineClient()).setAppearance(blob));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const PUT = engineRoute(async (request: Request) => {
+  const blob = parsePublishedAppearance(await requestObject(request));
+  if (!blob) {
+    throw invalidRequest("That is not a publishable appearance.");
   }
-}
+  return Response.json(await (await engineClient()).setAppearance(blob));
+});
 
-export async function DELETE() {
-  try {
-    return Response.json(await (await engineClient()).clearAppearance());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const DELETE = engineRoute(async () => {
+  return Response.json(await (await engineClient()).clearAppearance());
+});

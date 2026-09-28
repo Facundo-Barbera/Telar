@@ -16,13 +16,13 @@ import {
   UserRoundIcon,
 } from "lucide-react";
 import type { GitHubIssue, GitHubLink, GitHubPullRequest } from "@telar/engine-client";
-import { Badge } from "@/components/ui/badge";
-import { PanelRow } from "@/components/ui/panel";
-import { Spinner } from "@/components/ui/spinner";
-import { issueReference, pullReference, startReferenceDrag } from "@/lib/drag-reference";
-import { fmtAgo } from "@/lib/format";
-import { issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, type ForgeStatus } from "@/lib/github-forge";
-import { cn } from "@/lib/utils";
+import { Badge } from "@/ui/badge";
+import { PanelRow } from "@/ui/panel";
+import { Spinner } from "@/ui/spinner";
+import { issueReference, pullReference, startReferenceDrag } from "@/features/composer";
+import { fmtAgo } from "@/ui/format";
+import { issueStatus, offersMerge, pullStatus, STATUS_LABEL, STATUS_TONE, type ForgeStatus } from "../github-forge";
+import { cn } from "@/ui/utils";
 import { GitHubAvatar } from "./github-avatar";
 
 const ISSUE_GLYPH: Record<ForgeStatus, typeof CircleDotIcon> = {

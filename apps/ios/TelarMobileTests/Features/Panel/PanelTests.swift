@@ -294,34 +294,34 @@ import Testing
 
     @Test func aProjectThatWasNeverMigratedIsReadFromTheLegacyBlocks() throws {
         let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"latex":{"enabled":false}}"#)
-        #expect(p.pluginEnabled(.dataScience))
-        #expect(!p.pluginEnabled(.latex))
+        #expect(p.enabledPlugins.contains(.dataScience))
+        #expect(!p.enabledPlugins.contains(.latex))
     }
 
     @Test func aMigratedProjectIsReadFromTheMap() throws {
         let p = try project(#"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"latex":{"enabled":true,"settings":{"mainFile":"main.tex"}}}}}"#)
-        #expect(p.pluginEnabled(.dataScience))
-        #expect(p.pluginEnabled(.latex))
+        #expect(p.enabledPlugins.contains(.dataScience))
+        #expect(p.enabledPlugins.contains(.latex))
     }
 
     @Test func theMapWinsOverAStaleLegacyBlock() throws {
         let gone = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":true}}}}"#)
-        #expect(!gone.pluginEnabled(.dataScience))
-        #expect(gone.pluginEnabled(.latex))
+        #expect(!gone.enabledPlugins.contains(.dataScience))
+        #expect(gone.enabledPlugins.contains(.latex))
 
         let off = try project(#"{"id":"p","name":"P","latex":{"enabled":true},"plugins":{"version":1,"entries":{"latex":{"enabled":false}}}}"#)
-        #expect(!off.pluginEnabled(.latex))
+        #expect(!off.enabledPlugins.contains(.latex))
     }
 
     @Test func aMapThatWillNotParseIsNotAMigratedProject() throws {
         let p = try project(#"{"id":"p","name":"P","dataScience":{"enabled":true},"plugins":{"entries":{"data-science":{"enabled":false}}}}"#)
         #expect(p.plugins == nil)
-        #expect(p.pluginEnabled(.dataScience))
+        #expect(p.enabledPlugins.contains(.dataScience))
     }
 
     @Test func anEntryThatWillNotParseIsSkippedRatherThanLosingTheMap() throws {
         let p = try project(#"{"id":"p","name":"P","plugins":{"version":1,"entries":{"data-science":{"enabled":true},"hello":{"enabled":"yes"}}}}"#)
-        #expect(p.pluginEnabled(.dataScience))
+        #expect(p.enabledPlugins.contains(.dataScience))
         #expect(p.plugins?.entries["hello"] == nil)
     }
 }

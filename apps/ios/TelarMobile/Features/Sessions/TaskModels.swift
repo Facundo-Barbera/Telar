@@ -1,15 +1,10 @@
 import Foundation
 
-/// Mirror of `Task` in `packages/engine-client/src/protocol/tasks.ts` —
-/// named `AgentTask` because `Task` is Swift concurrency's.
-
 enum TaskKind: String, Codable {
     case agent, background
 
     init(from decoder: Decoder) throws {
         let raw = try decoder.singleValueContainer().decode(String.self)
-        // Denylist-shaped per the contract: anything unrecognised is treated
-        // as an agent so new kinds show up unstyled rather than invisible.
         self = TaskKind(rawValue: raw) ?? .agent
     }
 }
@@ -30,7 +25,6 @@ enum TaskState: String, Codable {
 struct AgentTask: Codable, Identifiable, Equatable {
     var id: EngineID
     var sessionId: EngineID
-    /// The turn that launched it. A background task may outlive this turn.
     var runId: EngineID
     var kind: TaskKind
     var state: TaskState

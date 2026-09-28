@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * What there is to filter by in a project's repository.
@@ -14,12 +14,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    return Response.json(await (await engineClient()).projectForgeFacets(projectId, { refresh }));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const refresh = new URL(request.url).searchParams.get("refresh") === "1";
+  return Response.json(await (await engineClient()).projectForgeFacets(projectId, { refresh }));
+});

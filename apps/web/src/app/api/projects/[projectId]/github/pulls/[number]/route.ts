@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * ONE pull request, opened — body, conversation, reviews, checks, and whether
@@ -13,12 +13,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string; number: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { projectId, number } = await context.params;
-    const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    return Response.json(await (await engineClient()).projectPull(projectId, Number(number), { refresh }));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { projectId, number } = await context.params;
+  const refresh = new URL(request.url).searchParams.get("refresh") === "1";
+  return Response.json(await (await engineClient()).projectPull(projectId, Number(number), { refresh }));
+});

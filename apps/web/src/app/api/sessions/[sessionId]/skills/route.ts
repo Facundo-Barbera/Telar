@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * What this session's provider can be asked to do — the composer's `$` menu and
@@ -12,12 +12,8 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, context: { params: Promise<{ sessionId: string }> }) {
-  try {
-    const { sessionId } = await context.params;
-    const engine = await engineClient();
-    return Response.json(await engine.sessionSkills(sessionId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, context: { params: Promise<{ sessionId: string }> }) => {
+  const { sessionId } = await context.params;
+  const engine = await engineClient();
+  return Response.json(await engine.sessionSkills(sessionId));
+});

@@ -26,7 +26,7 @@ describe("the pin", () => {
     expect(pin.sha256).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  test("the helper's identity is Telar's, never cua's, and attributes cua in its display name", () => {
+  test("the helper's identity is Telar's, never cua's, and attributes cua in its display name", async () => {
     // Changing it orphans every grant a person gave the helper; the engine's
     // tccutil reset names the same id.
     // It no longer sits under Telar's own id: the app moved to
@@ -34,8 +34,8 @@ describe("the pin", () => {
     expect(pin.bundleId).toBe("com.telar.desktop.computer-use");
     expect(pin.bundleId.startsWith(`${manifest.build.appId}.`)).toBe(false);
     expect(pin.displayName).toContain("cua");
-    const engine = fs.readFileSync(path.join(__dirname, "..", "..", "..", "engine", "src", "domains", "computer-use", "gate.ts"), "utf8");
-    expect(engine).toContain(`"${pin.bundleId}"`);
+    const { COMPUTER_USE_HELPER_BUNDLE_ID } = await import("../../../engine/src/domains/computer-use/gate.ts");
+    expect(COMPUTER_USE_HELPER_BUNDLE_ID).toBe(pin.bundleId);
   });
 });
 

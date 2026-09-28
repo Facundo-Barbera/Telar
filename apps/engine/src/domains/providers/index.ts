@@ -1,34 +1,21 @@
 export {
-  applyModelManifest,
   BUNDLED_MANIFEST,
   claudeEffortFor,
   claudeFixedWindowOf,
   claudeWindowTokensOf,
   legacyLongSpelling,
-  longDefaultOf,
   type ModelManifest,
 } from "./manifest";
 export { loadClaudeModelSdk, readClaudeModels, readModelCatalogue } from "./models";
-export { applyModelOverlay, chosenDefault } from "./overlay";
 export {
   CLI_TEST_REFUSAL,
   cliSpawnAllowed,
   cliUsable,
-  refuseCliSpawnUnderTest,
   requireCli,
   resolveCli,
-  resolveCliAsync,
 } from "./cli";
-export { runCliUpdate, type CliUpdateRun } from "./cli-updates";
-export {
-  createProviderProber,
-  inheritedOwnedEnv,
-  providerEnvIsCredential,
-  providerOwnsEnv,
-  providerProcessEnv,
-  stoppedInheriting,
-  type VersionProbe,
-} from "./instances";
+export { type CliUpdateRun } from "./cli-updates";
+export { providerProcessEnv, type VersionProbe } from "./instances";
 export {
   codexHome,
   loadClaudeCommandSdk,
@@ -38,12 +25,15 @@ export {
   providerSkillRoots,
   readClaudeSupportedCommands,
   readProviderSkillsCached,
-  type LoadProviderCommands,
 } from "./skills";
 export {
   generateSessionTitle,
   maybeRetitleSession,
-  runStructuredForPolicy,
   textGenDisabledByEnv,
   type RetitleStore,
 } from "./textgen";
+export { ProviderRegistry } from "./registry";
+export { installedCli, ModelCatalogues, type InstalledCli } from "./catalogues";
+export { providersRoutes } from "./routes";
+export { sessionProviderRoutes, type ProviderSkillsOptions } from "./session-routes";
+export { ConversationAdoption } from "./adoption";

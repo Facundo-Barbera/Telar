@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
+import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { DirectoryListing } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../../daemon";
-import { matchRoute } from "../../platform/http/route";
+import type { RouteAnswer } from "../../platform/http/route";
+import { matchRoute } from "../../platform/http/router";
 import { filesRoutes } from "./routes";
 import { stubModels } from "../../../test/stub-models";
 
@@ -24,7 +26,7 @@ const scratch = (prefix: string): string => {
 
 const ask = (query: string, home: string) => {
   const { route, params } = matchRoute(filesRoutes({ home, mounts: [] }), "GET", "/v2/fs")!;
-  return route.handle({ body: {}, params, query: new URLSearchParams(query) });
+  return route.handle({ body: {}, params, query: new URLSearchParams(query), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }) as RouteAnswer;
 };
 
 test("lists home's folders, badging checkouts and hiding dotfolders unless asked", () => {

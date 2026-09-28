@@ -3,12 +3,12 @@
 import { useMemo, useState } from "react";
 import { CheckIcon, GitMergeIcon, TriangleAlertIcon } from "lucide-react";
 import type { GitHubMergeMethod, GitHubMergeRefusal, GitHubPullDetail } from "@telar/engine-client";
-import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Spinner } from "@/components/ui/spinner";
-import { createEngineApi, EngineApiError } from "@/lib/engine/client";
-import { MERGE_REFUSAL, mergeReadiness } from "@/lib/github-forge";
-import { cn } from "@/lib/utils";
+import { Button } from "@/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/ui/dropdown-menu";
+import { Spinner } from "@/ui/spinner";
+import { createEngineApi, EngineApiError } from "@/platform/engine";
+import { MERGE_REFUSAL, mergeReadiness } from "../github-forge";
+import { cn } from "@/ui/utils";
 import { METHOD_LABEL } from "../model";
 
 const api = createEngineApi();

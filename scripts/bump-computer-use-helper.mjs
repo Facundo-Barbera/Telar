@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Move the cua-driver pin in apps/desktop/computer-use-helper.json forward when
+ * Move the cua-driver pin in apps/desktop/src/main/computer-use-helper.json forward when
  * trycua/cua cuts a new STABLE cua-driver-rs release.
  *
  *   bun scripts/bump-computer-use-helper.mjs [--check] [--pin PATH]

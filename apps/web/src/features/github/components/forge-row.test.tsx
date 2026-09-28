@@ -1,4 +1,3 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import type { GitHubPullRequest } from "@telar/engine-client";
 import { renderToStaticMarkup } from "react-dom/server";

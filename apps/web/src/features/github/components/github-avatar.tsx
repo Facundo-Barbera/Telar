@@ -1,5 +1,5 @@
-import { avatarSrc, authorMonogram } from "@/lib/github-forge";
-import { cn } from "@/lib/utils";
+import { avatarSrc, authorMonogram } from "../github-forge";
+import { cn } from "@/ui/utils";
 
 // Stateless fallback: the monogram is drawn underneath and a failed image hides itself,
 // so a missing avatar reveals the letter without a re-render.

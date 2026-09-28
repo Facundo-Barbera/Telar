@@ -5,10 +5,10 @@ import { promisify } from "node:util";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
 import { autoCompactLimitFor, type AutoCompact } from "@telar/engine-client";
 import { BROWSER_BRIEFING } from "../../domains/browser";
-import { RUN_BRIEFING } from "../../run/briefing";
-import { pluginBriefings } from "../../plugins/bundled";
-import { writeOrientationInstructions } from "../../orientation";
-import type { DriverRun } from "../../provider-contract";
+import { RUN_BRIEFING } from "../../domains/terminal";
+import { pluginBriefings } from "../../domains/plugins";
+import { writeOrientationInstructions } from "../../domains/sessions";
+import type { DriverRun } from "../contract";
 
 export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close(): void };
 

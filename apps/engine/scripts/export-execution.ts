@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ExecutionStore } from "../src/platform/db/execution-store";
-import { acquireDaemonLock, statePaths } from "../src/state";
+import { acquireDaemonLock } from "../src/platform/process/daemon-lock";
+import { statePaths } from "../src/platform/fs/state-paths";
 
 const [home, destination] = process.argv.slice(2);
 if (!home || !destination) throw new Error("Usage: bun apps/engine/scripts/export-execution.ts ENGINE_HOME NEW_EXPORT_DIRECTORY");

@@ -1,7 +1,6 @@
 import XCTest
 import UIKit
 
-/// Run with the local preview server; no real pairing or engine state is used.
 final class NavigationUITests: XCTestCase {
     func testSidebarOpensConversationAndSettings() {
         let isPad = UIDevice.current.userInterfaceIdiom == .pad
@@ -41,9 +40,6 @@ final class NavigationUITests: XCTestCase {
 }
 
 extension NavigationUITests {
-    /// The iPad split view: hiding the sidebar must leave a way back. The
-    /// system toggle can be displaced by the detail's own toolbar, so the
-    /// detail carries its own "Show sidebar" while the sidebar is hidden.
     func testHiddenSidebarCanBeShownAgainOnIPad() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -53,19 +49,14 @@ extension NavigationUITests {
         app.launch()
         let composer = app.textViews["Ask the agent, or run a command…"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
-        // The search field exists only in the sidebar column; the session's
-        // title also appears in the detail's navigation bar, so a row's text
-        // cannot stand in for "the sidebar is visible".
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5))
 
-        // Hide the sidebar with the system toggle in the sidebar's own bar.
         let toggle = app.buttons["ToggleSidebar"].exists ? app.buttons["ToggleSidebar"] : app.buttons["Hide Sidebar"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 5), "system sidebar toggle")
         toggle.tap()
         XCTAssertTrue(search.waitForNonExistence(timeout: 5), "sidebar should be gone once hidden")
 
-        // The way back.
         let show = app.buttons["Show sidebar"]
         XCTAssertTrue(show.waitForExistence(timeout: 5), "detail must offer Show sidebar while hidden")
         show.tap()
@@ -76,20 +67,12 @@ extension NavigationUITests {
 }
 
 extension NavigationUITests {
-    /// The right panel against the preview fixture: every tab renders, files
-    /// open from the tree, the sidebar gets out of the way in portrait and
-    /// comes back, and the screenshots are kept for review.
-    ///
-    /// PORTRAIT ON PURPOSE. It is the width where all three columns do not
-    /// fit, so it is the one that exercises both the sidebar rule and the
-    /// tree/file toggle inside a ~370pt inspector.
     func testPanelTabsRenderOnIPad() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
         let app = XCUIApplication()
         app.launchArguments = ["-mobilePreviewURL", "http://127.0.0.1:8743", "-openSession", "design"]
         app.launch()
         XCTAssertTrue(app.textViews["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
-        // The search field exists only in the sidebar column.
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 10), "the sidebar starts visible")
 
@@ -97,8 +80,6 @@ extension NavigationUITests {
         app.buttons["Panel"].tap()
         XCTAssertTrue(app.buttons["Diff tab"].waitForExistence(timeout: 10))
         XCTAssertTrue(search.waitForNonExistence(timeout: 5), "portrait has no room for all three — the sidebar stands aside")
-        // The panel REMEMBERS which tab was up, so a previous run decides
-        // what opens; say which one this test wants.
         select(app.buttons["Diff tab"])
         XCTAssertTrue(app.staticTexts["No recorded base — committed work is not included."].waitForExistence(timeout: 10),
                       "the Diff surface, not just its chip")
@@ -123,8 +104,6 @@ extension NavigationUITests {
 
         XCTAssertTrue(app.buttons["Data tab"].exists, "Data tab is offered when the project opted in")
         select(app.buttons["Data tab"])
-        // The sub-tab is a habit remembered per DEVICE, so a previous run
-        // decides which one is up; say which one this test wants.
         select(app.buttons["Plots"])
         XCTAssertTrue(app.buttons["Pin plot"].firstMatch.waitForExistence(timeout: 10), "plots grid")
         snap("Panel — Data, plots")
@@ -148,14 +127,8 @@ extension NavigationUITests {
         XCTAssertTrue(search.waitForExistence(timeout: 10), "the sidebar comes back when the panel closes")
     }
 
-    /// Tap a strip until it is the one that is up. The panel remembers its
-    /// tab between launches, so "tap it" is not the same as "it is showing" —
-    /// and the menu's own dismissal can eat the first tap at the strip.
     private func select(_ tab: XCUIElement) {
         XCTAssertTrue(tab.waitForExistence(timeout: 10), "\(tab.label) exists")
-        // ALWAYS TAP. A stale `isSelected` read would otherwise skip the tap
-        // and leave the previous surface up under the name of this one.
-        // Tapping the tab that is already up is a no-op in the model.
         tab.tap()
         let up = expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: tab)
         guard XCTWaiter.wait(for: [up], timeout: 5) != .completed else { return }
@@ -164,8 +137,6 @@ extension NavigationUITests {
                       "\(tab.label) is the surface that is up")
     }
 
-    /// The tree and the file share the narrow panel, so getting to the next
-    /// file means asking for the tree back — exactly what a reader does.
     private func openFromTree(_ app: XCUIApplication, _ name: String) {
         let showTree = app.buttons["Show tree"]
         if showTree.exists { showTree.tap() }
@@ -181,14 +152,6 @@ extension NavigationUITests {
 }
 
 extension NavigationUITests {
-    /// PASTE PUTS A FILE IN THE BOX — THE FIELD'S OWN PASTE. With only a
-    /// picture on the clipboard, iOS draws no Paste item for a plain text
-    /// field, so the long-press menu simply had nothing in it and the only way
-    /// in was a control of our own. This drives the gesture a person actually
-    /// makes: long-press the composer, tap Paste.
-    ///
-    /// The pasteboard is set from the runner so the test carries its own
-    /// clipboard rather than inheriting the machine's.
     func testPastingAnImageBecomesAnAttachment() {
         UIPasteboard.general.image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 24)).image { context in
             UIColor.systemTeal.setFill()
@@ -199,9 +162,6 @@ extension NavigationUITests {
         app.launch()
         let composer = app.textViews["Ask the agent, or run a command…"]
         XCTAssertTrue(composer.waitForExistence(timeout: 15))
-        // It is still a text field first: it takes focus and it types. The
-        // box may already hold a restored draft from a previous run, so what
-        // is pinned is that the typing LANDED, not that it is alone.
         composer.tap()
         composer.typeText("here")
         XCTAssertTrue((composer.value as? String)?.hasSuffix("here") == true, "the composer still edits text")
@@ -212,7 +172,6 @@ extension NavigationUITests {
                       "the field's own menu offers Paste for a picture")
         paste.tap()
 
-        // A clipboard image has no name of its own, so the intake gives it one.
         XCTAssertTrue(app.buttons["Remove pasted.png"].waitForExistence(timeout: 15),
                       "the pasted image is in the attachment strip, removable")
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -224,9 +183,6 @@ extension NavigationUITests {
 }
 
 extension NavigationUITests {
-    /// THE PANEL HAS A BUTTON, opposite the sidebar's. Reaching it used to
-    /// mean opening the overflow menu; this pins that the toolbar toggle both
-    /// opens and closes it, and that it says which state you are in.
     func testThePanelToggleOpensAndClosesIt() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
         let app = XCUIApplication()
@@ -234,7 +190,6 @@ extension NavigationUITests {
         app.launch()
         XCTAssertTrue(app.textViews["Ask the agent, or run a command…"].waitForExistence(timeout: 15))
 
-        // Whatever the last run left persisted, start from closed.
         if app.buttons["Hide panel"].exists {
             app.buttons["Hide panel"].tap()
             XCTAssertTrue(app.buttons["Show panel"].waitForExistence(timeout: 5))
@@ -257,9 +212,6 @@ extension NavigationUITests {
 }
 
 extension NavigationUITests {
-    /// FULL SCREEN IS THE SAME PANEL. A 440pt column is a keyhole for a diff or
-    /// a notebook; this pins that the expand control fills the window, that the
-    /// panel's own state crosses with it, and that it comes back.
     func testThePanelCanFillTheWindowAndComeBack() throws {
         guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
         let app = XCUIApplication()
@@ -277,10 +229,6 @@ extension NavigationUITests {
         XCTAssertTrue(expand.waitForExistence(timeout: 5), "the panel offers full screen")
         expand.tap()
         XCTAssertTrue(app.buttons["Leave full screen"].waitForExistence(timeout: 10), "it filled the window")
-        // The conversation is gone and the file it was showing is still open:
-        // the model carried the tab and the open file across.
-        // `exists` stays true for a covered view; hittability is what says
-        // the cover is over it.
         XCTAssertFalse(composer.isHittable, "the conversation is covered")
         XCTAssertTrue(app.staticTexts["README.md"].firstMatch.exists, "the open file crossed with it")
         snap("Panel — full screen")

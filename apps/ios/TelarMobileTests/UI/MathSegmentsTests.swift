@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The web's math policy (`markdown-math.ts` + remark-math), on the phone's
-/// pre-pass: `$$` only, single dollars are money, fences and code spans are
-/// never math, and a lone one-line equation is promoted to display.
 @Suite struct MathSegmentsTests {
     @Test func plainMarkdownIsOneRun() {
         #expect(splitMath("Hello **world**\n\n| a | b |\n|---|---|\n| 1 | 2 |") == [.markdown("Hello **world**\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")])

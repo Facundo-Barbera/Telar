@@ -13,7 +13,6 @@
     },
     "apps/engine": {
       "entry": [
-        "src/*-main.ts",
         "bench/*.ts",
         "scripts/*.{ts,mjs}"
       ],
@@ -27,7 +26,7 @@
         "@playwright/mcp"
       ],
       "ignoreIssues": {
-        "src/plugins/contract.ts": [
+        "src/domains/plugins/contract.ts": [
           "types"
         ]
       }
@@ -88,7 +87,7 @@
     "packages/engine-client/src/protocol/entities.ts": [
       "duplicates"
     ],
-    "packages/engine-client/src/protocol/plugins.ts": [
+    "packages/engine-client/src/plugins/{schema,toolchains}.ts": [
       "duplicates"
     ],
     "apps/desktop/src/{handoff/desktop-handoff-core,handoff/desktop-handoff,dev/dev-update-core,dev/dev-update,main/tailscale,main/update-watchdog,store/store-location,store/store-migrate}.js": [
@@ -97,11 +96,7 @@
     "apps/desktop/src/main/{ipc-app,ipc-browser,ipc-prefs,ipc-store,ipc-terminal,ui-server,updates}.js": [
       "exports"
     ],
-    "apps/web/src/lib/remote/**": [
-      "exports",
-      "types"
-    ],
-    "apps/web/src/lib/mobile/**": [
+    "apps/web/src/features/remote/server/**": [
       "exports",
       "types"
     ]

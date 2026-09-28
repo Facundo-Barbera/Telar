@@ -3,7 +3,7 @@ import { createReadStream, promises as fsAsync, readFileSync, renameSync, statSy
 import path from "node:path";
 import type { WorkspaceFile, WorkspaceListing } from "@telar/engine-client";
 import { nulFields } from "../../platform/git/parse";
-import type { AsyncGitRunner } from "../../worktree.js";
+import type { AsyncGitRunner } from "../../platform/git/runner";
 
 export const MAX_WORKSPACE_FILES = 5_000;
 

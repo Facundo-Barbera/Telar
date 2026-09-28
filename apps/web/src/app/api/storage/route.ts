@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * What Telar is keeping on disk, by category — the Storage pane's one read.
@@ -12,13 +12,9 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    // The browser's hang-up travels on to the engine rather than leaving this
-    // hop waiting on an answer nobody will read.
-    return Response.json(await (await engineClient()).storage({ ...(refresh ? { refresh: true } : {}), signal: request.signal }));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const refresh = new URL(request.url).searchParams.get("refresh") === "1";
+  // The browser's hang-up travels on to the engine rather than leaving this
+  // hop waiting on an answer nobody will read.
+  return Response.json(await (await engineClient()).storage({ ...(refresh ? { refresh: true } : {}), signal: request.signal }));
+});

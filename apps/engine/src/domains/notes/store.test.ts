@@ -6,7 +6,7 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../../daemon";
 import { createNote, deleteNote, findNote, notesPath, readNotes, sortNotes, updateNote, ProjectNotesError } from "./store";
-import { statePaths } from "../../state";
+import { statePaths } from "../../platform/fs/state-paths";
 import { stubModels } from "../../../test/stub-models";
 
 const roots: string[] = [];

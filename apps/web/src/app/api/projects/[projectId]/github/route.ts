@@ -1,5 +1,5 @@
 import { parseForgeQuery } from "@telar/engine-client";
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * A project's issues and pull requests.
@@ -21,12 +21,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { projectId } = await context.params;
-    const filters = parseForgeQuery(new URL(request.url).searchParams);
-    return Response.json(await (await engineClient()).projectGitHub(projectId, filters));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { projectId } = await context.params;
+  const filters = parseForgeQuery(new URL(request.url).searchParams);
+  return Response.json(await (await engineClient()).projectGitHub(projectId, filters));
+});

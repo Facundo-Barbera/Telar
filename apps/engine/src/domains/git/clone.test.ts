@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { cloneRepository, githubShorthand, isCloneFailure, repoFolderName, CLONE_TIMEOUT_MS } from "./clone";
-import type { GitRunner } from "../../worktree";
+import type { GitRunner } from "../../platform/git/runner";
 
 const roots: string[] = [];
 function scratch(): string {

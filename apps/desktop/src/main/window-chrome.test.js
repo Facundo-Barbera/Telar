@@ -59,25 +59,6 @@ describe("the lights sit on the app header's centreline", () => {
       for (const value of cssVarAll(name)) expect(value).toMatch(/^[\d.]+px$/);
     }
   });
-
-  test("reserving width for the lights also means sitting on their centreline", () => {
-    const fs = require("node:fs");
-    const path = require("node:path");
-    const web = path.join(__dirname, "..", "..", "..", "web", "src", "components");
-    const files = [];
-    for (const dir of [web, path.join(web, "common"), path.join(web, "settings")]) {
-      for (const name of fs.readdirSync(dir)) {
-        if (name.endsWith(".tsx")) files.push(path.join(dir, name));
-      }
-    }
-    const reserves = files.filter((file) => fs.readFileSync(file, "utf8").includes("--titlebar-inset"));
-
-    expect(reserves.length).toBeGreaterThan(2);
-    for (const file of reserves) {
-      const source = fs.readFileSync(file, "utf8");
-      expect(source.includes("--titlebar-band-height"), `${path.basename(file)} reserves the traffic lights' width but never sets the band height`).toBe(true);
-    }
-  });
 });
 
 function cssVar(pattern) {

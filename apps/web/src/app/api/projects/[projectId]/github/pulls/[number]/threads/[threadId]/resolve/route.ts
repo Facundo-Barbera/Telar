@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Resolve or unresolve one review thread — #842.
@@ -12,12 +12,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string; number: string; threadId: string }> };
 
-export async function POST(request: Request, context: Context) {
-  try {
-    const { projectId, number, threadId } = await context.params;
-    const input = (await request.json()) as { resolved?: unknown };
-    return Response.json(await (await engineClient()).resolveProjectThread(projectId, Number(number), threadId, input.resolved === true));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { projectId, number, threadId } = await context.params;
+  const input = (await request.json()) as { resolved?: unknown };
+  return Response.json(await (await engineClient()).resolveProjectThread(projectId, Number(number), threadId, input.resolved === true));
+});

@@ -1,4 +1,4 @@
-import { SessionCockpit } from "@/components/session-cockpit";
+import { SessionCockpit } from "@/features/sessions/cockpit";
 
 /**
  * ONE CONVERSATION, NO CHROME — the address the Quest cockpit opens (#576).

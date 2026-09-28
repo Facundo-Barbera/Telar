@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Where session checkouts go — the Storage pane's one write.
@@ -12,19 +12,11 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).worktreesRoot());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).worktreesRoot());
+});
 
-export async function PUT(request: Request) {
-  try {
-    const body = (await request.json()) as { root?: string | null };
-    return Response.json(await (await engineClient()).setWorktreesRoot(body.root ?? null));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request) => {
+  const body = (await request.json()) as { root?: string | null };
+  return Response.json(await (await engineClient()).setWorktreesRoot(body.root ?? null));
+});

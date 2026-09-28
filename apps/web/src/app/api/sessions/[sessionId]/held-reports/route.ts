@@ -1,15 +1,11 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(_request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    return Response.json(await (await engineClient()).sessionHeldReports(sessionId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  return Response.json(await (await engineClient()).sessionHeldReports(sessionId));
+});

@@ -1,32 +1,11 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { DeviceIdentity, DevicePlatform, DeviceRole, ExposureMode, PairingRefusal, RemoteDevice } from "@telar/engine-client";
 
 export class RemoteStoreError extends Error {}
 
-export type DeviceRole = "full" | "observer";
-export type DevicePlatform = "ios" | "browser";
-export type ExposureMode = "local-only" | "network-accessible";
-
-export interface DeviceIdentity {
-  kind: string;
-  client?: string;
-  machine?: string;
-  os?: string;
-  address?: string;
-  origin?: string;
-}
-
-export interface PairedDevice {
-  id: string;
-  name: string;
-  tokenHash: string;
-  createdAt: number;
-  lastSeenAt?: number;
-  role: DeviceRole;
-  platform?: DevicePlatform;
-  identity?: DeviceIdentity;
-}
+export type PairedDevice = RemoteDevice & { tokenHash: string };
 
 interface PendingPairing {
   tokenHash: string;
@@ -43,8 +22,6 @@ export interface RemoteFile {
   devices: PairedDevice[];
   pairing?: PendingPairing;
 }
-
-export type PairingRefusal = "none-pending" | "expired" | "mismatch" | "burned";
 
 const PAIRING_TTL_MS = 5 * 60 * 1000;
 export const PAIRING_MAX_ATTEMPTS = 5;
@@ -92,9 +69,8 @@ export function matchDevice(file: RemoteFile, raw: string): PairedDevice | undef
 
 const cleanName = (name: string): string => name.trim().slice(0, NAME_MAX) || "Unnamed device";
 
-export function createRemoteStore(dir: string) {
+function createRemoteStoreContext(dir: string) {
   const file = path.join(dir, "remote.json");
-
   function read(): RemoteFile {
     if (!fs.existsSync(file)) return { ...FRESH, devices: [] };
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as RemoteFile;
@@ -103,28 +79,38 @@ export function createRemoteStore(dir: string) {
     parsed.exposure = parsed.exposure === "network-accessible" ? "network-accessible" : "local-only";
     return parsed;
   }
-
   function write(next: RemoteFile): void {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = `${file}.tmp-${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, file);
   }
-
   function update<T>(change: (current: RemoteFile) => T): T {
     const current = read();
     const result = change(current);
     write(current);
     return result;
   }
-
   const find = (current: RemoteFile, id: string) => current.devices.find((device) => device.id === id);
+  return { dir, file, read, write, update, find };
+}
 
+export function createRemoteStore(dir: string) {
+  const h = createRemoteStoreContext(dir);
+  const { file, read, write } = h;
   return {
     path: file,
     read,
     write,
+    ...deviceMethods(h),
+    ...pairingMethods(h),
+    ...exposureMethods(h),
+  };
+}
 
+function deviceMethods(h: ReturnType<typeof createRemoteStoreContext>) {
+  const { read, write, update, find } = h;
+  return {
     addDevice(name: string, raw: string, options: { platform?: DevicePlatform; role?: DeviceRole; identity?: DeviceIdentity } = {}): PairedDevice {
       const device: PairedDevice = {
         id: "dev_" + crypto.randomBytes(6).toString("hex"),
@@ -138,7 +124,6 @@ export function createRemoteStore(dir: string) {
       update((current) => current.devices.push(device));
       return device;
     },
-
     renameDevice(id: string, name: string): PairedDevice | undefined {
       const current = read();
       const device = find(current, id);
@@ -147,7 +132,6 @@ export function createRemoteStore(dir: string) {
       write(current);
       return device;
     },
-
     setDeviceRole(id: string, role: DeviceRole): PairedDevice | undefined {
       const current = read();
       const device = find(current, id);
@@ -158,7 +142,6 @@ export function createRemoteStore(dir: string) {
       write(current);
       return device;
     },
-
     revokeDevice(id: string): boolean {
       const current = read();
       const before = current.devices.length;
@@ -167,7 +150,6 @@ export function createRemoteStore(dir: string) {
       write(current);
       return true;
     },
-
     revokeOtherDevices(keepId: string): number {
       const current = read();
       const before = current.devices.length;
@@ -176,7 +158,6 @@ export function createRemoteStore(dir: string) {
       if (revoked > 0) write(current);
       return revoked;
     },
-
     touchDevice(id: string, nowMs: number = Date.now(), address?: string): void {
       try {
         const current = read();
@@ -191,22 +172,24 @@ export function createRemoteStore(dir: string) {
         return;
       }
     },
+  };
+}
 
+function pairingMethods(h: ReturnType<typeof createRemoteStoreContext>) {
+  const { read, write, update } = h;
+  return {
     mintPairing(nowMs: number = Date.now(), ttlMs: number = PAIRING_TTL_MS): { code: string; expiresAt: number } {
       const code = mintPairingCode();
       const expiresAt = nowMs + ttlMs;
       update((current) => (current.pairing = { tokenHash: hashToken(code), createdAt: nowMs, expiresAt }));
       return { code, expiresAt };
     },
-
     clearPairing(): void {
       const current = read();
       if (!current.pairing) return;
       delete current.pairing;
       write(current);
     },
-
-    /** Single-use: a match deletes the pending pairing, and the fifth wrong guess burns it. */
     consumePairing(raw: string, nowMs: number = Date.now()): true | PairingRefusal {
       const current = read();
       const pairing = current.pairing;
@@ -224,7 +207,12 @@ export function createRemoteStore(dir: string) {
       write(current);
       return burned ? "burned" : "mismatch";
     },
+  };
+}
 
+function exposureMethods(h: ReturnType<typeof createRemoteStoreContext>) {
+  const { update } = h;
+  return {
     setExposure(exposure: ExposureMode): RemoteFile {
       return update((current) => {
         if (exposure === "network-accessible" && !current.requireAuth) {
@@ -234,7 +222,6 @@ export function createRemoteStore(dir: string) {
         return current;
       });
     },
-
     setTailscaleServe(enabled: boolean): RemoteFile {
       return update((current) => {
         if (enabled && !current.requireAuth) throw new RemoteStoreError("turn on pairing before publishing this cockpit over Tailscale");
@@ -243,7 +230,6 @@ export function createRemoteStore(dir: string) {
         return current;
       });
     },
-
     setRequireAuth(requireAuth: boolean): RemoteFile {
       return update((current) => {
         current.requireAuth = requireAuth;
@@ -253,5 +239,6 @@ export function createRemoteStore(dir: string) {
     },
   };
 }
+
 
 export type RemoteStore = ReturnType<typeof createRemoteStore>;

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse, requestObject, requiredString } from "@/lib/engine/engine-server";
+import { engineClient, requestObject, requiredString, engineRoute } from "@/platform/engine/server";
 
 /**
  * Open a page in the session's browser, as the human. The door a client
@@ -11,12 +11,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function POST(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const body = await requestObject(request);
-    return Response.json(await (await engineClient()).browserOpen(sessionId, requiredString(body.url, "url")));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const body = await requestObject(request);
+  return Response.json(await (await engineClient()).browserOpen(sessionId, requiredString(body.url, "url")));
+});

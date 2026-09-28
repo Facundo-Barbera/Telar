@@ -5,7 +5,7 @@ import path from "node:path";
 import { createOpencodeClient, type QuestionInfo } from "@opencode-ai/sdk/v2";
 import { TurnObservation, type TurnObservation as Observation } from "@telar/engine-client";
 import { createOpenCodeDriver } from "./driver";
-import type { DriverRun } from "../../provider-contract";
+import type { DriverRun } from "../contract";
 
 const BRANCH_OPTIONS = [{ label: "main", description: "Main branch" }, { label: "dev", description: "Development" }];
 const MULTI_QUESTION: QuestionInfo = { question: "Which branches?", header: "Branches", options: BRANCH_OPTIONS, multiple: true };

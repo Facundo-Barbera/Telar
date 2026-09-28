@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "bun:test";
 import { contentHash, listWorkspaceFilesAsync, MAX_WORKSPACE_FILES, mediaTypeFor, readWorkspaceFile, readWorkspaceFileAsync, readWorkspaceFileBytes, walkWorkspaceFilesAsync, writeWorkspaceFile } from "./workspace";
-import type { AsyncGitRunner, GitResult } from "../../worktree";
+import type { AsyncGitRunner, GitResult } from "../../platform/git/runner";
 
 const ok = (stdout: string): GitResult => ({ status: 0, stdout, stderr: "" });
 const fail = (): GitResult => ({ status: 1, stdout: "", stderr: "fatal" });

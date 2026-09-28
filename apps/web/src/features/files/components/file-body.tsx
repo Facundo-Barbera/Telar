@@ -13,15 +13,15 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import type { WorkspaceFile } from "@telar/engine-client";
-import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "@/components/session/overlay-editor";
-import { FileKindIcon } from "@/components/session/file-icon";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { PanelEmpty } from "@/components/ui/panel";
-import type { fileKind } from "@/lib/file-kinds";
-import { MAX_HIGHLIGHT_BYTES } from "@/lib/highlight";
-import type { MarkdownEditAction } from "@/lib/markdown-edit";
-import { cn } from "@/lib/utils";
+import { CODE_FONT_SIZE, CODE_GEOMETRY, CodeLines } from "./overlay-editor";
+import { FileKindIcon } from "./file-icon";
+import { Badge } from "@/ui/badge";
+import { Button } from "@/ui/button";
+import { PanelEmpty } from "@/ui/panel";
+import type { fileKind } from "../file-kinds";
+import { MAX_HIGHLIGHT_BYTES } from "../highlight";
+import type { MarkdownEditAction } from "../markdown-edit";
+import { cn } from "@/ui/utils";
 import type { SaveProblem } from "../hooks/use-file-editor";
 import { formatBytes } from "../model";
 

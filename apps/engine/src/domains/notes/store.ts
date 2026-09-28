@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ProjectNote, PROJECT_NOTE_SCHEMA_VERSION, type ProjectNoteAuthor } from "@telar/engine-client";
 import { atomicWrite } from "../../platform/fs/atomic";
-import type { EngineStatePaths } from "../../state";
+import type { EngineStatePaths } from "../../platform/fs/state-paths";
 
 export class ProjectNotesError extends Error {
   constructor(

@@ -1,7 +1,6 @@
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { buildForgeTimeline, type ForgeEntry } from "@/lib/github-forge";
+import { buildForgeTimeline, type ForgeEntry } from "../github-forge";
 import { EntryCard } from "./entry-card";
 
 const NOW = Date.now();

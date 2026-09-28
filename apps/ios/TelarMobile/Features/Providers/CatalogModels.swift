@@ -73,7 +73,6 @@ struct GitCommitEntry: Decodable, Identifiable, Equatable {
     var shortSha: String
     var subject: String
     var at: Timestamp
-    var author: String
 
     var id: String { sha }
 }
@@ -86,8 +85,6 @@ struct SessionDiff: Decodable {
     var base: String?
 
     var baseUnverified: String?
-    var ahead: Int?
-    var behind: Int?
     var files: [GitFileChange]
 
     var filesIncomplete: String?
@@ -137,7 +134,5 @@ struct DirectoryEntry: Decodable, Identifiable, Equatable, Hashable {
 struct DirectoryListing: Decodable {
     var path: String
     var name: String
-    var parent: String?
-    var home: String
     var dirs: [DirectoryEntry]
 }

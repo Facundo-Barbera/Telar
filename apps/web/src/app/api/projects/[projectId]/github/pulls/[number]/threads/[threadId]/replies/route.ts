@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Reply to one review thread — #842.
@@ -12,12 +12,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ projectId: string; number: string; threadId: string }> };
 
-export async function POST(request: Request, context: Context) {
-  try {
-    const { projectId, number, threadId } = await context.params;
-    const input = (await request.json()) as { body?: unknown };
-    return Response.json(await (await engineClient()).replyToProjectThread(projectId, Number(number), threadId, String(input.body ?? "")));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { projectId, number, threadId } = await context.params;
+  const input = (await request.json()) as { body?: unknown };
+  return Response.json(await (await engineClient()).replyToProjectThread(projectId, Number(number), threadId, String(input.body ?? "")));
+});

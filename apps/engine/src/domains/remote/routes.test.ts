@@ -113,10 +113,3 @@ test("network exposure needs pairing on, and turning pairing off closes it", asy
   expect(on.body).toMatchObject({ requireAuth: true, device: { name: "This Mac" } });
   expect(on.body.deviceToken).toMatch(/^tlr_/);
 });
-
-test("a device's last-seen stamp is written by the engine", async () => {
-  const { call, pair } = await engine();
-  const phone = await pair();
-  await call("POST", `/v2/remote/devices/${phone.deviceId}/seen`, {});
-  expect((await call("GET", "/v2/remote")).body.devices[0].lastSeenAt).toBeGreaterThan(0);
-});

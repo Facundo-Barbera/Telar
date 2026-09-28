@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Update the CLI behind one login.
@@ -25,11 +25,7 @@ export const maxDuration = 300;
 
 type Context = { params: Promise<{ instanceId: string }> };
 
-export async function POST(_request: Request, context: Context) {
-  try {
-    const { instanceId } = await context.params;
-    return Response.json(await (await engineClient()).updateProviderCli(instanceId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (_request: Request, context: Context) => {
+  const { instanceId } = await context.params;
+  return Response.json(await (await engineClient()).updateProviderCli(instanceId));
+});

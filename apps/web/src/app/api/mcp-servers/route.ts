@@ -1,4 +1,4 @@
-import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, requiredString, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * The user's own MCP servers.
@@ -15,25 +15,17 @@ import { requestObject, requiredString, engineClient, engineErrorResponse } from
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).listMcpServers());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).listMcpServers());
+});
 
-export async function PUT(request: Request) {
-  try {
-    const body = await requestObject(request);
-    const result = await (await engineClient()).saveMcpServer({
-      id: requiredString(body.id, "Server id"),
-      ...(body.label === undefined ? {} : { label: requiredString(body.label, "Server label") }),
-      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
-      spec: body.spec as never,
-    });
-    return Response.json(result);
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  const result = await (await engineClient()).saveMcpServer({
+    id: requiredString(body.id, "Server id"),
+    ...(body.label === undefined ? {} : { label: requiredString(body.label, "Server label") }),
+    ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+    spec: body.spec as never,
+  });
+  return Response.json(result);
+});

@@ -20,7 +20,6 @@
  * redirect: the guard is a line that runs between `go()` and a `setInterval`, and
  * a static render would exercise neither.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
@@ -45,7 +44,7 @@ mock.module("next/navigation", () => ({
 }));
 
 const { FrontDoor } = await import("./front-door");
-const { canvasHrefFor } = await import("@/lib/composer-project");
+const { canvasHrefFor } = await import("@/features/composer");
 
 const NOTE_KEY = "telar.front-door.v1";
 const STAMP = 1_700_000_000_000;

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 import type { GitHubLineCommentInput } from "@telar/engine-client";
 
 /**
@@ -13,12 +13,8 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function POST(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const input = (await request.json()) as GitHubLineCommentInput;
-    return Response.json(await (await engineClient()).commentOnSessionPullLine(sessionId, input));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const input = (await request.json()) as GitHubLineCommentInput;
+  return Response.json(await (await engineClient()).commentOnSessionPullLine(sessionId, input));
+});

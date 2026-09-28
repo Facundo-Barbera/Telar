@@ -1,6 +1,4 @@
 const { describe, expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
 
 const { browserContextMenuTemplate, SPELLING_SUGGESTION_LIMIT } = require("./browser-context-menu");
 
@@ -191,14 +189,37 @@ describe("an editable field", () => {
 });
 
 describe("the template is data the manager can actually run", () => {
-  test("every id the fold can emit is handled in browser-manager's one switch", () => {
-    const source = fs.readFileSync(path.join(__dirname, "browser-context-menu.js"), "utf8");
-    const emitted = new Set([...source.matchAll(/\brow\("([a-z-]+)"/g)].map((match) => match[1]));
-    expect(emitted.size).toBeGreaterThan(10);
-    const manager = ["browser-manager.js", "geometry.js", "interaction.js", "page-input.js", "profiles.js", "render.js", "shared.js", "tab-wiring.js", "tabs.js", "tools.js", "urls.js", "viewport.js"].map((f) => fs.readFileSync(path.join(__dirname, f), "utf8")).join("\n");
-    const handled = new Set([...manager.matchAll(/case "([a-z-]+)":/g)].map((match) => match[1]));
+  test("every row the fold can emit does something when chosen", async () => {
+    const tabWiring = require("./tab-wiring");
+    const states = [
+      [{ ...BARE, linkURL: "https://example.com/other", srcURL: "https://example.com/a.png", hasImageContents: true }, { canGoBack: true, canGoForward: true }],
+      [{ ...BARE, isEditable: true, misspelledWord: "recieve", dictionarySuggestions: ["receive"], editFlags: { canCut: true, canCopy: true, canPaste: true, canSelectAll: true } }, {}],
+      [{ ...BARE, selectionText: "a phrase" }, {}],
+    ];
+    const rows = states.flatMap(([params, context]) => browserContextMenuTemplate(params, context)).filter((entry) => entry.type !== "separator" && entry.enabled !== false);
+    expect(new Set(rows.map((entry) => entry.id)).size).toBeGreaterThan(10);
 
-    expect([...emitted].filter((id) => id !== "no-spelling-suggestions" && !handled.has(id))).toEqual([]);
+    for (const entry of rows) {
+      const effects = [];
+      const record = (name) => () => effects.push(name);
+      const wc = {
+        copyImageAt: record("copyImageAt"), downloadURL: record("downloadURL"), replaceMisspelling: record("replaceMisspelling"),
+        cut: record("cut"), copy: record("copy"), paste: record("paste"), selectAll: record("selectAll"), reload: record("reload"),
+        navigationHistory: { canGoForward: () => true, goForward: record("goForward") },
+      };
+      const manager = {
+        askedDownloads: new Set(),
+        contentsOf: () => wc,
+        electron: () => ({ clipboard: { writeText: record("writeText") } }),
+        openMenuTab: record("openMenuTab"),
+        goBack: record("goBack"),
+        beforeNavigation: async () => {},
+        openDevTools: record("openDevTools"),
+        emitState: () => {},
+      };
+      await tabWiring.runContextMenuCommand.call(manager, { scopeKey: "s1" }, entry, { x: 1, y: 2 });
+      expect({ id: entry.id, effects: effects.length > 0 }).toEqual({ id: entry.id, effects: true });
+    }
   });
 
   test("every row is either a separator or a complete, labelled item", () => {

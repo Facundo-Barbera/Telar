@@ -2,19 +2,9 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
-/// The camera path for pairing: scan the QR off the Mac's Remote access
-/// panel. AVFoundation's metadata output, NOT VisionKit's DataScanner — the
-/// scanner ran a per-frame ML pipeline for a job the capture hardware does
-/// natively, and the preview stuttered for it (worst in Debug builds, which
-/// is what the dev flavor always is). The preview layer here is fed straight
-/// by the capture session; no frame ever crosses into Swift.
 struct QRScannerView: UIViewRepresentable {
-    /// Return true to ACCEPT (scanning stops); false keeps the camera live
-    /// so a wrong code — someone's wifi QR — doesn't freeze the preview.
     let onScan: (String) -> Bool
 
-    /// False on the simulator (no camera), which is why the paste field
-    /// exists and is the automation path.
     static var isUsable: Bool {
         AVCaptureDevice.default(for: .video) != nil
     }
@@ -39,8 +29,6 @@ struct QRScannerView: UIViewRepresentable {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
 
-        /// The Camera app's metering ring: a brief ring where you tapped, so
-        /// the tap visibly did something.
         func flashMeterRing(at point: CGPoint) {
             let ring = CALayer()
             ring.frame = CGRect(x: point.x - 36, y: point.y - 36, width: 72, height: 72)
@@ -63,10 +51,8 @@ struct QRScannerView: UIViewRepresentable {
     final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
         private let onScan: (String) -> Bool
         private let session = AVCaptureSession()
-        /// Session start/stop block; never on the main thread.
         private let sessionQueue = DispatchQueue(label: "telar.qr.session")
         private var accepted = false
-        /// Rejected payloads, so one bad code doesn't re-fire per frame.
         private var refused: Set<String> = []
         private var camera: AVCaptureDevice?
         private var pinchStartZoom: CGFloat = 1
@@ -75,9 +61,6 @@ struct QRScannerView: UIViewRepresentable {
             self.onScan = onScan
         }
 
-        /// Tap-to-meter, like the Camera app: focus AND exposure move to the
-        /// tapped point. In a dark room the QR glows on the Mac's screen —
-        /// tapping it exposes for the screen instead of the darkness.
         @objc func tapped(_ gesture: UITapGestureRecognizer) {
             guard let camera, let view = gesture.view as? ScannerPreviewView else { return }
             let point = view.previewLayer.captureDevicePointConverted(
@@ -96,8 +79,6 @@ struct QRScannerView: UIViewRepresentable {
             view.flashMeterRing(at: gesture.location(in: view))
         }
 
-        /// Pinch-to-zoom, straight on the capture device — scanning a code
-        /// across the room beats walking to the Mac.
         @objc func pinched(_ gesture: UIPinchGestureRecognizer) {
             guard let camera else { return }
             if gesture.state == .began { pinchStartZoom = camera.videoZoomFactor }
@@ -115,8 +96,6 @@ struct QRScannerView: UIViewRepresentable {
             view.previewLayer.videoGravity = .resizeAspectFill
             view.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(pinched)))
             view.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(tapped)))
-            // First use prompts (NSCameraUsageDescription); a denial leaves a
-            // black preview and the paste path still works.
             AVCaptureDevice.requestAccess(for: .video) { granted in
                 guard granted else { return }
                 self.configureAndRun()
@@ -130,8 +109,6 @@ struct QRScannerView: UIViewRepresentable {
                 else { return }
                 self.camera = camera
                 session.beginConfiguration()
-                // 720p is plenty for a QR filling half the frame, and keeps
-                // the pipeline light; the default preset is much larger.
                 if session.canSetSessionPreset(.hd1280x720) {
                     session.sessionPreset = .hd1280x720
                 }
@@ -139,7 +116,6 @@ struct QRScannerView: UIViewRepresentable {
                 let output = AVCaptureMetadataOutput()
                 if session.canAddOutput(output) {
                     session.addOutput(output)
-                    // Type must be set AFTER the output joins the session.
                     output.setMetadataObjectsDelegate(self, queue: .main)
                     output.metadataObjectTypes = [.qr]
                 }
@@ -176,9 +152,6 @@ struct QRScannerView: UIViewRepresentable {
     }
 }
 
-/// Sheet wrapper: scanner on top, a cancel bar below, and the parse feedback
-/// inline — a scanned code that is not a Telar pairing link says so instead
-/// of silently staying open.
 struct QRScannerSheet: View {
     let onPaired: (String) -> Void
     @Environment(\.dismiss) private var dismiss

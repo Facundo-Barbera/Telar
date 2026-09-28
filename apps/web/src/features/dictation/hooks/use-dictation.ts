@@ -8,10 +8,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { createEngineApi } from "@/lib/engine/client";
+import { createEngineApi } from "@/platform/engine";
 import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "../deepgram";
 import { audioConstraints, readMicrophone } from "../devices";
-import { createDictationWriter, type DictationBox } from "../interim";
+import { createDictationWriter, type DictationBox, type DictationWriter } from "../interim";
 import { microphoneRefusal, microphoneUnavailable } from "../refusal";
 import { parseFrame, readFrame } from "../transcript";
 
@@ -56,16 +56,15 @@ export function useMicrophoneUnavailable(): string | undefined {
   );
 }
 
-export function useDictation(input: {
-  /** The box to write into, resolved at the press; `undefined` is a refusal. */
-  box?: () => DictationBox | undefined;
-  /**
-   * Called with the live stream when open and `undefined` on every path out, so
-   * the settings meter reads the same audio. The callee must not stop the tracks.
-   */
-  onStream?: (stream: MediaStream | undefined) => void;
-}): DictationState {
-  const [phase, setPhase] = useState<DictationPhase>("idle");
+function useLatest<T>(value: T) {
+  const latest = useRef(value);
+  useEffect(() => {
+    latest.current = value;
+  }, [value]);
+  return latest;
+}
+
+function useRefusals() {
   const [error, setError] = useState<{ text: string; seq: number }>();
   const refusals = useRef(0);
   const refuse = useCallback((text: string) => {
@@ -89,6 +88,75 @@ export function useDictation(input: {
     },
     [refuse],
   );
+  return { error, setError, refusals, refuse, diagnose };
+}
+
+type ListenWiring = {
+  microphone: MediaStream;
+  speaking: DictationBox;
+  language: string;
+  writer: () => DictationWriter | null;
+  isCurrent: () => boolean;
+  onCaret: (caret: { rect: DOMRect; language: string } | undefined) => void;
+  onOpen: (tape: MediaRecorder) => void;
+  /** `diagnose` asks the engine why, since browsers withhold a WebSocket error's reason. */
+  onFail: (text: string, diagnose: boolean) => void;
+};
+
+function wireListenSocket(live: WebSocket, { microphone, speaking, language, writer, isCurrent, onCaret, onOpen, onFail }: ListenWiring): void {
+  const redraw = (): void => {
+    const span = writer()?.span();
+    speaking.dictating?.({ listening: true, ...(span ? { interim: span } : {}) });
+    const rect = speaking.caretRect?.();
+    onCaret(rect ? { rect, language } : undefined);
+  };
+
+  live.onopen = () => {
+    // Start recording only once open: the first chunk carries the container header.
+    const type = recordingType();
+    const tape = new MediaRecorder(microphone, type ? { mimeType: type } : {});
+    tape.ondataavailable = (event) => {
+      if (event.data.size > 0 && live.readyState === WebSocket.OPEN) live.send(event.data);
+    };
+    onOpen(tape);
+    tape.start(CHUNK_MS);
+    redraw();
+  };
+
+  live.onmessage = (event: MessageEvent) => {
+    const frame = parseFrame(event.data);
+    if (!frame) return;
+    const words = readFrame(frame);
+    if (!words) return;
+    const refusal = writer()?.write(words);
+    // The composer refused the write (unmounted or not ready): end the dictation.
+    if (refusal && !refusal.ok) {
+      onFail(refusal.reason, false);
+      return;
+    }
+    redraw();
+  };
+
+  live.onerror = () => onFail("The connection to the transcription service failed. Press the button to try again.", true);
+
+  // Only a close nobody asked for is a failure; teardown closes on purpose.
+  live.onclose = () => {
+    if (!isCurrent()) return;
+    onFail("The transcription service closed the connection. Press the button to try again.", true);
+  };
+}
+
+export function useDictation(input: {
+  /** The box to write into, resolved at the press; `undefined` is a refusal. */
+  box?: () => DictationBox | undefined;
+  /**
+   * Called with the live stream when open and `undefined` on every path out, so
+   * the settings meter reads the same audio. The callee must not stop the tracks.
+   */
+  onStream?: (stream: MediaStream | undefined) => void;
+}): DictationState {
+  const [phase, setPhase] = useState<DictationPhase>("idle");
+  const { error, setError, refusals, refuse, diagnose } = useRefusals();
   const [caret, setCaret] = useState<{ rect: DOMRect; language: string }>();
   // `getServerSnapshot` avoids a hydration mismatch; a browser never grows a `MediaRecorder` mid-session.
   const supported = useSyncExternalStore(neverChanges, canRecord, () => false);
@@ -97,14 +165,8 @@ export function useDictation(input: {
   const recorder = useRef<MediaRecorder>(null);
   const stream = useRef<MediaStream>(null);
   /** A ref so `toggle` stays stable while the caller passes fresh closures. */
-  const box = useRef(input.box);
-  useEffect(() => {
-    box.current = input.box;
-  }, [input.box]);
-  const onStream = useRef(input.onStream);
-  useEffect(() => {
-    onStream.current = input.onStream;
-  }, [input.onStream]);
+  const box = useLatest(input.box);
+  const onStream = useLatest(input.onStream);
   /** Per dictation: a writer kept between presses would hold stale offsets into the draft. */
   const writer = useRef<ReturnType<typeof createDictationWriter>>(null);
   /** Fences an async `start` that returns after a teardown so it drops what it built. */
@@ -144,7 +206,7 @@ export function useDictation(input: {
     writer.current?.forget();
     writer.current = null;
     setPhase("idle");
-  }, []);
+  }, [onStream]);
 
   useEffect(() => teardown, [teardown]);
 
@@ -186,63 +248,32 @@ export function useDictation(input: {
       const live = new WebSocket(listenUrl(minted.language, minted.keyterms ?? []), listenProtocols(minted.token));
       socket.current = live;
 
-      const redraw = (): void => {
-        speaking.dictating?.({ listening: true, ...(writer.current?.span() ? { interim: writer.current.span() } : {}) });
-        const rect = speaking.caretRect?.();
-        setCaret(rect ? { rect, language: minted.language } : undefined);
-      };
-
-      live.onopen = () => {
-        // Start recording only once open: the first chunk carries the container header.
-        const type = recordingType();
-        const tape = new MediaRecorder(microphone, type ? { mimeType: type } : {});
-        recorder.current = tape;
-        tape.ondataavailable = (event) => {
-          if (event.data.size > 0 && live.readyState === WebSocket.OPEN) live.send(event.data);
-        };
-        tape.start(CHUNK_MS);
-        setPhase("listening");
-        // Mark the box only once the mic is actually open.
-        marked.current = speaking;
-        redraw();
-      };
-
-      live.onmessage = (event: MessageEvent) => {
-        const frame = parseFrame(event.data);
-        if (!frame) return;
-        const words = readFrame(frame);
-        if (!words) return;
-        const refusal = writer.current?.write(words);
-        // The composer refused the write (unmounted or not ready): end the dictation.
-        if (refusal && !refusal.ok) {
-          refuse(refusal.reason);
+      wireListenSocket(live, {
+        microphone,
+        speaking,
+        language: minted.language,
+        writer: () => writer.current,
+        isCurrent: () => socket.current === live,
+        onCaret: setCaret,
+        onOpen: (tape) => {
+          recorder.current = tape;
+          setPhase("listening");
+          // Mark the box only once the mic is actually open.
+          marked.current = speaking;
+        },
+        onFail: (text, ask) => {
+          refuse(text);
+          if (ask) void diagnose(refusals.current);
           teardown();
-          return;
-        }
-        redraw();
-      };
-
-      live.onerror = () => {
-        // Browsers withhold the reason for a WebSocket error; `diagnose` asks the engine.
-        refuse("The connection to the transcription service failed. Press the button to try again.");
-        void diagnose(refusals.current);
-        teardown();
-      };
-
-      // Only a close nobody asked for is a failure; teardown closes on purpose.
-      live.onclose = () => {
-        if (socket.current !== live) return;
-        refuse("The transcription service closed the connection. Press the button to try again.");
-        void diagnose(refusals.current);
-        teardown();
-      };
+        },
+      });
     } catch (cause) {
       // The person already pressed stop.
       if (abandoned()) return;
       refuse(microphoneRefusal(cause));
       teardown();
     }
-  }, [teardown, refuse, diagnose]);
+  }, [teardown, refuse, diagnose, box, onStream, refusals, setError]);
 
   const toggle = useCallback(() => {
     // Stopping is synchronous, so a press during `starting` still stops.

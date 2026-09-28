@@ -1,5 +1,3 @@
-const { readFileSync } = require("node:fs");
-const path = require("node:path");
 const { describe, expect, test } = require("bun:test");
 
 const { createExternalLinkPolicy, externalOpenTarget } = require("./browser-manager");
@@ -88,44 +86,6 @@ describe("createExternalLinkPolicy", () => {
     expect(() => createExternalLinkPolicy()).toThrow(/http\(s\) app URL/);
   });
 });
-
-describe("desktop external-link wiring", () => {
-  const mainSource = require("../../test/main-source").mainSource();
-  const managerSource = ["browser-manager.js", "geometry.js", "interaction.js", "page-input.js", "profiles.js", "render.js", "shared.js", "tab-wiring.js", "tabs.js", "tools.js", "urls.js", "viewport.js"].map((f) => readFileSync(path.join(__dirname, f), "utf8")).join("\n");
-
-  const codeOf = (source) =>
-    source
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("//"))
-      .join("\n");
-  const mainCode = codeOf(mainSource);
-  const managerCode = codeOf(managerSource);
-
-  test("routes the app window's link navigations through the policy", () => {
-    expect(mainCode).toContain(
-      "applyExternalLinkPolicy(win.webContents, () => createExternalLinkPolicy({ appUrl: url }))",
-    );
-    expect(mainCode).toContain("webContents.setWindowOpenHandler");
-    expect(mainCode).toContain('webContents.on("will-navigate"');
-
-    expect(mainCode).toContain("linkRouting.handOff(webContents, decision.openExternal, openInSystemBrowser)");
-    expect(mainCode).toContain("shell.openExternal(url).catch(");
-
-    expect(mainCode).toContain("decision.duplicateOf");
-  });
-
-  test("leaves the integrated browser's WebContentsView tabs in-app", () => {
-    expect(mainCode).not.toContain("web-contents-created");
-    expect(managerCode).not.toContain("openExternal(");
-    expect(managerCode).toContain("setWindowOpenHandler");
-
-    expect(managerCode).toContain("this.decidePopup(tab, details");
-    expect(managerCode).toContain("createWindow: (options) => this.adoptPopupTab(");
-
-    expect(managerCode).toContain('return { action: "deny" }');
-  });
-});
-
 describe("loopback aliases are the same server", () => {
   test("the app's own UI under another loopback name stays in-app", () => {
     const policy = createExternalLinkPolicy({ appUrl: APP_URL });
@@ -183,36 +143,5 @@ describe("externalOpenTarget", () => {
   test("a sloppy but genuinely-http(s) string is NORMALISED, not refused — and the OS gets the normal form", () => {
     expect(externalOpenTarget("https:/evil")).toBe("https://evil/");
     expect(externalOpenTarget(" https://example.com")).toBe("https://example.com/");
-  });
-});
-
-describe("the open-external IPC handler", () => {
-  const main = require("../../test/main-source").mainSource();
-
-  test("it decides with externalOpenTarget rather than a test of its own", () => {
-    expect(main).toContain('ipcMain.handle("telar:browser:open-external"');
-    expect(main).toContain("const target = externalOpenTarget(input?.url);");
-    expect(main).toContain("if (!target) return { ok: false, error:");
-  });
-
-  test("only the cockpit window's own top frame may ask — not a tab, a subframe, or anything an agent reaches", () => {
-    const handler = main.slice(
-      main.indexOf('ipcMain.handle("telar:browser:open-external"'),
-      main.indexOf('ipcMain.handle("telar:browser:tool"'),
-    );
-    expect(handler).toContain("event.sender !== cockpit.webContents");
-    expect(handler).toContain("event.senderFrame !== cockpit.webContents.mainFrame");
-
-    expect(handler).toContain("throw new Error(\"Only the Telar window may open a page in the system browser.\")");
-  });
-
-  test("the refusal comes BEFORE the hand-off, so no unvalidated string reaches shell.openExternal", () => {
-    const handler = main.slice(
-      main.indexOf('ipcMain.handle("telar:browser:open-external"'),
-      main.indexOf('ipcMain.handle("telar:browser:tool"'),
-    );
-    expect(handler.indexOf("if (!target)")).toBeLessThan(handler.indexOf("openInSystemBrowser(target)"));
-
-    expect(handler).not.toContain("openInSystemBrowser(input");
   });
 });

@@ -3,11 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RotateCwIcon } from "lucide-react";
 import type { UsageReport } from "@telar/engine-client";
-import { createEngineApi } from "@/lib/engine/client";
-import { PageHeader } from "@/components/common/page-header";
-import { Button } from "@/components/ui/button";
-import { Spinner } from "@/components/ui/spinner";
-import { Segmented } from "@/components/settings/settings-shell";
+import { createEngineApi } from "@/platform/engine";
+import { PageHeader } from "@/ui/page-header";
+import { Button } from "@/ui/button";
+import { Spinner } from "@/ui/spinner";
+import { Segmented } from "@/features/settings";
 import { UsageChart, type ChartSeries } from "./usage-chart";
 import { UsageLimitsSection } from "./usage-limits";
 import {
@@ -19,7 +19,7 @@ import {
   formatUsd,
   type UsageFold,
 } from "../model";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const api = createEngineApi();
 
@@ -94,24 +94,6 @@ export function UsagePage() {
   const fold: UsageFold | undefined = useMemo(() => (report ? foldUsage(report) : undefined), [report]);
   const resolution = report?.resolution ?? "day";
 
-  // A flat zero cost line would read as "ran and cost nothing", so unpriced providers are left out.
-  const chartSeries: ChartSeries[] = useMemo(() => {
-    if (!fold) return [];
-    return fold.providers
-      .filter((provider) => metric === "tokens" || provider.costUsd > 0)
-      .map((provider) => ({
-        key: provider.driver,
-        label: DRIVER_LABEL[provider.driver],
-        color: SERIES_COLOR[provider.driver]!,
-        values: fold.periods.map((period) => {
-          const slice = period.byDriver[provider.driver];
-          return slice ? (metric === "cost" ? slice.costUsd : slice.processed) : 0;
-        }),
-      }));
-  }, [fold, metric]);
-
-  const periodLabels = useMemo(() => (fold ? fold.periods.map((period) => formatPeriodShort(period.period, resolution)) : []), [fold, resolution]);
-  const format = metric === "cost" ? formatUsd : formatTokens;
   const unpricedProvider = fold?.providers.find((provider) => !provider.priced);
   const empty = fold !== undefined && fold.total.turns === 0;
 
@@ -160,48 +142,8 @@ export function UsagePage() {
 
           {fold && !empty && (
             <>
-              <section className="grid gap-6 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
-                <div className="flex flex-col gap-3">
-                  <div>
-                    <p className="text-4xl font-semibold tabular-nums">
-                      {metric === "cost" ? formatUsd(fold.total.costUsd) : formatTokens(fold.total.processed)}
-                    </p>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {fold.sessions} session{fold.sessions === 1 ? "" : "s"}
-                      {metric === "cost" ? " · API estimate" : ""}
-                    </p>
-                  </div>
-                  <div className="flex flex-col gap-2">
-                    {fold.providers.map((provider) => (
-                      <div key={provider.driver} className="flex items-center gap-2 text-sm">
-                        <Dot driver={provider.driver} />
-                        <span className="min-w-0 flex-1 truncate">{DRIVER_LABEL[provider.driver]}</span>
-                        <span className="tabular-nums text-muted-foreground">{formatShare(provider.share)}</span>
-                        <span className="w-20 text-right tabular-nums">
-                          {metric === "cost" ? (provider.costUsd > 0 ? formatUsd(provider.costUsd) : "—") : formatTokens(provider.processed)}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div className="min-w-0">
-                  <p className="mb-2 text-xs font-medium text-muted-foreground">
-                    {resolution === "hour" ? "Hourly" : "Daily"} {metric === "cost" ? "cost" : "processed tokens"}
-                  </p>
-                  <UsageChart series={chartSeries} labels={periodLabels} format={format} />
-                </div>
-              </section>
-
-              <section>
-                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Totals</p>
-                <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-                  <Tile label="Processed tokens" value={formatTokens(fold.total.processed)} />
-                  <Tile label="Uncached input" value={formatTokens(fold.total.tokens.input)} />
-                  <Tile label="Cached input" value={formatTokens(fold.total.tokens.cacheRead)} />
-                  <Tile label="Output" value={formatTokens(fold.total.tokens.output)} />
-                  <Tile label="Requests" value={formatTokens(fold.total.turns)} />
-                </div>
-              </section>
+              <UsageSummary fold={fold} metric={metric} resolution={resolution} />
+              <UsageTotals fold={fold} />
 
               <Breakdown fold={fold} metric={metric} resolution={resolution} />
 
@@ -222,6 +164,76 @@ export function UsagePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+function UsageSummary({ fold, metric, resolution }: { fold: UsageFold; metric: Metric; resolution: "day" | "hour" }) {
+  // A flat zero cost line would read as "ran and cost nothing", so unpriced providers are left out.
+  const chartSeries: ChartSeries[] = useMemo(
+    () =>
+      fold.providers
+        .filter((provider) => metric === "tokens" || provider.costUsd > 0)
+        .map((provider) => ({
+          key: provider.driver,
+          label: DRIVER_LABEL[provider.driver],
+          color: SERIES_COLOR[provider.driver]!,
+          values: fold.periods.map((period) => {
+            const slice = period.byDriver[provider.driver];
+            return slice ? (metric === "cost" ? slice.costUsd : slice.processed) : 0;
+          }),
+        })),
+    [fold, metric],
+  );
+
+  const periodLabels = useMemo(() => fold.periods.map((period) => formatPeriodShort(period.period, resolution)), [fold, resolution]);
+  const format = metric === "cost" ? formatUsd : formatTokens;
+  return (
+    <section className="grid gap-6 lg:grid-cols-[minmax(0,16rem)_minmax(0,1fr)]">
+      <div className="flex flex-col gap-3">
+        <div>
+          <p className="text-4xl font-semibold tabular-nums">
+            {metric === "cost" ? formatUsd(fold.total.costUsd) : formatTokens(fold.total.processed)}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {fold.sessions} session{fold.sessions === 1 ? "" : "s"}
+            {metric === "cost" ? " · API estimate" : ""}
+          </p>
+        </div>
+        <div className="flex flex-col gap-2">
+          {fold.providers.map((provider) => (
+            <div key={provider.driver} className="flex items-center gap-2 text-sm">
+              <Dot driver={provider.driver} />
+              <span className="min-w-0 flex-1 truncate">{DRIVER_LABEL[provider.driver]}</span>
+              <span className="tabular-nums text-muted-foreground">{formatShare(provider.share)}</span>
+              <span className="w-20 text-right tabular-nums">
+                {metric === "cost" ? (provider.costUsd > 0 ? formatUsd(provider.costUsd) : "—") : formatTokens(provider.processed)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="min-w-0">
+        <p className="mb-2 text-xs font-medium text-muted-foreground">
+          {resolution === "hour" ? "Hourly" : "Daily"} {metric === "cost" ? "cost" : "processed tokens"}
+        </p>
+        <UsageChart series={chartSeries} labels={periodLabels} format={format} />
+      </div>
+    </section>
+  );
+}
+
+function UsageTotals({ fold }: { fold: UsageFold }) {
+  return (
+    <section>
+      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Totals</p>
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+        <Tile label="Processed tokens" value={formatTokens(fold.total.processed)} />
+        <Tile label="Uncached input" value={formatTokens(fold.total.tokens.input)} />
+        <Tile label="Cached input" value={formatTokens(fold.total.tokens.cacheRead)} />
+        <Tile label="Output" value={formatTokens(fold.total.tokens.output)} />
+        <Tile label="Requests" value={formatTokens(fold.total.turns)} />
+      </div>
+    </section>
   );
 }
 

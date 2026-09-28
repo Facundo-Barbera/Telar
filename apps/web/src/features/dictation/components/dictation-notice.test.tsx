@@ -13,7 +13,6 @@
  *     commonest case there is;
  *   - and it must not eat a click on the toolbar it floats over.
  */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";

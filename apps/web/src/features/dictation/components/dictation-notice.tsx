@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { cn } from "@/lib/utils";
+import { cn } from "@/ui/utils";
 
 const DICTATION_NOTICE_MS = 6_000;
 

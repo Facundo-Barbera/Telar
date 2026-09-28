@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
+import type http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { matchRoute, type Route } from "../../platform/http/route";
+import type { Route } from "../../platform/http/route";
+import { matchRoute } from "../../platform/http/router";
 import { startEngine, type EngineDaemon } from "../../daemon";
 import { stubModels } from "../../../test/stub-models";
 import { hostsRoutes } from "./routes";
@@ -40,7 +42,7 @@ function routes(fetcher: typeof fetch) {
   const table = hostsRoutes(store, fetcher);
   const call = async (method: Route["method"], pathname: string, body: Record<string, unknown> = {}) => {
     const { route, params } = matchRoute(table, method, pathname)!;
-    return route.handle({ body, params, query: new URLSearchParams() });
+    return (await route.handle({ body, params, query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }))!;
   };
   return { call, store };
 }
@@ -92,4 +94,42 @@ test("the engine serves the hosts book behind its token", async () => {
   const get = (token: string) => fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/hosts`, { headers: { authorization: `Bearer ${token}` } });
   expect(await (await get(daemon.discovery.token)).json()).toEqual({ hosts: [] });
   expect((await get("wrong")).status).toBe(401);
+});
+
+test("the engine forwards a host's /api to that Mac with its device token, streaming the answer", async () => {
+  const seen: { url: string; authorization: string | null; hostSecret: string | null; body: string }[] = [];
+  const mac = Bun.serve({
+    port: 0,
+    async fetch(request: Request) {
+      seen.push({ url: request.url, authorization: request.headers.get("authorization"), hostSecret: request.headers.get("x-telar-host"), body: await request.text() });
+      const url = new URL(request.url);
+      if (url.pathname === "/api/sessions/s1/run/stream") {
+        return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode("data: 1\n\n")); c.close(); } }), { headers: { "content-type": "text/event-stream" } });
+      }
+      return Response.json({ echoed: url.pathname + url.search }, { headers: { "set-cookie": "telar_device=leak" } });
+    },
+  });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-hosts-forward-"));
+  roots.push(home);
+  const remoteDir = path.join(home, "remote");
+  const host = createHostsStore(remoteDir).add({ baseUrl: `http://127.0.0.1:${mac.port}`, deviceToken: "tlr_remote", name: "mini" });
+  const daemon = await startEngine({ models: stubModels, engineRoot: path.join(home, "engine"), remoteDir });
+  daemons.push(daemon);
+  const call = (tail: string, init: RequestInit = {}, token = daemon.discovery.token) =>
+    fetch(`http://127.0.0.1:${daemon.discovery.port}/v2/hosts/${tail}`, { ...init, headers: { authorization: `Bearer ${token}`, "x-telar-host": "tlr_local", ...init.headers } });
+  try {
+    const read = await call(`${host.id}/api/projects/a%20b?x=1`);
+    expect(await read.json()).toEqual({ echoed: "/api/projects/a%20b?x=1" });
+    expect(read.headers.get("set-cookie")).toBeNull();
+    expect(read.headers.get("telar-host")).toBe("mini");
+    const write = await call(`${host.id}/api/sessions/s1/turns`, { method: "POST", body: JSON.stringify({ input: "hi" }), headers: { "content-type": "application/json" } });
+    expect(write.status).toBe(200);
+    expect(seen.at(-1)!.body).toBe(JSON.stringify({ input: "hi" }));
+    expect(seen.every((s) => s.authorization === "Bearer tlr_remote" && s.hostSecret === null)).toBe(true);
+    expect(await (await call(`${host.id}/api/sessions/s1/run/stream`)).text()).toBe("data: 1\n\n");
+    expect((await call("host_nope/api/projects")).status).toBe(404);
+    expect((await call(`${host.id}/api/projects`, {}, "wrong")).status).toBe(401);
+  } finally {
+    mac.stop(true);
+  }
 });

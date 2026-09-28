@@ -3,10 +3,12 @@ const { openersWithIcons, bundleIcon, discoverOpeners, openWith } = require("./w
 const path = require("node:path");
 const fs = require("node:fs");
 const { readMarker, setPending, clearPending, adoptStore, clearRetired } = require("../store/store-location");
+const { DEV_BUILD } = require("./flags");
+const { volumeIdentityFor } = require("./volumes");
 const { retiredSubtrees, preflight: preflightMove, migrateStore, deleteRetiredSubtrees } = require("../store/store-migrate");
 
 function registerWorkspaceAndStoreIpc(main) {
-  const { DEV_BUILD, telarHome, volumeIdentityFor } = main;
+  const { telarHome } = main;
   ipcMain.handle("telar:workspace:openers", () => openersWithIcons({ getFileIcon: (target) => bundleIcon(target) }));
 
   ipcMain.handle("telar:workspace:open", async (_event, input) => {

@@ -56,7 +56,7 @@ await import("@base-ui/react/menu");
  * machine also running the cockpit. Nothing in the run tells you which file is
  * doing it, because the file never gets far enough to print its name.
  *
- * `lib/testing/type-into.test.tsx` fails CLEANLY and in well under a second in
+ * `test/type-into.test.tsx` fails CLEANLY and in well under a second in
  * the same condition, six of its eight cases at once, and it names this import
  * in its own header. That is the file to read if you want to know what this
  * line is for — it is the regression for #732 and it is designed to answer

@@ -3,9 +3,9 @@
 import { useState } from "react";
 import { SmilePlusIcon } from "lucide-react";
 import type { GitHubReaction, GitHubReactionContent, GitHubReactionResult } from "@telar/engine-client";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { applyReaction, reactionPills, REACTIONS } from "@/lib/github-forge";
-import { cn } from "@/lib/utils";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/ui/dropdown-menu";
+import { applyReaction, reactionPills, REACTIONS } from "../github-forge";
+import { cn } from "@/ui/utils";
 
 export type ReactHandler = (subjectId: string, content: GitHubReactionContent, react: boolean) => Promise<GitHubReactionResult>;
 

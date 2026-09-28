@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { commitSessionWork } from "./push";
 import { countDirty, GIT_LOG_FORMAT, parseAheadBehind, parseGitLog, parseNameStatus, parseNumstat, parseUntracked, parseWorktreeList, samePath } from "../../platform/git/parse";
 import { defaultRemoteBaseAsync, gitOverviewAsync, listGitRefsAsync, normalizeRemote, projectRemoteAsync, sessionDiffAsync, sessionFilePatchAsync } from "./session";
-import { GIT_TIMEOUT_STATUS } from "../../worktree";
-import type { AsyncGitRunner, GitResult, GitRunner } from "../../worktree";
+import { GIT_TIMEOUT_STATUS } from "../../platform/git/runner";
+import type { AsyncGitRunner, GitResult, GitRunner } from "../../platform/git/runner";
 
 const toAsync = (git: GitRunner): AsyncGitRunner => async (cwd, args, options) => git(cwd, args, options);
 
@@ -111,7 +111,7 @@ describe("gitOverview", () => {
     expect(overview.repository).toBe(true);
     expect(overview.branch).toBe("main");
     expect(overview.dirtyFiles).toBe(2);
-    expect(overview.worktrees[0].isMainCheckout).toBe(true);
+    expect(overview.worktrees![0].isMainCheckout).toBe(true);
   });
 
   test("leaves ahead/behind ABSENT when the branch has no upstream", async () => {

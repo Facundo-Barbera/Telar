@@ -1,5 +1,5 @@
 import type { SidebarMode } from "@telar/engine-client";
-import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * Where each project group sits in the rail — the order the reader dragged
@@ -16,26 +16,18 @@ import { requestObject, engineClient, engineErrorResponse } from "@/lib/engine/e
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  try {
-    return Response.json(await (await engineClient()).sidebarLayout());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async () => {
+  return Response.json(await (await engineClient()).sidebarLayout());
+});
 
-export async function PATCH(request: Request) {
-  try {
-    const body = await requestObject(request);
-    return Response.json(
-      await (await engineClient()).setSidebarLayout({
-        ...("projectOrder" in body ? { projectOrder: body.projectOrder as string[] } : {}),
-        ...("sessionOrder" in body ? { sessionOrder: body.sessionOrder as Record<string, string[]> } : {}),
-        ...("pinnedOrder" in body ? { pinnedOrder: body.pinnedOrder as string[] } : {}),
-        ...("mode" in body ? { mode: body.mode as SidebarMode } : {}),
-      }),
-    );
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PATCH = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  return Response.json(
+    await (await engineClient()).setSidebarLayout({
+      ...("projectOrder" in body ? { projectOrder: body.projectOrder as string[] } : {}),
+      ...("sessionOrder" in body ? { sessionOrder: body.sessionOrder as Record<string, string[]> } : {}),
+      ...("pinnedOrder" in body ? { pinnedOrder: body.pinnedOrder as string[] } : {}),
+      ...("mode" in body ? { mode: body.mode as SidebarMode } : {}),
+    }),
+  );
+});

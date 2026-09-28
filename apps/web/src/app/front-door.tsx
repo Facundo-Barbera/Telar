@@ -33,10 +33,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FirstRun } from "@/components/first-run";
-import { canvasHrefFor, composerProject, noteDestination, readFrontDoorNote, writeFrontDoorNote } from "@/lib/composer-project";
-import { createEngineApi } from "@/lib/engine/client";
-import { installNavigationMarks, startNavigation } from "@/lib/perf-marks";
+import { FirstRun } from "@/features/projects";
+import { canvasHrefFor, composerProject, noteDestination, readFrontDoorNote, writeFrontDoorNote } from "@/features/composer";
+import { createEngineApi } from "@/platform/engine";
+import { installNavigationMarks, startNavigation } from "@/platform/perf-marks";
 
 /** How often to re-ask while the door is standing open with nothing to show.
  *  Only ever runs on a screen that is otherwise completely idle. */
@@ -132,7 +132,7 @@ export function FrontDoor() {
      * corrected by.
      *
      * What the read was still costing is real: it went out AFTER the redirect
-     * and then competed for the two-slot read gate (`lib/engine/client.ts`,
+     * and then competed for the two-slot read gate (`platform/engine/client.ts`,
      * `READ_BUDGET`) against the opening reads of the route it had just sent the
      * reader to — the contention `client.ts` describes.
      *

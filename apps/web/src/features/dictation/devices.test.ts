@@ -1,5 +1,4 @@
 /** The store is a `Map` standing in for `localStorage`, so persistence rules are checked without a DOM. */
-// @ts-expect-error bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
 import {
   audioConstraints,

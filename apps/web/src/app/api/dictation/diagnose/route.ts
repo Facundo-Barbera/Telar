@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 /**
  * WHY THE LAST DICTATION FAILED, PROXIED (#711).
@@ -12,7 +12,7 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
  * read why its own `WebSocket` was refused — the spec withholds it, because the
  * status of a failed cross-origin handshake would be an oracle — so the engine
  * asks Deepgram on its behalf and answers in Deepgram's words. See
- * `apps/engine/src/dictation/diagnose.ts` for why after rather than before.
+ * `apps/engine/src/domains/dictation/diagnose.ts` for why after rather than before.
  *
  * THE PHONE REACHES IT THROUGH THE HOST PROXY unchanged, like the mint:
  * `/api/hosts/:id/dictation/diagnose` is this route on the other Mac.
@@ -27,10 +27,6 @@ import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function POST() {
-  try {
-    return Response.json(await (await engineClient()).dictationDiagnosis());
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const POST = engineRoute(async () => {
+  return Response.json(await (await engineClient()).dictationDiagnosis());
+});

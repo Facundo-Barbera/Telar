@@ -24,12 +24,9 @@ import "streamdown/styles.css";
 // files, and ahead of globals.css so the app's overflow/colour rules win.
 import "katex/dist/katex.min.css";
 import "./globals.css";
-import { ClipboardShim } from "@/components/clipboard-shim";
-import { ThemeProvider, THEME_INIT_SCRIPT } from "@/components/theme-provider";
-import { AppearanceProvider } from "@/components/appearance-provider";
-import { APPEARANCE_INIT_SCRIPT } from "@/lib/appearance";
-import { BACKDROP_INIT_SCRIPT } from "@/lib/backdrop";
-import { AppShell } from "@/components/app-shell";
+import { ClipboardShim } from "@/platform/desktop/clipboard-shim";
+import { APPEARANCE_INIT_SCRIPT, AppearanceProvider, BACKDROP_INIT_SCRIPT, ThemeProvider, THEME_INIT_SCRIPT } from "@/features/appearance";
+import { AppShell } from "@/app/app-shell";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });

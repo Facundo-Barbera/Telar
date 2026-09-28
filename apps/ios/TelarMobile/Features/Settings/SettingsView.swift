@@ -1,12 +1,8 @@
 import SwiftUI
 
-/// The gear sheet: every paired Mac, each a door to its own settings, plus
-/// "Add a Mac…". ConnectView keeps owning the pairing flow; this is just
-/// the hallway, wearing the same card clothes as the rest of the app.
 struct SettingsView: View {
     let settings: AppSettings
     @State private var pushTarget: PushTarget?
-    /// `-openDevices 1` launch arg — automation affordance like -openSession.
     @State private var openDevicesSeed = UserDefaults.standard.bool(forKey: "openDevices")
 
     enum PushTarget: Hashable {
@@ -71,7 +67,6 @@ struct SettingsView: View {
     }
 }
 
-/// One Mac's own panel: rename, connection, its device list, removal.
 struct HostSettingsView: View {
     let settings: AppSettings
     let hostId: HostID
@@ -107,11 +102,6 @@ struct HostSettingsView: View {
                                 subtitle: "Who may reach this Mac"
                             ) { pushDevices = true }
                             CardDivider()
-                            // UNDER THIS MAC, not under the phone's own
-                            // settings (#544): the key is spent there and the
-                            // provider is that machine's decision. The mic
-                            // button on the composer only exists because this
-                            // row says it may.
                             CardNavRow(
                                 icon: "waveform",
                                 title: "Dictation",

@@ -1,4 +1,4 @@
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute, invalidRequest } from "@/platform/engine/server";
 
 /**
  * The session's own checkout, as a file list — its worktree when it cut one, so
@@ -13,17 +13,13 @@ export const runtime = "nodejs";
 
 type Context = { params: Promise<{ sessionId: string }> };
 
-export async function GET(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const target = new URL(request.url).searchParams.get("path");
-    const engine = await engineClient();
-    if (target) return Response.json(await engine.sessionFile(sessionId, target));
-    return Response.json(await engine.sessionFiles(sessionId));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const target = new URL(request.url).searchParams.get("path");
+  const engine = await engineClient();
+  if (target) return Response.json(await engine.sessionFile(sessionId, target));
+  return Response.json(await engine.sessionFiles(sessionId));
+});
 
 /**
  * Save an edited file.
@@ -33,18 +29,14 @@ export async function GET(request: Request, context: Context) {
  * `written: false`; this hop adds nothing but the parameter check, because a
  * precondition enforced here would not protect an in-process caller.
  */
-export async function PUT(request: Request, context: Context) {
-  try {
-    const { sessionId } = await context.params;
-    const target = new URL(request.url).searchParams.get("path");
-    if (!target) return Response.json({ error: { code: "invalid_request", message: "a file path is required" } }, { status: 400 });
-    const body = (await request.json()) as { text?: unknown; expectedSha256?: unknown };
-    if (typeof body.text !== "string" || typeof body.expectedSha256 !== "string") {
-      return Response.json({ error: { code: "invalid_request", message: "text and expectedSha256 are required" } }, { status: 400 });
-    }
-    const engine = await engineClient();
-    return Response.json(await engine.writeSessionFile(sessionId, target, body.text, body.expectedSha256));
-  } catch (error) {
-    return engineErrorResponse(error);
+export const PUT = engineRoute(async (request: Request, context: Context) => {
+  const { sessionId } = await context.params;
+  const target = new URL(request.url).searchParams.get("path");
+  if (!target) throw invalidRequest("a file path is required");
+  const body = (await request.json()) as { text?: unknown; expectedSha256?: unknown };
+  if (typeof body.text !== "string" || typeof body.expectedSha256 !== "string") {
+    throw invalidRequest("text and expectedSha256 are required");
   }
-}
+  const engine = await engineClient();
+  return Response.json(await engine.writeSessionFile(sessionId, target, body.text, body.expectedSha256));
+});

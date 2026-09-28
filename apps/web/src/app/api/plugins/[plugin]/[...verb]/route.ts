@@ -1,4 +1,4 @@
-import { engineErrorResponse, enginePluginDoor, requestObject } from "@/lib/engine/engine-server";
+import { enginePluginDoor, engineRoute, requestObject } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -10,18 +10,14 @@ type Context = { params: Promise<{ plugin: string; verb: string[] }> };
  * with their query and, for a POST, their body. Scoped to the engine this
  * request resolves to, like `GET /api/plugins` beside it.
  */
-async function forward(request: Request, context: Context, method: "GET" | "POST" | "DELETE") {
-  try {
-    const { plugin, verb } = await context.params;
-    return await enginePluginDoor("machine", plugin, verb, method, {
-      search: new URL(request.url).search,
-      ...(method === "POST" ? { body: await requestObject(request) } : {}),
-    });
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+const forward = (method: "GET" | "POST" | "DELETE") => engineRoute(async (request: Request, context: Context) => {
+  const { plugin, verb } = await context.params;
+  return enginePluginDoor("machine", plugin, verb, method, {
+    search: new URL(request.url).search,
+    ...(method === "POST" ? { body: await requestObject(request) } : {}),
+  });
+});
 
-export const GET = (request: Request, context: Context) => forward(request, context, "GET");
-export const POST = (request: Request, context: Context) => forward(request, context, "POST");
-export const DELETE = (request: Request, context: Context) => forward(request, context, "DELETE");
+export const GET = forward("GET");
+export const POST = forward("POST");
+export const DELETE = forward("DELETE");

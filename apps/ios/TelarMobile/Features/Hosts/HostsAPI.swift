@@ -8,7 +8,6 @@ struct Pong: Decodable {
     var ok: Bool
 
     var proto: Int?
-    var appVersion: String?
 }
 
 extension HTTPEngineAPI: HostsAPI {

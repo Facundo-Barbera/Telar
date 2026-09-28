@@ -10,22 +10,18 @@
  * boundary rather than two that can drift.
  */
 
-import { engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { engineClient, engineRoute } from "@/platform/engine/server";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(_request: Request, { params }: { params: Promise<{ name: string }> }) {
-  try {
-    const { name } = await params;
-    const image = await (await engineClient()).appearanceImage(name);
-    return new Response(image.data as BodyInit, {
-      headers: {
-        "content-type": image.contentType,
-        "cache-control": "public, max-age=31536000, immutable",
-      },
-    });
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (_request: Request, { params }: { params: Promise<{ name: string }> }) => {
+  const { name } = await params;
+  const image = await (await engineClient()).appearanceImage(name);
+  return new Response(image.data as BodyInit, {
+    headers: {
+      "content-type": image.contentType,
+      "cache-control": "public, max-age=31536000, immutable",
+    },
+  });
+});

@@ -45,8 +45,6 @@ enum ProjectAvailability: String, Codable, Equatable {
         let raw = try decoder.singleValueContainer().decode(String.self)
         self = ProjectAvailability(rawValue: raw) ?? .unknown
     }
-
-    var isReadable: Bool { self != .unmounted && self != .missing }
 }
 
 struct Project: Decodable, Identifiable, Equatable {
@@ -95,8 +93,6 @@ struct Project: Decodable, Identifiable, Equatable {
         case .available, .unknown, nil: return nil
         }
     }
-
-    func pluginEnabled(_ id: PluginID) -> Bool { enabledPlugins.contains(id) }
 
     var enabledPlugins: Set<PluginID> {
         if let plugins { return Set(plugins.entries.filter { $0.value.enabled }.keys.map { PluginID($0) }) }

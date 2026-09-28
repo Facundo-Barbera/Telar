@@ -220,6 +220,18 @@ export const mergeBaseOf = (root, baseRef) => {
   }
 };
 
+// A deletion elsewhere can re-align the line diff so an untouched block reads as added.
+function existedAtBase(root, base, file, block) {
+  let before;
+  try {
+    before = git(root, ["show", `${base}:${file}`]);
+  } catch {
+    return false;
+  }
+  const squash = (lines) => lines.map((line) => line.trim()).join("\n");
+  return squash(before.split("\n")).includes(squash(block));
+}
+
 export function newBlockFailures(root, base) {
   // Renames are followed so a moved file only counts the lines its move changed.
   const diff = git(root, ["diff", "-U0", "--no-color", "-M", "-l0", "--diff-filter=AMR", base, "--", ...WORKSPACES, "scripts"]);
@@ -227,8 +239,10 @@ export function newBlockFailures(root, base) {
   for (const [file, added] of addedLines(diff)) {
     const language = languageOf(file);
     if (!language) continue;
-    const lines = commentLines(readFileSync(join(root, file), "utf8"), language);
+    const text = readFileSync(join(root, file), "utf8");
+    const lines = commentLines(text, language);
     for (const [first, last] of newCommentRuns(lines, added)) {
+      if (existedAtBase(root, base, file, text.split("\n").slice(first - 1, last))) continue;
       failures.push(`${file}:${first}-${last}: a new ${last - first + 1}-line comment. The limit is ${MAX_NEW_BLOCK_LINES}; AGENTS.md allows 3.`);
     }
   }

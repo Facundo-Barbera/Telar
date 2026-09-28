@@ -248,7 +248,7 @@ test("leaves a child running behind it, the way a leaked shell does", () => {
   expect(found).toBeDefined();
   // The parentage #807 could not capture: the leaked process is in the run's
   // group and is descended from something, and both numbers are recorded.
-  expect(found?.pgid).toBe(verdict.childPid);
+  expect<number | null | undefined>(found?.pgid).toBe(verdict.childPid);
   expect(found?.ppid).toBeGreaterThan(0);
   expect(found?.command).toContain("sleep");
   // The rows reach the log a human reads, not only the JSON a script reads.

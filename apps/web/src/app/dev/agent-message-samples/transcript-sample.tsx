@@ -1,6 +1,6 @@
 "use client";
-import { SessionTurn } from "@/components/session-cockpit";
-import type { JournalItem, JournalTurn } from "@/lib/engine/journal";
+import { SessionTurn } from "@/features/sessions/cockpit";
+import type { JournalItem, JournalTurn } from "@/platform/engine";
 const item = (id: string, detail: JournalItem["detail"]): JournalItem => ({ id, runId: "run_sample", sessionId: "session_sample", status: "completed", title: "Message", detail, streamedText: "", openedBy: 1, startedAt: 1 });
 /** The engine's own notice, as `Turn.agentNotice` / `ItemDetail.notice` carry
  *  it — the collapsed row's label and what the model was actually handed. */
@@ -21,5 +21,5 @@ const turn: JournalTurn = {
   ],
 };
 export function TranscriptSample() {
-  return <section className="my-8 border-y py-6" aria-label="Transcript layout sample"><SessionTurn turn={turn} requests={[]} sending={false} live={false} onDecide={() => {}} onRetry={() => {}} /></section>;
+  return <section className="my-8 border-y py-6" aria-label="Transcript layout sample"><SessionTurn turn={turn} requests={[]} sending={false} live={false} onDecide={() => {}} /></section>;
 }

@@ -1,4 +1,4 @@
-import { requestObject, requiredString, engineClient, engineErrorResponse } from "@/lib/engine/engine-server";
+import { requestObject, requiredString, engineClient, engineRoute } from "@/platform/engine/server";
 import type { AutoCompact } from "@telar/engine-client";
 
 /**
@@ -21,39 +21,31 @@ import type { AutoCompact } from "@telar/engine-client";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET(request: Request) {
-  try {
-    const refresh = new URL(request.url).searchParams.get("refresh") === "1";
-    return Response.json(await (await engineClient()).listProviderInstances({ refresh }));
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const GET = engineRoute(async (request: Request) => {
+  const refresh = new URL(request.url).searchParams.get("refresh") === "1";
+  return Response.json(await (await engineClient()).listProviderInstances({ refresh }));
+});
 
-export async function PUT(request: Request) {
-  try {
-    const body = await requestObject(request);
-    // Every optional field is forwarded VERBATIM, an explicit `null` included:
-    // the engine owns the clear / keep / set rule, and a route that coerced
-    // null away here would make "remove the accent colour" unexpressible.
-    const result = await (await engineClient()).saveProviderInstance({
-      id: requiredString(body.id, "Instance id"),
-      ...(body.driver === undefined ? {} : { driver: body.driver as never }),
-      ...(body.displayName === undefined ? {} : { displayName: body.displayName as string | null }),
-      ...(body.accentColor === undefined ? {} : { accentColor: body.accentColor as string | null }),
-      ...(body.contextNoticePercent === undefined ? {} : { contextNoticePercent: body.contextNoticePercent as number | null }),
-      ...(body.autoCompact === undefined ? {} : { autoCompact: body.autoCompact as AutoCompact | null }),
-      ...(body.configDir === undefined ? {} : { configDir: body.configDir as string | null }),
-      ...(body.binaryPath === undefined ? {} : { binaryPath: body.binaryPath as string | null }),
-      ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
-      ...(body.env === undefined ? {} : { env: body.env as never }),
-      // NAMES OF INHERITED VARIABLES TO KEEP (#594). Forwarded as given and
-      // validated by the engine, which is the only process that can say whether
-      // it is carrying them — and the only one that ever sees their values.
-      ...(body.carryOverInherited === undefined ? {} : { carryOverInherited: body.carryOverInherited as never }),
-    });
-    return Response.json(result);
-  } catch (error) {
-    return engineErrorResponse(error);
-  }
-}
+export const PUT = engineRoute(async (request: Request) => {
+  const body = await requestObject(request);
+  // Every optional field is forwarded VERBATIM, an explicit `null` included:
+  // the engine owns the clear / keep / set rule, and a route that coerced
+  // null away here would make "remove the accent colour" unexpressible.
+  const result = await (await engineClient()).saveProviderInstance({
+    id: requiredString(body.id, "Instance id"),
+    ...(body.driver === undefined ? {} : { driver: body.driver as never }),
+    ...(body.displayName === undefined ? {} : { displayName: body.displayName as string | null }),
+    ...(body.accentColor === undefined ? {} : { accentColor: body.accentColor as string | null }),
+    ...(body.contextNoticePercent === undefined ? {} : { contextNoticePercent: body.contextNoticePercent as number | null }),
+    ...(body.autoCompact === undefined ? {} : { autoCompact: body.autoCompact as AutoCompact | null }),
+    ...(body.configDir === undefined ? {} : { configDir: body.configDir as string | null }),
+    ...(body.binaryPath === undefined ? {} : { binaryPath: body.binaryPath as string | null }),
+    ...(typeof body.enabled === "boolean" ? { enabled: body.enabled } : {}),
+    ...(body.env === undefined ? {} : { env: body.env as never }),
+    // NAMES OF INHERITED VARIABLES TO KEEP (#594). Forwarded as given and
+    // validated by the engine, which is the only process that can say whether
+    // it is carrying them — and the only one that ever sees their values.
+    ...(body.carryOverInherited === undefined ? {} : { carryOverInherited: body.carryOverInherited as never }),
+  });
+  return Response.json(result);
+});

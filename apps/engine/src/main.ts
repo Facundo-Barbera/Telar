@@ -1,7 +1,10 @@
 import { startEngine } from "./daemon";
 import { hydrateHostPath } from "./platform/process/host-path";
 import { providerSkillRoots } from "./domains/providers";
-import { ENGINE_EXIT_LOCK_HELD, EngineStateError, engineRootFromEnv, statePaths } from "./state";
+import { EngineStateError } from "./platform/kernel";
+import { engineRootFromEnv } from "./platform/fs/engine-root";
+import { ENGINE_EXIT_LOCK_HELD } from "./platform/process/daemon-lock";
+import { statePaths } from "./platform/fs/state-paths";
 
 /**
  * BEFORE ANYTHING RESOLVES A BINARY, and therefore the first statement here.

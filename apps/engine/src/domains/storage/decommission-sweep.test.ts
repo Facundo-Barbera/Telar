@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
-import { statePaths } from "../../state";
+import { statePaths } from "../../platform/fs/state-paths";
 import { DIRECTORY_CATEGORIES } from "./measure";
 
 let home: string;

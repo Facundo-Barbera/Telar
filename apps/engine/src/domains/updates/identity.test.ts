@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import type http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { matchRoute } from "../../platform/http/route";
+import { matchRoute } from "../../platform/http/router";
 import { buildIdentity, locateWebRoot } from "./identity";
 import { aboutRoutes } from "./routes";
 
@@ -110,7 +111,7 @@ describe("build identity", () => {
 describe("about routes", () => {
   const about = (web: string, route: string) => {
     const { route: found } = matchRoute(aboutRoutes("/state/root", () => buildIdentity({}, web)), "GET", route)!;
-    return found.handle({ body: {}, params: [], query: new URLSearchParams() }) as { status: number; body: any; bytes?: Uint8Array; headers?: Record<string, string> };
+    return found.handle({ body: {}, params: [], query: new URLSearchParams(), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }) as { status: number; body: any; bytes?: Uint8Array; headers?: Record<string, string> };
   };
 
   test("about carries the identity, the version and the engine's own root", () => {

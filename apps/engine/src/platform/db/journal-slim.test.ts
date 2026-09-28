@@ -20,23 +20,23 @@ function build(turns = 3): string {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-slim-"));
   homes.push(home);
   const engine = new EngineStore(home, () => START);
-  engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
-  engine.createSession({ id: "session_one", projectId: "project_one" });
+  engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
+  engine.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   for (let turn = 0; turn < turns; turn += 1) {
     const runId = `run_${turn}`;
-    engine.submitTurn("session_one", { runId, input: `ask ${turn}` });
-    const token = engine.claimTurn("session_one", "worker_one")!.claim!.token;
-    engine.markRunning("session_one", runId, token);
-    engine.ingestObservations("session_one", runId, token, [
+    engine.intake.submitTurn("session_one", { runId, input: `ask ${turn}` });
+    const token = engine.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+    engine.turnLifecycle.markRunning("session_one", runId, token);
+    engine.ingest.ingestObservations("session_one", runId, token, [
       { kind: "item.started", item: { id: `cmd_${turn}`, title: "bash", detail: { type: "command_execution", command: { command: "ls" } } } },
       { kind: "item.completed", itemId: `cmd_${turn}`, status: "completed", detail: { type: "command_execution", command: { command: "ls", exitCode: 0, outputPreview: `${NEEDLE} ${turn} ${"x".repeat(2000)}` } } },
       { kind: "item.started", item: { id: `item_${turn}`, title: "answering", detail: { type: "assistant_message", text: "" } } },
       { kind: "content.delta", itemId: `item_${turn}`, stream: "assistant_text", text: "part one " },
       { kind: "item.completed", itemId: `item_${turn}`, status: "completed", detail: { type: "assistant_message", text: "part one" } },
     ]);
-    engine.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
+    engine.turnLifecycle.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
   }
-  engine.closeExecutionStore();
+  engine.kernel.executionStore.close();
   return home;
 }
 

@@ -30,7 +30,6 @@ struct AutomaticActivityTests {
         #expect(AutomaticCard.hostsToStart(enabled: true, working: [b], carded: [], dismissed: AutomaticCard.dismissedStillIdle([a, b], working: [a])) == [b])
     }
 
-    /// The Mac's first update replaces it, so it reads the way `automaticActivityDelivery` would.
     @Test func theFirstContentLeadsWithTheSessionThatNeedsYou() throws {
         func session(_ id: String, _ activity: String) throws -> Session {
             try JSONDecoder().decode(Session.self, from: Data("""
@@ -49,7 +48,6 @@ struct AutomaticActivityTests {
         #expect(AutomaticCard.initialState([try session("b", "queued")], previews: false, now: now).title == "Telar work")
     }
 
-    /// The open app updates its own card at once; an unchanged card is not touched.
     @Test func aShowingCardFollowsTheInboxWithoutWaitingForThePush() throws {
         func session(_ id: String, _ activity: String) throws -> Session {
             try JSONDecoder().decode(Session.self, from: Data("""
