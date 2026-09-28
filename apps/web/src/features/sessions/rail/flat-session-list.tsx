@@ -104,7 +104,7 @@ export function RailModeSwitch({ mode, onChange }: { mode: SidebarMode; onChange
   );
   return (
     <div role="group" aria-label="Group by" className="app-no-drag flex shrink-0 items-center gap-1">
-      <span className="text-2xs text-sidebar-foreground/45">Group by</span>
+      <span className="hidden text-2xs text-sidebar-foreground/45 @[15rem]/rail-header:inline">Group by</span>
       <div className="flex items-center rounded-md border border-sidebar-border/60 p-px">
         {option("grouped", "Project", "Group conversations under their project.")}
         {option("flat", "None", "One list, newest first, with spawned conversations under their parent.")}

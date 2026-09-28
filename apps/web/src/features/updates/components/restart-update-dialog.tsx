@@ -19,7 +19,7 @@ export function RestartUpdateDialog({ restart }: { restart: RestartConfirmation 
           <DialogDescription>{restart.impact ? copy.description : "Checking what is running…"}</DialogDescription>
         </DialogHeader>
         {copy.terminals && (
-          <div className="text-sm text-muted-foreground">
+          <div className="min-w-0 text-sm text-muted-foreground">
             <p>{copy.terminals}</p>
             <ul className="mt-1 space-y-0.5">
               {copy.commands.map((command, index) => (
