@@ -2145,10 +2145,10 @@ test("stopBackgroundTasks ends lingering background work and queues the real kil
 
   // The real kill is queued for the worker — by PROVIDER id, the handle the
   // live CLI process knows the task by.
-  const drained = store.drainStopTasks();
-  expect(drained).toEqual([{ sessionId: "session_one", providerTaskId: "bqo5yo8lm" }]);
-  // Drain-on-read: a second heartbeat carries nothing.
-  expect(store.drainStopTasks()).toEqual([]);
+  const queued = store.taskStopsForWorker("worker_one");
+  expect(queued.map(({ sessionId, providerTaskId }) => ({ sessionId, providerTaskId }))).toEqual([{ sessionId: "session_one", providerTaskId: "bqo5yo8lm" }]);
+  // Acknowledged, it is not delivered again.
+  expect(store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId))).toEqual([]);
 });
 
 test("a vanished worker takes the session's background work with it — a task cannot outlive its process", () => {
@@ -4157,14 +4157,16 @@ describe("stop is stop — there is no pause to resume", () => {
 
       store.stopSession("session_one");
       expect(store.tasks("session_one")[0]?.state).toBe("stopped");
-      expect(store.drainStopTasks()).toEqual([{ sessionId: "session_one", providerTaskId: "provider_bg" }]);
+      const queued = store.taskStopsForWorker("worker_one");
+      expect(queued.map(({ sessionId, providerTaskId }) => ({ sessionId, providerTaskId }))).toEqual([{ sessionId: "session_one", providerTaskId: "provider_bg" }]);
+      store.taskStopsForWorker("worker_one", queued.map((stop) => stop.deliveryId));
       store.reportSessionTasks("session_one", "worker_one", [
         { kind: "task.progress", task: { id: "task_bg", kind: "background", state: "running", title: "late report" } },
       ]);
       expect(store.tasks("session_one")[0]?.state).toBe("stopped");
       expect(store.tasks("session_other")[0]?.state).toBe("running");
       store.stopSession("session_one");
-      expect(store.drainStopTasks()).toEqual([]);
+      expect(store.taskStopsForWorker("worker_one")).toEqual([]);
       store.submitTurn("session_one", { runId: "run_after", input: "continue" });
       expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_after");
     });
