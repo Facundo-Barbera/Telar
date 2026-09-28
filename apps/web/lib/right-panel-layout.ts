@@ -5,6 +5,8 @@
  * They live apart from the component so the resize handle, the panel shell and
  * any test can agree on one set of numbers rather than three copies that drift.
  */
+import { PLUGIN_SURFACES } from "@/lib/plugins/registry";
+
 export const RIGHT_PANEL_WIDTH_STORAGE_KEY = "right-panel";
 export const RIGHT_PANEL_DEFAULT_WIDTH = 480;
 export const RIGHT_PANEL_MIN_WIDTH = 384;
@@ -20,8 +22,9 @@ export const RIGHT_PANEL_MIN_WIDTH = 384;
  */
 export const RIGHT_PANEL_WIDE_DEFAULT_WIDTH = 720;
 
-/** The kinds whose content sets their width rather than the column doing it. */
-const WIDE_KINDS: ReadonlySet<string> = new Set(["data", "editor"]);
+/** The kinds whose content sets their width rather than the column doing it:
+ *  the Editor, and any plugin surface that declares itself `wide` (Data). */
+const WIDE_KINDS: ReadonlySet<string> = new Set(["editor", ...PLUGIN_SURFACES.filter((surface) => surface.wide).map((surface) => surface.id)]);
 
 /**
  * HOW WIDE THE PANEL OPENS WHEN NOBODY HAS SAID OTHERWISE.

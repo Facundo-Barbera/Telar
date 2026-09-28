@@ -116,6 +116,7 @@ import {
   type EditorState,
   type OpenIntent,
 } from "@/lib/editor-workspace";
+import { pluginCommands } from "@/lib/plugins/registry";
 import { forgeFromLegacyTabs, forgeParams, openForge, readForgeOpen } from "@/lib/forge-workspace";
 import {
   buildSessionActionMenuItems,
@@ -189,19 +190,20 @@ export function describeTurnState(state: TurnState): { label: string; tone: "act
 }
 
 /**
- * WHICH PLUGIN SURFACES THIS PROJECT OFFERS — the Data tab, the LaTeX tab, and
- * whether an `.ipynb` opens as a notebook rather than as text.
+ * WHICH PLUGINS THIS PROJECT HAS ON, as ids — what the panel's surfaces, the
+ * Editor's viewers and the plugin commands are gated on (`lib/plugins/registry.ts`).
+ * A plugin with no web contributions (the proof plugin `hello`) is listed and
+ * simply contributes nothing.
  *
  * READ FROM THE PLUGIN MAP (#269), through `readProjectPlugins` — the one read
  * path, which also answers for a record an older engine sent without a map.
  */
-export function cockpitPlugins(project: Parameters<typeof readProjectPlugins>[0] | undefined): {
-  dataScience: boolean;
-  latex: boolean;
-} {
-  if (!project) return { dataScience: false, latex: false };
+export function cockpitPlugins(project: Parameters<typeof readProjectPlugins>[0] | undefined): string[] {
+  if (!project) return [];
   const { plugins } = readProjectPlugins(project);
-  return { dataScience: pluginEnabled(plugins, "data-science"), latex: pluginEnabled(plugins, "latex") };
+  return Object.keys(plugins.entries)
+    .filter((id) => pluginEnabled(plugins, id))
+    .sort();
 }
 
 /**
@@ -1725,10 +1727,8 @@ export function SessionCockpit({
     setProjectName(undefined);
     setProjectResolved(false);
   }
-  /** The project's data-science opt-in, read with its name. Off until known. */
-  const [dataScience, setDataScience] = useState(false);
-  /** The project's LaTeX opt-in — same lifecycle. */
-  const [latex, setLatex] = useState(false);
+  /** The project's enabled plugin ids, read with its name. None until known. */
+  const [enabledPlugins, setEnabledPlugins] = useState<readonly string[]>([]);
   /**
    * THE TRANSCRIPT FOLD, WITH A MEMORY (#407).
    *
@@ -2270,7 +2270,7 @@ export function SessionCockpit({
         // Resolved from the committed strip, and handed to BOTH updates, so the
         // file and the tab that comes forward cannot name different Editors.
         const target = editorTargetId(panelNow.current);
-        updateEditor(target, (current) => openInEditor(current, editorFileForPath(path, dataScience), intent));
+        updateEditor(target, (current) => openInEditor(current, editorFileForPath(path, enabledPlugins), intent));
         updatePanel((current) => openPanelTab(current, "editor"));
         return;
       }
@@ -2300,7 +2300,7 @@ export function SessionCockpit({
       }
       updatePanel((current) => openPanelTab(current, tab));
     },
-    [makeRoomForPanel, updatePanel, updateEditor, editorTargetId, dataScience],
+    [makeRoomForPanel, updatePanel, updateEditor, editorTargetId, enabledPlugins],
   );
 
   /**
@@ -2317,10 +2317,10 @@ export function SessionCockpit({
       // Minted from the committed strip so the files can be seeded under the
       // same id the tab is about to take.
       const id = nextPanelTabId(panelNow.current, "editor");
-      updateEditor(id, (current) => openInEditor(current, editorFileForPath(path, dataScience), "pin"));
+      updateEditor(id, (current) => openInEditor(current, editorFileForPath(path, enabledPlugins), "pin"));
       updatePanel((current) => addPanelTab(current, { id, kind: "editor", params: { path } }));
     },
-    [makeRoomForPanel, updatePanel, updateEditor, dataScience],
+    [makeRoomForPanel, updatePanel, updateEditor, enabledPlugins],
   );
 
   /**
@@ -2390,12 +2390,11 @@ export function SessionCockpit({
             "panel-previous-tab": () => stepPanelTab(-1),
             "open-diff": () => showPanelTab("diff"),
             "open-editor": () => showPanelTab("editor"),
-            // The two surfaces a project opts into. Bound only while the plugin
-            // is on, so ⇧⌘B on a project with no notebooks does nothing rather
-            // than opening a tab whose surface is not there — hence the
-            // dependency array.
-            ...(dataScience ? { "open-data": () => showPanelTab("data") } : {}),
-            ...(latex ? { "open-latex": () => showPanelTab("latex") } : {}),
+            // A plugin's openers (`lib/plugins/registry.ts`). Bound only while
+            // the plugin is on, so ⇧⌘B on a project with no notebooks does
+            // nothing rather than opening a tab whose surface is not there —
+            // hence the dependency array.
+            ...Object.fromEntries(pluginCommands(enabledPlugins).map((command) => [command.id, () => showPanelTab(command.surface as PanelTab)])),
           }),
       /**
        * PIN OR UNPIN THE CONVERSATION YOU ARE LOOKING AT (#408).
@@ -2416,7 +2415,7 @@ export function SessionCockpit({
         void patchFromMenu({ settledOverride: pinToggleOverride(session?.settledOverride) }, "Could not change the session's pin.");
       },
     },
-    [solo, dataScience, latex, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
+    [solo, enabledPlugins, stepPanelTab, showPanelTab, updatePanel, makeRoomForPanel],
   );
 
   /**
@@ -2647,8 +2646,8 @@ export function SessionCockpit({
     for (const event of fresh) seenDisplays.current.add(event.id);
     const last = fresh.at(-1)!;
     if (last.type !== "display.opened") return;
-    showPanelTab(panelTabForPath(last.path, dataScience));
-  }, [events, dataScience, showPanelTab]);
+    showPanelTab(panelTabForPath(last.path, enabledPlugins));
+  }, [events, enabledPlugins, showPanelTab]);
 
   /**
    * A TERMINAL THAT OPENS GETS ITS TAB AND ITS CHIP — never the panel.
@@ -3007,9 +3006,10 @@ export function SessionCockpit({
           setProjectModel({ projectId, seed: projectDraftModel(found?.defaultModel) });
           setProjectEnvMode({ projectId, ...(found?.envMode ? { envMode: found.envMode } : {}) });
         }
+        // Replaced only when the SET changed, so everything keyed on it keeps
+        // its identity across a refetch that found the same plugins.
         const plugins = cockpitPlugins(found);
-        setDataScience(plugins.dataScience);
-        setLatex(plugins.latex);
+        setEnabledPlugins((current) => (current.join(",") === plugins.join(",") ? current : plugins));
         /**
          * …AND THE NOTE THE NEXT LAUNCH READS. This is the one screen that
          * knows both halves of the front door's answer — the registry, and
@@ -4462,8 +4462,7 @@ export function SessionCockpit({
           editors={editors}
           onEditorChange={updateEditor}
           hostId={hostId}
-          dataScience={dataScience}
-          latex={latex}
+          enabledPlugins={enabledPlugins}
         />
       )}
     </main>

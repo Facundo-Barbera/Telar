@@ -70,6 +70,9 @@ const EXPLORER_WIDTH = "13rem";
 /** What the strip's dot means. `clean` never appears — it is the absence. */
 type SaveState = "saving" | "problem";
 
+/** Stable, so the open-file callback does not change identity every render. */
+const NO_PLUGINS: readonly string[] = [];
+
 export function EditorSurface({
   state,
   onState,
@@ -77,7 +80,7 @@ export function EditorSurface({
   projectId,
   hostId,
   active,
-  dataScience = false,
+  enabledPlugins = NO_PLUGINS,
   onOpenImage,
   onInsertReference,
   onOpenInNewPanelTab,
@@ -91,7 +94,8 @@ export function EditorSurface({
   /** WHICH MAC these files live on — see `FileViewSurface`'s own note. */
   hostId?: string;
   active?: TurnState;
-  dataScience?: boolean;
+  /** The project's enabled plugin ids: which file viewers (a notebook, a table) are on. */
+  enabledPlugins?: readonly string[];
   onOpenImage?: (attachmentId: string) => void;
   /** Handed straight down to the tree and the file header, whose menus offer
    *  "Insert into composer as a reference" only where something is listening.
@@ -170,9 +174,9 @@ export function EditorSurface({
     (path: string, intent: OpenIntent) => {
       closed.current.delete(path);
       closingWhenClean.current.delete(path);
-      onState((current) => openInEditor(current, editorFileForPath(path, dataScience), intent));
+      onState((current) => openInEditor(current, editorFileForPath(path, enabledPlugins), intent));
     },
-    [onState, dataScience],
+    [onState, enabledPlugins],
   );
 
   /** Take the tab away and stop tracking it. The three ways a file leaves the

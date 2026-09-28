@@ -392,9 +392,10 @@ test("a plugin's editor mounts only once the plugin is on", () => {
   /**
    * Not tidiness: LaTeX probes for TeX distributions and Data science probes
    * for interpreters the moment their editors mount, and a project that asked
-   * for neither would pay for both to open this pane.
+   * for neither would pay for both to open this pane. Rendered for both cases
+   * in components/plugins/settings-panes.test.tsx.
    */
-  expect(source).toContain("!pluginEnabled(enabled, entry.pluginId) ? (");
+  expect(source).toContain("pluginEnabled(enabled, entry.pluginId) ? projectPaneFor(entry.pluginId) : undefined");
   expect(source).toContain("<PluginSettings key={entry.key} entry={entry} project={project} onChange={onChange} />");
 });
 

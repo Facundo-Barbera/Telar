@@ -9,7 +9,7 @@
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { expect, test } from "bun:test";
 import type { PluginStatus } from "@telar/engine-client";
-import { BESPOKE_PLUGIN_PANES, blockPatch, enablePatch, hasBespokePane, machineSettingsPatch, projectPluginSections } from "./sections";
+import { blockPatch, enablePatch, machineSettingsPatch, projectPluginSections } from "./sections";
 
 const status = (id: string, extra: Partial<PluginStatus["meta"]> = {}, rest: Partial<PluginStatus> = {}): PluginStatus => ({
   meta: {
@@ -68,15 +68,6 @@ test("a FAILED plugin still appears, carrying its reason", () => {
   // present one that says "did not start" is actionable.
   const entries = projectPluginSections([status("latex", {}, { state: "failed", error: "no TeX found" })]);
   expect(entries[0]).toMatchObject({ state: "failed", error: "no TeX found" });
-});
-
-test("the two shipped features keep their bespoke panes", () => {
-  // The compatibility rule, pinned. Losing an id here would silently replace a
-  // working environment picker with a checkbox.
-  expect(hasBespokePane("data-science")).toBe(true);
-  expect(hasBespokePane("latex")).toBe(true);
-  expect(hasBespokePane("hello")).toBe(false);
-  expect(Object.keys(BESPOKE_PLUGIN_PANES).sort()).toEqual(["data-science", "latex"]);
 });
 
 test("enabling writes the map entry; disabling REMOVES it", () => {

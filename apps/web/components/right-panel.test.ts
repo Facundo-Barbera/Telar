@@ -182,13 +182,13 @@ describe("pdf tabs", () => {
   test("a .pdf path routes to its own tab, data science or not", () => {
     // The PDF viewer is deliberately ungated: compiled LaTeX output, a
     // downloaded paper — a document renders wherever it is opened from.
-    expect(panelTabForPath("docs/paper.pdf", false)).toBe("pdf:docs/paper.pdf");
-    expect(panelTabForPath("docs/paper.pdf", true)).toBe("pdf:docs/paper.pdf");
+    expect(panelTabForPath("docs/paper.pdf", [])).toBe("pdf:docs/paper.pdf");
+    expect(panelTabForPath("docs/paper.pdf", ["data-science"])).toBe("pdf:docs/paper.pdf");
     // While the data-science pair keeps its gate.
-    expect(panelTabForPath("analysis.ipynb", false)).toBe("file:analysis.ipynb");
-    expect(panelTabForPath("analysis.ipynb", true)).toBe("notebook:analysis.ipynb");
+    expect(panelTabForPath("analysis.ipynb", [])).toBe("file:analysis.ipynb");
+    expect(panelTabForPath("analysis.ipynb", ["data-science"])).toBe("notebook:analysis.ipynb");
     // And markdown stays a `file:` tab — the file view renders it itself.
-    expect(panelTabForPath("README.md", false)).toBe("file:README.md");
+    expect(panelTabForPath("README.md", [])).toBe("file:README.md");
   });
 
   test("the tab round-trips, validates, and counts as an open file", () => {

@@ -115,6 +115,54 @@ export async function requestObject(request: Request): Promise<Record<string, un
   }
 }
 
+export type PluginDoorMethod = "GET" | "POST" | "DELETE";
+
+/**
+ * A PLUGIN'S PROJECT OR MACHINE VERB, forwarded as-is. The engine client names
+ * only the session door (`plugin`), so the project door
+ * (`/v2/projects/:id/plugins/<plugin>/<verb>`) and the machine door
+ * (`/v2/plugins/<plugin>/<verb>`) are spoken here with the client's own
+ * discovery and token. The engine's status comes back unchanged (a verb that
+ * starts a job answers 202), and a refusal is thrown as the same
+ * `EngineClientError` the client would throw, so `engineErrorResponse` maps it
+ * exactly as it maps every other proxy's.
+ */
+export async function enginePluginDoor(
+  scope: { projectId: string } | "machine",
+  pluginId: string,
+  verb: readonly string[],
+  method: PluginDoorMethod,
+  options: { search?: string; body?: Record<string, unknown> } = {},
+): Promise<Response> {
+  const { discovery } = await engineClient();
+  const base = scope === "machine" ? "/v2/plugins" : `/v2/projects/${encodeURIComponent(scope.projectId)}/plugins`;
+  const pathname = `${base}/${encodeURIComponent(pluginId)}/${verb.map(encodeURIComponent).join("/")}${options.search ?? ""}`;
+  let response: Response;
+  try {
+    response = await fetch(`http://${discovery.host}:${discovery.port}${pathname}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${discovery.token}`,
+        ...(options.body === undefined ? {} : { "content-type": "application/json" }),
+      },
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+    });
+  } catch {
+    throw new EngineClientError("engine_unavailable", "engine is unreachable");
+  }
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new EngineClientError("engine_unavailable", "engine returned an invalid response", response.status);
+  }
+  if (!response.ok) {
+    const error = (payload as { error?: { code?: EngineErrorCode; message?: string } } | null)?.error;
+    throw new EngineClientError(error?.code ?? "engine_unavailable", error?.message ?? "engine request failed", response.status);
+  }
+  return Response.json(payload, { status: response.status });
+}
+
 export function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim() === "") {
     throw new EngineClientError("invalid_request", `${label} is required.`);

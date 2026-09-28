@@ -32,39 +32,22 @@
  * WHICH GROUPS APPEAR IS DERIVED, not listed: a plugin declares a `machine`
  * section in its manifest and gets one. The mapping from that section to the
  * component that renders it is the only hand-written part, and it is stated
- * once below for the same reason `BESPOKE_PLUGIN_PANES` is — a machine section
- * with no pane would otherwise render as nothing at all.
+ * once in `SETTINGS_PANES` (components/plugins/settings-panes.tsx), beside each
+ * plugin's project pane. A plugin with no machine pane there contributes no
+ * group: it has no Mac-wide fields worth a form.
  */
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BlocksIcon, CircleAlertIcon } from "lucide-react";
 import type { PluginStatus, ProjectPlugins } from "@telar/engine-client";
 import { machineAllows } from "@telar/engine-client";
 import { createEngineApi } from "@/lib/engine/client";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import { DataScienceMachineSettings } from "./data-science-machine-settings";
-import { LatexMachineSettings } from "./latex-machine-settings";
+import { machinePaneFor } from "@/components/plugins/settings-panes";
 import { Row, SettingsGroup } from "./settings-shell";
 
 const api = createEngineApi();
-
-/**
- * Which plugin renders which global configuration group.
- *
- * NOT A DENYLIST and not a feature flag: a plugin absent from here simply has
- * no Mac-wide fields worth a form, and contributes no group. A plugin that
- * declares a `machine` section and is missing here would declare a destination
- * that renders nothing, so the two are checked against each other below rather
- * than assumed to agree.
- */
-const MACHINE_PANES: Record<
-  string,
-  (props: { machine?: ProjectPlugins; onChange: (machine: ProjectPlugins) => void }) => ReactNode
-> = {
-  latex: LatexMachineSettings,
-  "data-science": DataScienceMachineSettings,
-};
 
 /** The plugins that get a defaults group: running, on for this Mac, and declaring machine settings. */
 export function machinePanePlugins(plugins: readonly PluginStatus[], machine: ProjectPlugins | undefined): PluginStatus[] {
@@ -168,12 +151,12 @@ export function PluginsPage() {
       {/* GLOBAL CONFIGURATION, per plugin. Driven by the manifest: a plugin
           appears here because it DECLARED a machine-scoped section, not because
           this file names it — so the day a third plugin has Mac-wide defaults,
-          the only edit is the pane itself and its row in `MACHINE_PANES`.
+          the only edit is the pane itself and its row in `SETTINGS_PANES`.
 
           A FAILED OR SWITCHED-OFF PLUGIN CONTRIBUTES NOTHING. Its defaults
           would apply to nothing, and the switch above already says why. */}
       {machinePanePlugins(plugins, machine).map((status) => {
-        const Pane = MACHINE_PANES[status.meta.id];
+        const Pane = machinePaneFor(status.meta.id);
         return Pane ? <Pane key={status.meta.id} machine={machine} onChange={setMachine} /> : null;
       })}
     </>

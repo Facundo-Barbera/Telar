@@ -65,19 +65,23 @@ There are three tables, one per scope:
   - The job runners `dsJobs` and `latexJobs`, together with the settings verbs that start jobs on them (environments, installs, bootstraps). Those verbs are store methods that resolve projects, checkouts and machine settings through store state. Moving a runner without its verbs would leave the store reaching into a plugin for its own jobs. They move together when the verbs leave the store (P1c or later).
   - `store.dataScience()` / `store.latex()`, the capability resolvers. They are the gate (project opt-in, worktree rule, machine ceiling) and read store state directly.
 
-### 3. Panel surfaces and file viewers (P2, *planned*)
+### 3. Panel surfaces, viewers, commands, journal rows and settings panes (P2a web: done; P2b iOS: planned)
 
-These are declared in the manifest as data, so that web and iOS can register them without running engine code:
+On the web, contributions are registered by plugin id and gated by the enabled ids the cockpit reads from the project (`cockpitPlugins`):
 
-```ts
-ui?: {
-  panels?: { id; label; icon; scope: "session" }[];   // right-panel tabs
-  viewers?: { id; extensions: string[]; label }[];    // e.g. .ipynb, .tex/.pdf
-  commands?: { id; label; verb }[];                   // palette entries → a route
-}
-```
+| Contribution | Where | Gate |
+| --- | --- | --- |
+| Panel surfaces (`data`, `latex`), their label, icon, blurb and `wide` flag | `lib/plugins/registry.ts` (data), `components/plugins/surfaces.tsx` (component) | plugin on |
+| File viewers (`notebook`, `table`) | `registry.ts` `viewers`; `panelTabForPath` / `editorFileForPath` ask `viewerAvailable` | plugin on. `pdf` is **core**: it renders with LaTeX off too |
+| Commands (`open-data`, `open-latex`) | `registry.ts` `commands`; the cockpit binds them | plugin on. `open-plugins` is core navigation |
+| Journal rows (`notebook.cell.output`, `latex.compile.finished`, `ds.watch.violated`) | `lib/plugins/journal.ts` | **ungated**: they are history |
+| Settings panes (project and machine) | `components/plugins/settings-panes.tsx` | the settings pages' existing Mac/project checks. A plugin with no pane gets the generic one |
 
-Bundled plugins map each id to a React component in a web registry. External plugins get a declarative renderer (P4). The iOS `PluginID` becomes an open string.
+A plugin with no web contributions (for example `hello`) draws no tab, opener, command or pane. The components themselves are the plugins' own and did not change. Generic web proxies exist for all three engine scopes: `/api/sessions/:id/plugins/<id>/<verb…>`, `/api/projects/:id/plugins/<id>/<verb…>` and `/api/plugins/<id>/<verb…>`.
+
+**Still on aliases (P2 follow-up).** Every browser-side DS/LaTeX call in `lib/engine/client.ts` (settings verbs, jobs and the session `/ds/*` and `/latex/*` verbs) still goes through its alias route. So do the matching `app/api/{data-science,latex,projects/[id]/…,sessions/[id]/{ds,latex}}` proxies. Moving a caller is a behaviour change, because the generic doors enforce the enablement gates and the aliases do not. The engine-client also needs `projectPlugin` / `machinePlugin` methods; the web currently reaches those doors through `enginePluginDoor`.
+
+P2b: the iOS `PluginID` becomes open, with the same registry shape.
 
 ### 4. Settings schema (P3, *planned* beyond what exists)
 
@@ -123,6 +127,6 @@ requires?: { id; label; probe: verb; install?: verb }[]
    - `PATCH /v2/projects/:id` still accepts `dataScience` / `latex` as deprecated input aliases for one release. They write the map and are never stored.
    - The claim's dedicated fields are gone. `plugins` carries the two plugins when they resolve for the session.
    - **Rolling back to an engine older than the map is no longer supported.** Such an engine would see no Data Science or LaTeX settings.
-4. **P2**: UI registry covering panels, viewers, commands and event renderers. iOS `PluginID` becomes open.
+4. **P2**: UI registry covering panels, viewers, commands and event renderers. P2a (web) is done; P2b makes the iOS `PluginID` open.
 5. **P3**: settings generated from the schema, with one switch per scope.
 6. **P4**: external plugins, covering the folder loader, the supervised process, MCP tools and routes, declarative UI, and install/uninstall.

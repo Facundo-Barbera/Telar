@@ -175,13 +175,13 @@ describe("which files a close verb sweeps", () => {
 describe("editorFileForPath", () => {
   test("the data-science pair is gated, the PDF viewer is not", () => {
     // The same rules the panel applied when a file was a top-level tab.
-    expect(editorFileForPath("analysis.ipynb", false).view).toBe("code");
-    expect(editorFileForPath("analysis.ipynb", true).view).toBe("notebook");
-    expect(editorFileForPath("data.csv", true).view).toBe("table");
-    expect(editorFileForPath("docs/paper.pdf", false).view).toBe("pdf");
+    expect(editorFileForPath("analysis.ipynb", []).view).toBe("code");
+    expect(editorFileForPath("analysis.ipynb", ["data-science"]).view).toBe("notebook");
+    expect(editorFileForPath("data.csv", ["data-science"]).view).toBe("table");
+    expect(editorFileForPath("docs/paper.pdf", []).view).toBe("pdf");
     // Markdown is the text editor's own job — it renders it.
-    expect(editorFileForPath("README.md", false).view).toBe("code");
-    expect(editorFileForPath("src/weird:name.ts", false)).toEqual({ path: "src/weird:name.ts", view: "code" });
+    expect(editorFileForPath("README.md", []).view).toBe("code");
+    expect(editorFileForPath("src/weird:name.ts", [])).toEqual({ path: "src/weird:name.ts", view: "code" });
   });
 });
 
