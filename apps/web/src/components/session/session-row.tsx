@@ -43,7 +43,7 @@ import {
   UndoIcon,
 } from "lucide-react";
 import type { LiveSessionRow } from "@telar/engine-client";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
+import { ProjectAvatar } from "@/features/projects";
 import { fmtAgo, fmtTokens } from "@/lib/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText, rowSubtitle } from "@/lib/session-activity";
 import { canvasHref, sessionHref, sessionKey, settledHint, settlingActivity, type SessionBand, type SidebarSession } from "@/lib/session-list";

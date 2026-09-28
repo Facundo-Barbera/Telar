@@ -32,8 +32,7 @@
  */
 
 import { CheckIcon, ChevronDownIcon, FolderGit2Icon } from "lucide-react";
-import { ProjectAvatar } from "@/components/projects/project-avatar";
-import type { NewConversationTarget } from "@/components/project-palette";
+import { ProjectAvatar, type NewConversationTarget } from "@/features/projects";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { CAPTION } from "@/lib/idiom";
 import { projectFilterKey } from "@/lib/project-filter";

@@ -24,7 +24,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FolderPlusIcon, PlugZapIcon } from "lucide-react";
-import { ProjectPalette } from "@/components/project-palette";
+import { ProjectPalette } from "@/features/projects";
 import { Button } from "@/components/ui/button";
 
 export function FirstRun({ unreachable = false }: { unreachable?: boolean }) {

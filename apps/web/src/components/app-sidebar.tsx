@@ -156,7 +156,7 @@ import {
 } from "@/lib/session-groups";
 import { observeSidebarLayout, useSidebarLayout } from "@/lib/sidebar-layout";
 import type { CommandPalettePage } from "@/components/command-palette";
-import type { NewConversationTarget } from "@/components/project-palette";
+import type { NewConversationTarget } from "@/features/projects";
 import { Button } from "@/components/ui/button";
 import { KeyHint } from "@/components/ui/key-hint";
 import {

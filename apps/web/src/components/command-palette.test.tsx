@@ -6,7 +6,7 @@ import type { SidebarSession } from "@/lib/session-list";
 import { click, flush, installTestDom, mount, stubFetch } from "@/lib/testing/dom";
 import { clearField, typeInto } from "@/lib/testing/type-into";
 import { CommandPalette, type CommandPalettePage } from "./command-palette";
-import type { NewConversationTarget } from "./project-palette";
+import type { NewConversationTarget } from "@/features/projects";
 
 installTestDom();
 

@@ -1,6 +1,6 @@
 // @ts-expect-error -- bun:test has no types in this app's tsconfig
 import { describe, expect, test } from "bun:test";
-import type { NewConversationTarget } from "@/components/project-palette";
+import type { NewConversationTarget } from "@/features/projects";
 import {
   PALETTE_QUICK_COMMANDS,
   PALETTE_SUB_PAGES,
@@ -8,7 +8,6 @@ import {
   matchActions,
   matchQuick,
   paletteActions,
-  paletteBack,
   paletteRows,
   paletteSections,
   paletteSessionKey,
@@ -277,22 +276,3 @@ describe("the four sections", () => {
   });
 });
 
-describe("where Backspace goes", () => {
-  test("nowhere at all while there is something to delete", () => {
-    expect(paletteBack("sources", "gith", "projects")).toBeUndefined();
-    expect(paletteBack("projects", "x", "projects")).toBeUndefined();
-  });
-
-  test("Sources walks to Projects before it leaves the pages", () => {
-    expect(paletteBack("sources", "", "projects")).toBe("projects");
-  });
-
-  test("a page that was itself the door leaves the pages", () => {
-    expect(paletteBack("sources", "", "sources")).toBe("root");
-    expect(paletteBack("projects", "", "projects")).toBe("root");
-  });
-
-  test("the standalone palette's Sources always has a back, because its root is Projects", () => {
-    expect(paletteBack("sources", "", "projects")).toBe("projects");
-  });
-});
