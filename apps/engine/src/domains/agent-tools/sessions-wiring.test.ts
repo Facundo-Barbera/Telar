@@ -1,6 +1,6 @@
 /**
  * The `sessions` toolkit's WIRING — the two seams between the wall and a real
- * turn, neither of which `domains/sessions/tools/tools.test.ts` can reach.
+ * turn, neither of which `domains/sessions/tools/tools-*.test.ts` can reach.
  *
  *   1. THE DRIVER SEAM. That the seven tools reach a model at all, under the
  *      one `telar` server like every other Telar capability, and that a turn
@@ -93,7 +93,7 @@ function repo(): string {
 // ── 1. the driver seam ──────────────────────────────────────────────────────
 
 test("the sessions toolkit registers under the SAME one server, and only when the turn carries one", async () => {
-  // THE SEAM, not the toolkit — `domains/sessions/tools/tools.test.ts` owns what the seven
+  // THE SEAM, not the toolkit — `domains/sessions/tools/tools-*.test.ts` owns what the seven
   // tools do. What this pins is that they reach the model, under `telar`, and
   // that their absence is an absence rather than a stub.
   const seen: { serverKeys?: string[] } = {};
