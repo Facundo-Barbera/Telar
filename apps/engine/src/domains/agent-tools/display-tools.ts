@@ -1,46 +1,12 @@
-/**
- * THE DISPLAY TOOLKIT — the agent showing the human something, on purpose.
- *
- * One verb. `display_open` names a file in the session's own checkout and the
- * cockpit opens it in the right panel with the viewer its kind earns: markdown
- * rendered, a PDF paged, an image or video played, code highlighted. It is the
- * counterpart of the browser's "you get your own tab in the background" rule —
- * this tool exists precisely for the moment the agent WANTS the foreground:
- * a guide it just wrote, a report it finished, a plot it rendered to disk.
- *
- * WHAT IT DELIBERATELY IS NOT:
- *   - Not a read. The tool never returns the file's content; the agent already
- *     has file tools for reading. The cockpit reads the bytes itself, through
- *     the same fenced routes every panel surface uses.
- *   - Not a browser. A URL belongs in `browser_tabs new`; this takes a path.
- *   - Not gated. Showing a person a file they could open themselves changes
- *     nothing and risks nothing, the same judgement every other wall's verbs got.
- *
- * The capability is the seam (tool-kit.ts): the WORKER implements `open` —
- * fence the path inside the turn's checkout, confirm it exists, report a
- * `display.opened` observation the engine journals — so this file stays free
- * of both the SDK and the filesystem, and a unit test drives it with a fake.
- */
+import fs from "node:fs";
+import path from "node:path";
 import { z } from "zod";
-import { err, failure, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, ok, type ToolFactory } from "./tool-kit";
 
 export type DisplayCapability = {
-  /**
-   * Validate the path against the session's checkout and journal the gesture.
-   * Resolves with the workspace-relative path it verified; rejects with a
-   * sentence when the file is missing, outside the checkout, or a directory.
-   */
   open(input: { path: string; title?: string }): Promise<{ path: string }>;
 };
 
-/**
- * UNDER 350 CHARACTERS, ENFORCED BY A TEST (#515). This string is in every turn
- * of every session whether or not a file is ever shown, so the examples and the
- * rationale that used to live here — which file kinds render how, why the
- * foreground is deliberate — moved to the `telar` skill, which is on disk and
- * costs nothing until something asks for it. What stays is what a model needs
- * to CHOOSE: what it does, what it is for, and the one restraint on it.
- */
 const OPEN = `Show the human one file from this session's checkout in the cockpit's right panel, rendered rather than as source: markdown formatted, PDFs paged, images and video shown, code highlighted. For something you produced FOR them to look at now, not a file you are working on. Path is relative to the checkout root, and it takes the foreground.`;
 
 export function displayTools(tool: ToolFactory, capability: DisplayCapability): unknown[] {
@@ -67,4 +33,28 @@ export function displayTools(tool: ToolFactory, capability: DisplayCapability): 
       },
     ),
   ];
+}
+
+export function createDisplayCapability(input: {
+  cwd: string;
+  report(observation: { path: string; title?: string }): Promise<void>;
+}): DisplayCapability {
+  return {
+    async open({ path: target, title }) {
+      const resolved = path.resolve(input.cwd, target);
+      const prefix = input.cwd.endsWith(path.sep) ? input.cwd : `${input.cwd}${path.sep}`;
+      if (!resolved.startsWith(prefix)) throw new Error("the path is outside this session's checkout");
+      let stats: fs.Stats;
+      try {
+        stats = await fs.promises.stat(resolved);
+      } catch {
+        throw new Error("no such file in this session's checkout — write it first, then display it");
+      }
+      if (stats.isDirectory()) throw new Error("that path is a directory; name one file");
+      if (!stats.isFile()) throw new Error("that path is not a regular file");
+      const relative = path.relative(input.cwd, resolved).split(path.sep).join("/");
+      await input.report({ path: relative, ...(title ? { title } : {}) });
+      return { path: relative };
+    },
+  };
 }

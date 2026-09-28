@@ -2,7 +2,7 @@ import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAt
 import type { SessionsCapability } from "../sessions-tools/tools";
 import type { NotesCapability } from "../domains/notes";
 import type { PromptsCapability } from "../domains/prompts";
-import type { DisplayCapability } from "../display/tools";
+import type { DisplayCapability } from "../domains/agent-tools";
 import type { RunCapability } from "../run/capability";
 import type { SteerMailbox } from "../domains/turns";
 

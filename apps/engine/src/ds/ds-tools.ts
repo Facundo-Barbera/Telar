@@ -10,7 +10,7 @@
  * the library, and `ds_kernel` says the same up front.
  */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
 import type { DsCapability } from "./capability";
 import { describeOutputs, PLOT_TITLE_PROBE } from "./outputs";
 

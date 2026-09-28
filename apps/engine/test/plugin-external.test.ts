@@ -25,7 +25,7 @@ import { ExternalPluginProcess, RESTART_BACKOFF_MS, type PluginChild, type Plugi
 import { pluginToolModules } from "../src/plugins/bundled";
 import { ratifiedReadTools } from "../src/plugins/policy";
 import { pluginCall } from "../src/plugins/tool-module";
-import type { ToolFactory } from "../src/tool-kit";
+import type { ToolFactory } from "../src/domains/agent-tools";
 import { ECHO_MANIFEST, writePlugin } from "./fixtures/external-plugin";
 import { stubModels } from "./stub-models";
 

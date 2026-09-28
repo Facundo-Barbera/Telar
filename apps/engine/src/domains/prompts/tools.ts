@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { PreparedPrompt } from "@telar/engine-client";
-import { err, failure, fillWithin, json, ok, type ToolFactory } from "../../tool-kit";
+import { err, failure, fillWithin, json, ok, type ToolFactory } from "../agent-tools";
 
 // Every member mirrors one store call; the rules live in `store.ts`, not in the wall.
 export type PromptsCapability = {

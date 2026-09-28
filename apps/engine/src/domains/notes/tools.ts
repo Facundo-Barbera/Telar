@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { ProjectNote } from "@telar/engine-client";
-import { err, failure, fillWithin, json, ok, type ToolFactory } from "../../tool-kit";
+import { err, failure, fillWithin, json, ok, type ToolFactory } from "../agent-tools";
 
 export type NotesCapability = {
   projects(): Promise<Array<{ id: string; name: string }>>;

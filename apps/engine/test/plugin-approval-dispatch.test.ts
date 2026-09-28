@@ -44,7 +44,7 @@ import { TELAR_MCP_SERVER } from "@telar/engine-client";
 import { createCodexDriver } from "../src/drivers/codex";
 import type { DriverRequest } from "../src/drivers";
 import { helloToolModule } from "../src/plugins/hello";
-import { TelarToolSocket, collectTelarWall } from "../src/telar-socket";
+import { collectTelarWall, TelarToolSocket } from "../src/domains/agent-tools";
 import { allowCliInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —

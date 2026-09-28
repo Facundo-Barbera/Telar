@@ -29,7 +29,7 @@
  * client's access to sessions does not revoke everything.
  */
 import path from "node:path";
-import { connectCard, collectTools, ensureSecretFile, handleSocketMessage as handleMessage, type SocketTool } from "../mcp-socket";
+import { collectTools, connectCard, ensureSecretFile, handleSocketMessage as handleMessage, type SocketTool } from "../domains/agent-tools";
 import { sessionsTools, type SessionsCapability } from "./tools";
 import type { EngineStatePaths } from "../state";
 

@@ -16,7 +16,7 @@ import { BROWSER_BRIEFING } from "./domains/browser";
 import { RUN_BRIEFING } from "./run/briefing";
 import { isBackgroundWork, isUnstatedEnding, parseToolName, TELAR_BROWSER_MCP_SERVER, TELAR_MCP_SERVER, claudeCompactionEnv, type ItemDetail, type ItemSeed, type ProviderWaitDetail, type TaskSeed, type TaskState, type TurnObservation, type UsageSnapshot, type UserInputField } from "@telar/engine-client";
 import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "./domains/providers";
-import { telarWall, toSdkTools } from "./telar-socket";
+import { telarWall, toSdkTools } from "./domains/agent-tools";
 import { pluginBriefings } from "./plugins/bundled";
 import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv, ClaudeRuntimeStore, MessageFeed, UNATTENDED_BACKGROUND_WORK_MS, taskMemoryFrom, type ClaudeSessionRuntime, type RuntimeBindings, type RuntimeQuery } from "./drivers/claude";
 import { framedSteerText, steerRowTitle, type SteerMessage } from "./domains/turns";

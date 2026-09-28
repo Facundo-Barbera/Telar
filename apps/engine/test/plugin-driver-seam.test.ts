@@ -27,7 +27,7 @@ import { requestKindForTool, setPluginReadTools } from "../src/drivers/claude";
 import { bundledPluginToolModules, setPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule } from "../src/plugins/hello";
 import { HOST_RATIFIED_READ_TOOLS } from "../src/plugins/policy";
-import { TelarToolSocket, collectTelarWall, telarWall } from "../src/telar-socket";
+import { collectTelarWall, TelarToolSocket, telarWall } from "../src/domains/agent-tools";
 import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";
 
 /** NO PROVIDER PROCESS IS SPAWNED HERE, but a binary path IS resolved —

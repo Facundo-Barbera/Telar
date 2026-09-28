@@ -27,7 +27,7 @@ import { EngineClient, type RuntimeMode, type Session } from "@telar/engine-clie
 import { startEngine, type EngineDaemon } from "../src/daemon";
 import { createClaudeDriver } from "../src/driver";
 import { type SessionsCapability, type TurnDriver } from "../src/drivers";
-import { TelarToolSocket } from "../src/telar-socket";
+import { TelarToolSocket } from "../src/domains/agent-tools";
 import { reportBack } from "../src/domains/turns/agent-notice";
 import { EngineWorker } from "../src/worker";
 import { stubModels } from "./stub-models";

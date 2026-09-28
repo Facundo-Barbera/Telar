@@ -27,7 +27,7 @@ import { openCodeBriefings } from "../src/drivers/opencode";
 import { dsTools } from "../src/ds/ds-tools";
 import { notebookTools } from "../src/ds/notebook-tools";
 import { latexTools } from "../src/latex/latex-tools";
-import type { ToolFactory } from "../src/tool-kit";
+import type { ToolFactory } from "../src/domains/agent-tools";
 import { TELAR_SKILL } from "../src/domains/sessions";
 import { stubModels } from "./stub-models";
 import { allowCliInThisFile, pinFakeClaudeInThisFile } from "./allow-cli";

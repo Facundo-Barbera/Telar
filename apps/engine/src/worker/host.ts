@@ -1,5 +1,5 @@
 import type { ProviderDriverKind } from "@telar/engine-client";
-import type { TelarCapabilities, TelarSocketLease } from "../telar-socket";
+import type { TelarCapabilities, TelarSocketLease } from "../domains/agent-tools";
 import type { BrowserRunBinding, BrowserSocketLease, SecretsProvider } from "../domains/browser";
 import type { DriverRequestOutcome, TurnDriver } from "../drivers";
 import type { SteerMailbox } from "../domains/turns";

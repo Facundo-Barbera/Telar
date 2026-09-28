@@ -26,7 +26,7 @@ import { createClaudeDriver } from "../src/driver";
 import { BROWSER_BRIEFING } from "../src/domains/browser";
 import { BROWSER_TOOLS } from "../src/domains/browser";
 import { RUN_BRIEFING } from "../src/run/briefing";
-import { toolInputSchema } from "../src/mcp-socket";
+import { toolInputSchema } from "../src/domains/agent-tools";
 import { TELAR_ORIENTATION, TELAR_SKILL } from "../src/domains/sessions";
 import { parseFrontMatter } from "../src/domains/providers";
 import type { DriverRun } from "../src/drivers";

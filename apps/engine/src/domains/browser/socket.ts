@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import http from "node:http";
 import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { bearerIsValid } from "../../platform/http/auth";
-import { handleSocketMessage, readSocketBody, type SocketTool } from "../../mcp-socket";
+import { handleSocketMessage, readSocketBody, type SocketTool } from "../agent-tools";
 import { boundBrowserResult } from "./bounds";
 import { fileUrlViolation } from "./helpers";
 

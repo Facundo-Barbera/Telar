@@ -28,7 +28,7 @@ import { startEngine, type EngineDaemon } from "../src/daemon";
 import { HELLO_GATE, bundledPluginToolModules } from "../src/plugins/bundled";
 import { helloToolModule, type HelloCapability } from "../src/plugins/hello";
 import { pluginCall } from "../src/plugins/tool-module";
-import type { ToolFactory } from "../src/tool-kit";
+import type { ToolFactory } from "../src/domains/agent-tools";
 import { stubModels } from "./stub-models";
 
 /**

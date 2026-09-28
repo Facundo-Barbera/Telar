@@ -8,7 +8,7 @@
  * discipline as `ds-tools.ts`.
  */
 import { z } from "zod";
-import { err, failure, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, json, ok, type ToolFactory } from "../domains/agent-tools";
 import type { LatexCapability } from "./capability";
 import type { LatexDiagnostic } from "./log-parser";
 

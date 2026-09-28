@@ -1,5 +1,5 @@
 import path from "node:path";
-import { connectCard, collectTools, ensureSecretFile, handleSocketMessage as handleMessage, type SocketTool } from "../../mcp-socket";
+import { collectTools, connectCard, ensureSecretFile, handleSocketMessage as handleMessage, type SocketTool } from "../agent-tools";
 import { notesTools, type NotesCapability } from "./tools";
 import type { EngineStatePaths } from "../../state";
 

@@ -1,20 +1,9 @@
-/**
- * The `display` toolkit and the worker capability behind it.
- *
- * Two halves, tested apart the way they live apart: the TOOLKIT is a wrapper
- * whose contract is prose (what it answers, what it refuses to accept), and
- * the CAPABILITY is a fence whose contract is which paths get through it. The
- * fence tests use a real temp directory rather than fakes — the same policy
- * every engine tool test states — because prefix arithmetic over invented
- * strings is exactly where a fence bug would hide.
- */
 import { describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { assertTelarToolNames } from "@telar/engine-client";
-import { createDisplayCapability } from "../src/display/capability";
-import { displayTools, type DisplayCapability } from "../src/display/tools";
+import { createDisplayCapability, type DisplayCapability, displayTools } from "./display-tools";
 
 type Registered = {
   name: string;
@@ -66,9 +55,6 @@ describe("the display toolkit", () => {
     const result = await registered[0]!.run({ path: "docs/guide.md", title: "Setup guide" });
     expect(result.isError).toBeUndefined();
     expect(opened).toEqual([{ path: "docs/guide.md", title: "Setup guide" }]);
-    // The tool result is a sentence about the gesture — never file content:
-    // the agent has file tools for reading, and echoing bytes here would put
-    // a whole document into the transcript for no reader.
     expect(textOf(result)).toContain("docs/guide.md");
     expect(textOf(result)).toContain("Setup guide");
   });
@@ -144,8 +130,6 @@ describe("the worker's display capability (the fence)", () => {
       });
       await expect(capability.open({ path: "../outside.md" })).rejects.toThrow(/outside this session's checkout/);
       await expect(capability.open({ path: "/etc/hosts" })).rejects.toThrow(/outside this session's checkout/);
-      // A sibling directory sharing the checkout's name as a PREFIX must not
-      // slip the string comparison — the classic prefix-check bug.
       await expect(capability.open({ path: `${cwd}-sibling/file.md` })).rejects.toThrow(/outside this session's checkout/);
     } finally {
       cleanup();
