@@ -76,7 +76,7 @@ import { enablePatch, projectPluginSections } from "@/lib/plugins/sections";
 import { useSessionDefaults } from "@/lib/session-defaults";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { AgentControl, modelOptionsOf, ReasoningControl } from "@/components/composer-controls";
+import { AgentControl, modelOptionsOf, ReasoningControl } from "@/features/composer";
 import { useModelCatalogue } from "@/lib/model-catalogue-cache";
 import { ProjectIconPicker } from "@/components/projects/project-icon-picker";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";

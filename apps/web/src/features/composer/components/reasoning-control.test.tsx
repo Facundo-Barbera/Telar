@@ -12,7 +12,8 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { ModelCatalogue, ProviderModel } from "@telar/engine-client";
-import { ReasoningControl, reasoningPillLabel } from "./composer-controls";
+import { reasoningPillLabel } from "../model-options";
+import { ReasoningControl } from "./reasoning-control";
 import { forgetModelCatalogues } from "@/lib/model-catalogue-cache";
 
 GlobalRegistrator.register({ url: "http://localhost/" });

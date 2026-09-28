@@ -10,7 +10,7 @@ import { projectSettingsHref } from "@/lib/project-settings-link";
 import { enablePatch } from "@/lib/plugins/sections";
 import { isTelarIcon, TELAR_ICONS, type ProviderModel } from "@telar/engine-client";
 import type { ModelChoice } from "@/lib/models";
-import { modelOptionsOf } from "@/components/composer-controls";
+import { modelOptionsOf } from "@/features/composer";
 import type { ScopedProject } from "./projects-page";
 
 const navigation = await import("next/navigation");

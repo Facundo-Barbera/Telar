@@ -35,18 +35,6 @@ import { ComposerQuestionDrawer } from "./composer-question-drawer";
 import { choiceOf, type ModelChoice } from "@/lib/models";
 import { InputGroup, InputGroupAddon, InputGroupButton } from "@/components/ui/input-group";
 import { Spinner } from "@/components/ui/spinner";
-import {
-  AccessControl,
-  AgentControl,
-  BackgroundPresence,
-  ComposerOverflowMenu,
-  hasUltrathink,
-  toggleUltrathink,
-  ContextPill,
-  ControlDivider,
-  ReasoningControl,
-  useComposerCommandChoices,
-} from "./composer-controls";
 import { ComposerEditor, type ComposerEditorHandle } from "./composer-editor";
 import { contextNoticeDue } from "@/lib/context-notice";
 import { contextNoticeDismissal, writeContextNoticeDismissed } from "@/lib/context-notice-dismissal";
@@ -54,10 +42,18 @@ import { ComposerMenu } from "./composer-menu";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { ComposerStashMenu } from "./composer-stash-menu";
 import {
+  AccessControl,
+  AgentControl,
+  BackgroundPresence,
+  ComposerOverflowMenu,
+  ContextPill,
+  ControlDivider,
+  ReasoningControl,
   availableCommands,
   buildPathIndex,
   compactBlockedReason,
   detectComposerTrigger,
+  hasUltrathink,
   isResumeDraft,
   markComposerActive,
   ORCHESTRATE_SKILL,
@@ -66,6 +62,8 @@ import {
   rankPaths,
   rankSkills,
   registerComposer,
+  toggleUltrathink,
+  useComposerCommandChoices,
   type Completion,
   type ComposerKind,
   type ComposerSubmit,

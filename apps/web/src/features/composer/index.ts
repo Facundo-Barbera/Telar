@@ -27,3 +27,11 @@ export {
   type ComposerWrite,
 } from "./registry";
 export { chipIsDirectory, chipPath, detectComposerTrigger, replaceTextRange, segmentDraft, type ComposerTrigger } from "./tokens";
+export { AccessControl } from "./components/access-control";
+export { AgentControl } from "./components/agent-control";
+export { ComposerOverflowMenu } from "./components/composer-overflow-menu";
+export { BackgroundPresence, ContextPill } from "./components/context-pill";
+export { ControlDivider } from "./components/control-primitives";
+export { ReasoningControl } from "./components/reasoning-control";
+export { useComposerCommandChoices } from "./hooks/use-composer-command-choices";
+export { hasUltrathink, modelOptionsOf, toggleUltrathink } from "./model-options";
