@@ -147,42 +147,113 @@ async function waitForHealth(engineRoot, predicate, timeoutMs = 15_000) {
   throw new Error(`Timed out waiting for engine${lastError instanceof Error ? `: ${lastError.message}` : ""}`);
 }
 
-async function main() {
-  const telarHome = resolveTelarHome();
-  migrateDefaultHome(telarHome);
-  const engineRoot = path.join(telarHome, "engine");
-  const env = childEnv(telarHome);
-  const launchDesktop = shouldLaunchDesktop(process.argv.slice(2));
-  /**
-   * THE SHARED-BROWSER PAIR, minted HERE for the same reason the host secret
-   * is: in dev this script spawns the engine, the worker AND the desktop, so
-   * it is the only process that can hand all three the same address. Without
-   * this the engine never learns the dev desktop's control server and routes
-   * every browser call headless — or worse, inherits a STALE pair from the
-   * launching shell (a Telar-inside-Telar session carries its parent app's)
-   * and drives a different Telar's browser. Minted fresh, never inherited.
-   */
+// This script spawns engine, worker, web and desktop, so it alone can hand them one
+// browser-control pair and host secret. The pair is minted fresh, never inherited:
+// a Telar-inside-Telar shell carries its parent app's.
+function mintSharedSecrets(env, launchDesktop) {
   delete env.TELAR_DESKTOP_BROWSER_CONTROL_PORT;
   delete env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN;
   if (launchDesktop) {
     env.TELAR_DESKTOP_BROWSER_CONTROL_PORT = String(19223 + Math.floor(Math.random() * 400));
     env.TELAR_DESKTOP_BROWSER_CONTROL_TOKEN = randomBytes(16).toString("hex");
   }
-  /**
-   * THE HOST SECRET, minted by whoever owns both halves.
-   *
-   * The shell proves it is the process that runs the server by presenting this
-   * as a cookie (apps/desktop/main.js) and the gate compares it against the
-   * same value in the web child's environment. In dev THIS script spawns the
-   * web child, so it has to be the one that mints — the shell would otherwise
-   * invent a secret the server had never heard of, and the host's own window
-   * would be asked to pair with itself.
-   */
   env.TELAR_HOST_TOKEN = env.TELAR_HOST_TOKEN || "tlr_" + randomBytes(32).toString("base64url");
-  // What the host row in Remote access is called. Says "dev" because in this
-  // path it IS the dev shell, and a row claiming to be the installed app on a
-  // machine running both would be the confusing answer.
   env.TELAR_HOST_CLIENT = env.TELAR_HOST_CLIENT || "Telar (dev)";
+}
+
+// Read before the web child spawns: its env carries the ts.net origin and endpoint.
+// Never spawned unless serve was requested — App Store Tailscale re-prompts TCC per spawn.
+async function resolveTailscale(env, serveRequested) {
+  if (!serveRequested) return null;
+  const tailscale = await readStatus();
+  if (!tailscale) {
+    console.error("[telar] WARNING: TELAR_TAILSCALE_SERVE=1 but tailscale is not installed or not running; serve skipped.");
+    return null;
+  }
+  if (tailscale.certDomains.length === 0) {
+    console.error(
+      "[telar] WARNING: this tailnet has HTTPS certificates disabled (enable them at login.tailscale.com/admin/dns); serve skipped.",
+    );
+    return null;
+  }
+  env.TELAR_TAILSCALE_URL = httpsBaseUrl(tailscale.certDomains[0]);
+  const origins = env.TELAR_WEB_ALLOWED_ORIGINS?.trim();
+  env.TELAR_WEB_ALLOWED_ORIGINS = origins ? `${origins},${tailscale.certDomains[0]}` : tailscale.certDomains[0];
+  return tailscale;
+}
+
+function stopWhenExits(owned, label) {
+  owned.child.once("exit", (code, signal) => {
+    if (!stopping) {
+      console.error(`[telar] ${label} (code=${code} signal=${signal}).`);
+      void stop(code || 1);
+    }
+  });
+}
+
+async function startEngine(engineRoot, env) {
+  const health = await probeEngine(engineRoot);
+  if (decideEngineStart(health ? "healthy" : "unreachable") !== "spawn") {
+    process.stdout.write("[telar] attached to existing engine (it will not be stopped here)\n");
+    return health;
+  }
+  stopWhenExits(spawnOwned("engine", process.execPath, ["run", "--cwd", "apps/engine", "dev"], { env }), "owned engine exited before shutdown");
+  const started = await waitForHealth(engineRoot, () => true);
+  process.stdout.write("[telar] started engine\n");
+  return started;
+}
+
+async function startWorker(engineRoot, env, health) {
+  const workerAction = decideWorkerStart(health.worker);
+  const state = { workerAction, workerExited: false, workerRegistered: health.worker.registered };
+  if (workerAction !== "spawn") {
+    process.stdout.write(`[telar] attached to existing worker ${health.worker.workerId ?? "(registered)"} (it will not be stopped here)\n`);
+    return state;
+  }
+  const worker = spawnOwned("worker", process.execPath, ["run", "--cwd", "apps/engine", "worker"], { env });
+  // Attached before waiting for registration, so an early death is fatal and never reaches web startup.
+  const workerExit = new Promise((resolve) => worker.child.once("exit", (code, signal) => {
+    state.workerExited = true;
+    if (!stopping) {
+      console.error(`[telar] owned worker exited (code=${code} signal=${signal}).`);
+      void stop(code || 1);
+    }
+    resolve({ code, signal });
+  }));
+  try {
+    await Promise.race([
+      waitForHealth(engineRoot, (nextHealth) => nextHealth.worker.registered).then((nextHealth) => {
+        state.workerRegistered = nextHealth.worker.registered;
+      }),
+      workerExit.then(({ code, signal }) => Promise.reject(new Error(`worker exited before registration (code=${code} signal=${signal})`))),
+    ]);
+  } catch (error) {
+    if (decideWorkerFailure().fatal) throw error;
+  }
+  process.stdout.write("[telar] started worker\n");
+  return state;
+}
+
+// One-shot: `serve --bg` writes the mapping and exits; its failure must not take down the stack.
+async function startTailnetEndpoint(tailscale, webHost, webPort) {
+  const outcome = await startServe(443, serveTarget(webHost, webPort));
+  if (outcome !== "none") {
+    console.error(`[telar] WARNING: tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
+    return;
+  }
+  serveStarted = true;
+  const tsUrl = httpsBaseUrl(tailscale.certDomains[0]);
+  const reachable = await probeServe(tsUrl);
+  process.stdout.write(`[telar] tailnet: ${tsUrl}/ ${reachable ? "" : "(registered; not answering yet)"}\n`);
+}
+
+async function main() {
+  const telarHome = resolveTelarHome();
+  migrateDefaultHome(telarHome);
+  const engineRoot = path.join(telarHome, "engine");
+  const env = childEnv(telarHome);
+  const launchDesktop = shouldLaunchDesktop(process.argv.slice(2));
+  mintSharedSecrets(env, launchDesktop);
 
   const webPort = resolveWebPort(env);
   const webHost = resolveWebHost(env);
@@ -203,77 +274,10 @@ async function main() {
   });
   if (posture) console.error(`[telar] WARNING: ${posture}`);
 
-  // Read tailscale status BEFORE the web child spawns: its env must carry the
-  // ts.net origin (dev-asset allowlist) and the HTTPS endpoint (the Remote
-  // access panel advertises it). Never spawned unless serve was requested —
-  // Mac App Store Tailscale re-prompts TCC per spawn.
-  let tailscale = null;
-  if (serveRequested) {
-    tailscale = await readStatus();
-    if (!tailscale) {
-      console.error("[telar] WARNING: TELAR_TAILSCALE_SERVE=1 but tailscale is not installed or not running; serve skipped.");
-    } else if (tailscale.certDomains.length === 0) {
-      console.error(
-        "[telar] WARNING: this tailnet has HTTPS certificates disabled (enable them at login.tailscale.com/admin/dns); serve skipped.",
-      );
-      tailscale = null;
-    } else {
-      const tsUrl = httpsBaseUrl(tailscale.certDomains[0]);
-      env.TELAR_TAILSCALE_URL = tsUrl;
-      const origins = env.TELAR_WEB_ALLOWED_ORIGINS?.trim();
-      env.TELAR_WEB_ALLOWED_ORIGINS = origins ? `${origins},${tailscale.certDomains[0]}` : tailscale.certDomains[0];
-    }
-  }
-
-  let health = await probeEngine(engineRoot);
-  const engineAction = decideEngineStart(health ? "healthy" : "unreachable");
-  if (engineAction === "spawn") {
-    const engine = spawnOwned("engine", process.execPath, ["run", "--cwd", "apps/engine", "dev"], { env });
-    engine.child.once("exit", (code, signal) => {
-      if (!stopping) {
-        console.error(`[telar] owned engine exited before shutdown (code=${code} signal=${signal}).`);
-        void stop(code || 1);
-      }
-    });
-    health = await waitForHealth(engineRoot, () => true);
-    process.stdout.write("[telar] started engine\n");
-  } else {
-    process.stdout.write("[telar] attached to existing engine (it will not be stopped here)\n");
-  }
-
+  const tailscale = await resolveTailscale(env, serveRequested);
+  const health = await startEngine(engineRoot, env);
   if (!health) throw new Error("engine did not return health after startup.");
-  const workerAction = decideWorkerStart(health.worker);
-  let workerExited = false;
-  let workerRegistered = health.worker.registered;
-  if (workerAction === "spawn") {
-    const worker = spawnOwned("worker", process.execPath, ["run", "--cwd", "apps/engine", "worker"], { env });
-    // Attach this handler before waiting for registration.  It both makes an
-    // early death fatal and prevents this function from reaching web startup.
-    const workerExit = new Promise((resolve) => worker.child.once("exit", (code, signal) => {
-      workerExited = true;
-      if (!stopping) {
-        console.error(`[telar] owned worker exited (code=${code} signal=${signal}).`);
-        void stop(code || 1);
-      }
-      resolve({ code, signal });
-    }));
-    try {
-      await Promise.race([
-        waitForHealth(engineRoot, (nextHealth) => nextHealth.worker.registered).then((nextHealth) => {
-          workerRegistered = nextHealth.worker.registered;
-        }),
-        workerExit.then(({ code, signal }) => Promise.reject(new Error(`worker exited before registration (code=${code} signal=${signal})`))),
-      ]);
-    } catch (error) {
-      const outcome = decideWorkerFailure();
-      if (outcome.fatal) throw error;
-    }
-    process.stdout.write("[telar] started worker\n");
-  } else {
-    process.stdout.write(`[telar] attached to existing worker ${health.worker.workerId ?? "(registered)"} (it will not be stopped here)\n`);
-  }
-
-  if (!canLaunchCockpit({ workerAction, workerExited, workerRegistered })) {
+  if (!canLaunchCockpit(await startWorker(engineRoot, env, health))) {
     throw new Error("worker is not live and registered; refusing to start the cockpit.");
   }
 
@@ -281,40 +285,17 @@ async function main() {
   // Do not pass host, port, token, or a discovery snapshot: an engine restart must
   // be discoverable rather than pinning web to stale credentials.
   const webCommand = webDevCommand(webPort, webHost);
-  const web = spawnOwned(webCommand.label, process.execPath, webCommand.args, { env });
-  web.child.once("exit", (code, signal) => {
-    if (!stopping) {
-      console.error(`[telar] web cockpit exited (code=${code} signal=${signal}).`);
-      void stop(code || 1);
-    }
-  });
+  stopWhenExits(spawnOwned(webCommand.label, process.execPath, webCommand.args, { env }), "web cockpit exited");
   process.stdout.write(`[telar] cockpit: ${cockpitUrl}\n`);
 
-  if (tailscale) {
-    // One-shot: `serve --bg` writes the mapping and exits; it is not an owned
-    // child and its failure must not take down the stack.
-    const outcome = await startServe(443, serveTarget(webHost, webPort));
-    if (outcome !== "none") {
-      console.error(`[telar] WARNING: tailscale serve failed (${outcome}); the ts.net endpoint is down.`);
-    } else {
-      serveStarted = true;
-      const tsUrl = httpsBaseUrl(tailscale.certDomains[0]);
-      const reachable = await probeServe(tsUrl);
-      process.stdout.write(`[telar] tailnet: ${tsUrl}/ ${reachable ? "" : "(registered; not answering yet)"}\n`);
-    }
-  }
+  if (tailscale) await startTailnetEndpoint(tailscale, webHost, webPort);
 
   if (launchDesktop) {
     const desktopCommand = desktopDevCommand(cockpitUrl);
     const desktop = spawnOwned(desktopCommand.label, process.execPath, desktopCommand.args, {
       env: { ...env, ...desktopCommand.env },
     });
-    desktop.child.once("exit", (code, signal) => {
-      if (!stopping) {
-        console.error(`[telar] owned desktop exited (code=${code} signal=${signal}).`);
-        void stop(code || 1);
-      }
-    });
+    stopWhenExits(desktop, "owned desktop exited");
     process.stdout.write(`[telar] desktop: ${cockpitUrl}\n`);
   }
 }
