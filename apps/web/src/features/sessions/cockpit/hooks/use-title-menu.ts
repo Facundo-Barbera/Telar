@@ -82,6 +82,8 @@ export function useTitleMenu({ hostId, projectId, projectName, sessionId, sync, 
           .then(() => setMenuTerminals({ sessionId, open: 0 }))
           .catch((cause: unknown) => setError(asEngineError(cause, "Could not close the session's terminals."))),
       snooze: (until) => void settling.snooze(until),
+      regenerateTitle: () =>
+        void menuApi.regenerateSessionTitle(sessionId).catch((cause: unknown) => setError(asEngineError(cause, "Could not regenerate the title."))),
       copy: copyText,
       projectSettings: ({ projectId: target }) => router.push(projectSettingsHref(target)),
       remove: () => {

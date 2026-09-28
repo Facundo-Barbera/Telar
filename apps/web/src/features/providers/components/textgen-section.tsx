@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, type TextGenPolicy } from "@telar/engine-client";
+import { DEFAULT_TEXT_GEN_POLICY, type ProviderDriverKind, type ProviderModel, type TextGenEffort, type TextGenPolicy } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
 import { useModelCatalogueGeneration } from "../model-catalogue-cache";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/ui/select";
@@ -65,12 +65,12 @@ export function TextGenSection() {
       titles: DEFAULT_TEXT_GEN_POLICY.titles,
       renameBranches: DEFAULT_TEXT_GEN_POLICY.renameBranches,
     });
-    await save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null });
+    await save({ model: DEFAULT_TEXT_GEN_POLICY.model ?? null, effort: null });
   });
 
   const pinned = policy.model;
   const listed = pinned !== undefined && models.some((model) => model.id === pinned);
-  const pinnedLabel = pinned === undefined ? "Provider default" : (models.find((model) => model.id === pinned)?.label ?? pinned);
+  const pinnedLabel = pinned === undefined ? "Smallest listed" : (models.find((model) => model.id === pinned)?.label ?? pinned);
 
   return (
     <SettingsGroup title="Generated text" scope="mac">
@@ -88,6 +88,7 @@ export function TextGenSection() {
             options={[
               { value: "claude", label: "Claude" },
               { value: "codex", label: "Codex" },
+              { value: "opencode", label: "OpenCode" },
             ]}
           />
         }
@@ -110,7 +111,7 @@ export function TextGenSection() {
               <SelectValue>{pinnedLabel}</SelectValue>
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={DRIVER_DEFAULT}>Provider default</SelectItem>
+              <SelectItem value={DRIVER_DEFAULT}>Smallest listed</SelectItem>
               {pinned !== undefined && !listed && <SelectItem value={pinned}>{pinned}</SelectItem>}
               {models.map((model) => (
                 <SelectItem key={model.id} value={model.id}>
@@ -119,6 +120,23 @@ export function TextGenSection() {
               ))}
             </SelectContent>
           </Select>
+        }
+      />
+      <Row
+        label="Effort"
+        hint="How hard the model thinks before it names a session."
+        {...(policy.effort === undefined ? {} : { onRevert: () => void save({ effort: null }) })}
+        control={
+          <Dropdown<TextGenEffort>
+            value={policy.effort ?? "low"}
+            label="Effort"
+            onChange={(next) => void save({ effort: next === "low" ? null : next })}
+            options={[
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ]}
+          />
         }
       />
       <ToggleRow

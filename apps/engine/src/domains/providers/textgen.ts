@@ -1,5 +1,8 @@
-import { defaultInstanceIdForDriver, type ProviderDriverKind, type TextGenPolicy } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, type Item, type ProviderDriverKind, type TextGenPolicy } from "@telar/engine-client";
+import { EngineStateError } from "../../platform/kernel";
 import { runStructured, type TextGenDriverInput, type TextGenEffort } from "./textgen-run";
+import { titleContext, titleMessages } from "./title-context";
+import { buildRegenerateTitlePrompt, buildTitlePrompt } from "./title-prompts";
 
 export function textGenDisabledByEnv(): boolean {
   return (process.env.TELAR_TEXTGEN ?? "").trim().toLowerCase() === "off";
@@ -16,34 +19,6 @@ function oneStringSchema(key: string): object {
     required: [key],
     additionalProperties: false,
   };
-}
-
-const TITLE_PROMPT = `Generate a title that will help the user recognize this coding session weeks later.
-Return JSON with exactly one key: title.
-
-Before answering, silently reduce the request to:
-- Subject: What system, feature, or problem is this really about?
-- Outcome: What does the user ultimately want to understand or change?
-- Incidental instructions: What only describes how the agent should do the work?
-
-Title the subject and outcome. Discard incidental instructions.
-
-Editorial rules:
-- 3-8 words, fewer than 40 characters.
-- Use a compact noun phrase or clear action phrase.
-- Capture the umbrella goal when the request lists several symptoms or steps.
-- Name the product change, not the mock, plan, report, branch, or PR used to produce it.
-- Models, subagents, tools, output formats, and monitoring instructions do not belong in the title unless they are themselves the topic.
-- For reviews, name what is being reviewed and the relevant concern.
-- For research, name the question domain rather than the requested research process.
-- Do not claim the work is complete.
-- Do not copy and truncate the user's message.
-- Avoid quotes, labels, filler, and trailing punctuation.`;
-
-const MAX_PROMPT_MESSAGE_CHARS = 8_000;
-
-export function buildTitlePrompt(message: string): string {
-  return `${TITLE_PROMPT}\n\nUser message:\n${message.slice(0, MAX_PROMPT_MESSAGE_CHARS)}`;
 }
 
 export function sanitizeTitle(raw: unknown): string | undefined {
@@ -92,7 +67,13 @@ function driverInput(store: TextGenStore, policy: TextGenPolicy, model?: string)
   const configured = model ?? policy.model;
   const usable = configured && (policy.driver !== "opencode" || configured.includes("/")) ? configured : undefined;
   const chosen = usable ?? cheapModel(store.catalogues?.cachedRows(policy.driver)?.map((row) => row.id) ?? []);
-  return { driver: policy.driver, env, ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}), ...(chosen ? { model: chosen } : {}) };
+  return {
+    driver: policy.driver,
+    env,
+    ...(instance.binaryPath ? { binaryPath: instance.binaryPath } : {}),
+    ...(chosen ? { model: chosen } : {}),
+    ...(policy.effort ? { effort: policy.effort } : {}),
+  };
 }
 
 export async function runStructuredForPolicy(
@@ -156,4 +137,28 @@ export async function maybeRetitleSession(
       // The new title stands even when the branch rename fails.
     }
   }
+}
+
+export type RegenerateStore = RetitleStore & { queries: { items(sessionId: string): Item[] } };
+
+export async function regenerateSessionTitle(
+  store: RegenerateStore,
+  sessionId: string,
+  run: typeof runStructured = runStructured,
+): Promise<{ title: string; changed: boolean } | undefined> {
+  const previous = store.records.get(sessionId).title;
+  const context = titleContext(titleMessages(store.queries.items(sessionId)));
+  if (!context) throw new EngineStateError("conflict", "the session has no messages to title");
+  if (textGenDisabledByEnv()) throw new EngineStateError("conflict", "text generation is switched off on this engine");
+  const policy = store.settings.textGen();
+  const driver = driverInput(store, policy);
+  if (!driver) throw new EngineStateError("conflict", "the text generation provider is disabled");
+  const result = await run(driver, buildRegenerateTitlePrompt(previous, context), oneStringSchema("title"));
+  const title = sanitizeTitle(result?.["title"]);
+  if (title === undefined) return undefined;
+  if (title === previous) return { title, changed: false };
+  if (store.records.get(sessionId).title !== previous) throw new EngineStateError("conflict", "the session was renamed while its title was regenerated");
+  store.lifecycle.updateSession(sessionId, { title });
+  if (policy.renameBranches) await Promise.resolve(store.lifecycle.refreshWorktreeBranchFromTitle(sessionId)).catch(() => undefined);
+  return { title, changed: true };
 }

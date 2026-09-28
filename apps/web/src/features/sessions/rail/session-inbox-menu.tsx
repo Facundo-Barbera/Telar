@@ -12,6 +12,7 @@ import {
   deleteSession,
   mutateRow,
   patchSession,
+  regenerateTitle,
   withSettling,
   withSnooze,
   type SessionRowChange,
@@ -99,6 +100,7 @@ function useSessionRowMenu({ session, activity = {}, now, settled, active, onRen
     closeTerminals: () => void closeRowTerminals({ row: session, onRowChanged: onRowChanged ?? (() => {}) }),
     snooze: (until) => void mutate({ row: withSnooze(session, until) }, () => patchSession(session, { snoozedUntil: until })),
     rename: () => onRename?.(),
+    regenerateTitle: () => void mutate({ row: session }, () => regenerateTitle(session)),
     copy: (text) => void copyToClipboard(text),
     projectSettings: ({ projectId }) => router.push(projectSettingsHref(projectId)),
     remove: () => {

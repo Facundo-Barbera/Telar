@@ -484,6 +484,8 @@ struct SessionSidebar: View {
         case .rename:
             renameDraft = row.session.title
             renaming = row
+        case .regenerateTitle:
+            Task { await regenerateTitle(row) }
         case .copy(let text):
             UIPasteboard.general.string = text
         case .delete:
@@ -690,6 +692,11 @@ struct SessionSidebar: View {
     private func patch(_ row: HostedSession, _ patch: SessionPatch) async {
         do { try await settings.api(for: row.hostId)?.patchSession(row.session.id, patch: patch); await inbox.refresh() }
         catch { layoutError = error.localizedDescription }
+    }
+
+    private func regenerateTitle(_ row: HostedSession) async {
+        do { try await settings.api(for: row.hostId)?.regenerateSessionTitle(row.session.id); await inbox.refresh() }
+        catch { layoutError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription }
     }
 
     private func remove(_ row: HostedSession) async {

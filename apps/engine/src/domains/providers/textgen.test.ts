@@ -3,10 +3,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_TEXT_GEN_POLICY, type TextGenPolicy } from "@telar/engine-client";
+import { DEFAULT_TEXT_GEN_POLICY, type Item, type TextGenPolicy } from "@telar/engine-client";
 import { EngineStore } from "../../state";
 import { EngineStateError } from "../../platform/kernel";
-import { buildTitlePrompt, cheapModel, generateSessionTitle, maybeRetitleSession, sanitizeTitle, titleIsSeed, type RetitleStore } from "./textgen";
+import { cheapModel, generateSessionTitle, maybeRetitleSession, regenerateSessionTitle, sanitizeTitle, titleIsSeed, type RegenerateStore, type RetitleStore } from "./textgen";
+import { buildTitlePrompt } from "./title-prompts";
 import { OPENCODE_VERSION } from "../../drivers/opencode/version";
 import { worktreeReady } from "../../../test/worktree-ready";
 
@@ -82,6 +83,8 @@ describe("text generation policy", () => {
     expect(swapped.driver).toBe("codex");
     expect(swapped.model).toBeUndefined();
     expect(store.settings.setTextGen({ model: null }).model).toBeUndefined();
+    expect(store.settings.setTextGen({ driver: "opencode", effort: "medium" })).toMatchObject({ driver: "opencode", effort: "medium" });
+    expect(store.settings.setTextGen({ effort: null }).effort).toBeUndefined();
   });
 
   test("refuses shapes that are not the policy's", () => {
@@ -89,6 +92,7 @@ describe("text generation policy", () => {
     expect(() => store.settings.setTextGen({ driver: "cursor" })).toThrow(EngineStateError);
     expect(() => store.settings.setTextGen({ titles: "yes" })).toThrow(EngineStateError);
     expect(() => store.settings.setTextGen({ model: "" })).toThrow(EngineStateError);
+    expect(() => store.settings.setTextGen({ effort: "max" })).toThrow(EngineStateError);
   });
 
   test("a mangled file costs the preference, never a throw", () => {
@@ -301,6 +305,98 @@ describe("maybeRetitleSession", () => {
     const { calls, run } = harness({ policy: { titles: true, renameBranches: false, driver: "claude" } });
     await run();
     expect(calls.updates).toHaveLength(1);
+    expect(calls.renamed).toHaveLength(0);
+  });
+});
+
+describe("regenerateSessionTitle", () => {
+  let previous: string | undefined;
+  beforeAll(() => {
+    previous = process.env.TELAR_TEXTGEN;
+    delete process.env.TELAR_TEXTGEN;
+  });
+  afterAll(() => {
+    if (previous === undefined) delete process.env.TELAR_TEXTGEN;
+    else process.env.TELAR_TEXTGEN = previous;
+  });
+
+  type Overrides = Partial<{ title: string; titleAfter: string; answer: Record<string, unknown> | undefined; items: Item[]; renameBranches: boolean }>;
+
+  const item = (index: number, detail: Item["detail"]): Item =>
+    ({ id: `item_${index}`, runId: "run_one", sessionId: "session_one", status: "completed", detail, startedAt: index }) as Item;
+  const conversation = [
+    item(2, { type: "assistant_message", text: "The list re-sorts twice on settle." }),
+    item(1, { type: "user_message", text: "Why does the rail flicker?" }),
+    item(3, { type: "reasoning", text: "SECRET THINKING" }),
+  ];
+
+  function harness(overrides: Overrides = {}) {
+    const calls: { prompts: string[]; inputs: unknown[]; updates: { title: string }[]; renamed: string[] } = { prompts: [], inputs: [], updates: [], renamed: [] };
+    let title = overrides.title ?? "My own name";
+    const store: RegenerateStore = {
+      settings: { textGen: () => ({ titles: false, renameBranches: overrides.renameBranches ?? true, driver: "claude", model: "haiku", effort: "medium" }) },
+      records: { get: () => ({ title, state: "active" }) },
+      providers: { resolve: () => ({ enabled: true, env: [] }) },
+      queries: { items: () => overrides.items ?? conversation },
+      lifecycle: {
+        updateSession: (_id, patch) => {
+          calls.updates.push(patch);
+          title = patch.title;
+        },
+        refreshWorktreeBranchFromTitle: (id) => {
+          calls.renamed.push(id);
+          return undefined;
+        },
+      },
+    };
+    const run = (input: unknown, prompt: string) => {
+      calls.inputs.push(input);
+      calls.prompts.push(prompt);
+      if (overrides.titleAfter !== undefined) title = overrides.titleAfter;
+      return Promise.resolve("answer" in overrides ? overrides.answer : { title: "Rail Settle Flicker" });
+    };
+    return { calls, run: () => regenerateSessionTitle(store, "session_one", run as never) };
+  }
+
+  test("replaces even a title the person wrote, from the conversation, with the policy's model and effort", async () => {
+    const { calls, run } = harness();
+    expect(await run()).toEqual({ title: "Rail Settle Flicker", changed: true });
+    expect(calls.updates).toEqual([{ title: "Rail Settle Flicker" }]);
+    expect(calls.renamed).toEqual(["session_one"]);
+    expect(calls.inputs[0]).toMatchObject({ driver: "claude", model: "haiku", effort: "medium" });
+    const prompt = calls.prompts[0]!;
+    expect(prompt).toContain('The previous title was "My own name".');
+    expect(prompt).toContain("USER:\nWhy does the rail flicker?\n\nASSISTANT:\nThe list re-sorts twice on settle.");
+    expect(prompt).not.toContain("SECRET THINKING");
+  });
+
+  test("an unchanged answer writes nothing", async () => {
+    const { calls, run } = harness({ answer: { title: "My own name" } });
+    expect(await run()).toEqual({ title: "My own name", changed: false });
+    expect(calls.updates).toHaveLength(0);
+  });
+
+  test("a failed generation is undefined and touches nothing", async () => {
+    const { calls, run } = harness({ answer: undefined });
+    expect(await run()).toBeUndefined();
+    expect(calls.updates).toHaveLength(0);
+  });
+
+  test("a rename landing while it thinks wins", async () => {
+    const { calls, run } = harness({ titleAfter: "Renamed meanwhile" });
+    await expect(run()).rejects.toThrow("renamed while");
+    expect(calls.updates).toHaveLength(0);
+  });
+
+  test("a session with nothing said is refused before any call", async () => {
+    const { calls, run } = harness({ items: [] });
+    await expect(run()).rejects.toThrow(EngineStateError);
+    expect(calls.inputs).toHaveLength(0);
+  });
+
+  test("branch renaming honours its own switch", async () => {
+    const { calls, run } = harness({ renameBranches: false });
+    await run();
     expect(calls.renamed).toHaveLength(0);
   });
 });

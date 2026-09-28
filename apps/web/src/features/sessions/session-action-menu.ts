@@ -14,6 +14,7 @@ export type SessionActionIcon =
   | "snooze"
   | "wake"
   | "rename"
+  | "regenerate"
   | "copy"
   | "project-settings"
   | "delete";
@@ -63,6 +64,7 @@ export type SessionActionHandlers = {
   closeTerminals?: () => void;
   snooze: (until: number | null) => void;
   rename: () => void;
+  regenerateTitle: () => void;
   copy: (text: string) => void;
   projectSettings: (input: { projectId: string }) => void;
   remove: () => void;
@@ -83,6 +85,14 @@ const RUNNING_DELETE = "A turn is running. Stop it before deleting.";
 const WAITING_DELETE = "A request here is waiting on you. Answer or stop it first.";
 const REMOTE_SETTINGS = "Project settings open on the Mac that owns the project.";
 const ALREADY_OPEN = "You are already reading this one.";
+
+function titleItems(session: SessionActionTarget, actions: SessionActionHandlers): SessionActionItem[] {
+  const disabled = session.archived && ARCHIVED;
+  return [
+    { id: "rename", label: "Rename", icon: "rename", separatorBefore: true, disabled, run: actions.rename },
+    { id: "regenerate-title", label: "Regenerate title", icon: "regenerate", disabled, run: actions.regenerateTitle },
+  ];
+}
 
 export function buildSessionActionMenuItems(state: SessionActionMenuState): SessionActionItem[] {
   const { session, activity, now, actions } = state;
@@ -189,14 +199,7 @@ export function buildSessionActionMenuItems(state: SessionActionMenuState): Sess
     }
   }
 
-  items.push({
-    id: "rename",
-    label: "Rename",
-    icon: "rename",
-    separatorBefore: true,
-    disabled: session.archived && ARCHIVED,
-    run: actions.rename,
-  });
+  items.push(...titleItems(session, actions));
 
   const copies: SessionActionItem[] = [
     { id: "copy-link", label: "Link", icon: "copy", run: () => actions.copyLink(href) },

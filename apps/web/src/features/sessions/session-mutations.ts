@@ -83,6 +83,12 @@ export async function patchSession(
   return answer.session;
 }
 
+export async function regenerateTitle(session: Pick<SidebarSession, "id" | "hostId">): Promise<LiveSessionRow> {
+  const answer = (await engineFor(session).regenerateSessionTitle(session.id)) as { session?: LiveSessionRow } | null;
+  if (!answer?.session) throw new Error("The engine answered without a session.");
+  return answer.session;
+}
+
 export async function deleteSession(session: Pick<SidebarSession, "id" | "hostId">): Promise<undefined> {
   await engineFor(session).deleteSession(session.id);
   return undefined;

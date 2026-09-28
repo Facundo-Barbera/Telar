@@ -8,6 +8,7 @@ enum SessionMenuVerb: Equatable {
 
     case snooze(Timestamp?)
     case rename
+    case regenerateTitle
     case copy(String)
     case delete
 }
@@ -102,6 +103,13 @@ enum SessionRowMenu {
             systemImage: "pencil",
             disabled: session.state == .archived ? archived : nil,
             verb: .rename
+        ))
+        items.append(SessionMenuItem(
+            id: "regenerate-title",
+            label: "Regenerate title",
+            systemImage: "sparkles",
+            disabled: session.state == .archived ? archived : nil,
+            verb: .regenerateTitle
         ))
 
         var copies: [SessionMenuItem] = []
