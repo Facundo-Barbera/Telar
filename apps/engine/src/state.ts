@@ -5717,15 +5717,7 @@ export class EngineStore {
     return reverted;
   }
 
-  /**
-   * RUN A MESSAGE THAT WAS HELD — the human has re-read it and still means it.
-   *
-   * The other two exits from a hold already exist and are not duplicated here:
-   * `stopTurn` drops it (it is `queued`, which that already handles), and
-   * simply reading it in the transcript is the review. This one only clears the
-   * flag; the ordinary claim path takes it from there, in its original place in
-   * the queue.
-   */
+  /** Runs a held message: clears the flag, and the claim path takes it from its original place in the queue. */
   releaseHeldTurn(sessionId: string, runId: string): Turn {
     return this.kernel.command("releaseHeldTurn", () => {
       assertId(runId, "run id");
