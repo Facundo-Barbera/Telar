@@ -682,6 +682,12 @@ function SoloTools({
  * next to a token count that always is. Tokens are the unit everywhere now.
  */
 
+/** Appends a menu or panel insert to the draft: a multi-line insert (a quote) is its own paragraph. */
+export function appendToDraft(current: string, text: string): string {
+  if (!current.trim()) return text;
+  return text.includes("\n") ? `${current.replace(/\s+$/, "")}\n\n${text}` : insertReference(current, text, current.length).draft;
+}
+
 /** The journal separates the submitted prompt from streamed agent output. */
 export function retryInputForJournalTurn(turn: Pick<JournalTurn, "runId" | "state" | "prompt">): Pick<Turn, "runId" | "state" | "input"> {
   return { runId: turn.runId, state: turn.state, input: turn.prompt };
@@ -2404,32 +2410,10 @@ export function SessionCockpit({
     updatePanel((current) => addPanelTab(current, { id: LIVE_BROWSER_TAB, kind: LIVE_BROWSER_TAB, params: {} }));
   }, [makeRoomForPanel, updatePanel]);
 
-  /**
-   * PUT TEXT INTO THE MESSAGE BEING WRITTEN — the keyboard-and-menu twin of the
-   * drag every panel row already offers (`lib/drag-reference.ts`).
-   *
-   * WHAT IT INSERTS IS TEXT, AND THAT IS THE WHOLE DESIGN, for the reason that
-   * module's header gives at length: nothing is resolved behind the scenes, so
-   * `turn.input` says exactly what the model was sent. A quote is the words you
-   * are looking at; a reference is a path in backticks. Both are what you would
-   * have typed.
-   *
-   * APPENDED, NOT SPLICED AT THE CARET. The caret lives inside `ComposerEditor`
-   * and this component cannot see it — a drop knows where it landed and this
-   * gesture does not, so it goes where a person's next sentence goes. The
-   * spacing is `insertReference`'s own, which is what stops "fix " becoming
-   * "fix  `a.ts`"; a MULTI-LINE insert (a quoted message) is a paragraph of its
-   * own instead, because a block quote welded onto the end of a sentence is not
-   * a quote of anything.
-   *
-   * The debounced `writeDraft` below persists it like any keystroke.
-   */
+  // Appended rather than spliced: the caret lives inside ComposerEditor, out of reach here.
   const insertIntoComposer = useCallback((text: string) => {
     if (!text) return;
-    setDraft((current) => {
-      if (!current.trim()) return text;
-      return text.includes("\n") ? `${current.replace(/\s+$/, "")}\n\n${text}` : insertReference(current, text, current.length).draft;
-    });
+    setDraft((current) => appendToDraft(current, text));
     // A draft that came back from a turn stops being that turn's recall the
     // moment anything is added to it — the same rule `onDraftChange` follows.
     setDraftRunId(undefined);
