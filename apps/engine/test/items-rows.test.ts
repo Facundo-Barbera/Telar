@@ -106,7 +106,7 @@ type Seam = {
   migrateItemsToRows(sessionId: string, rows: ReadonlyArray<Row>, documents: string[]): void;
 };
 function countItemBytes(store: EngineStore): () => number {
-  const seam = (store as unknown as { executionStore: Seam }).executionStore;
+  const seam = (store as unknown as { kernel: { executionStore: Seam } }).kernel.executionStore;
   let bytes = 0;
   const writeText = seam.writeText.bind(seam);
   seam.writeText = (file, text) => {
@@ -223,7 +223,7 @@ function blobShaped(): { directory: string; expected: ReturnType<EngineStore["it
 }
 
 type Marker = { itemsAreRows(sessionId: string): boolean; read(file: string): unknown; byteLength(file: string): number | undefined };
-const inner = (store: EngineStore): Marker => (store as unknown as { executionStore: Marker }).executionStore;
+const inner = (store: EngineStore): Marker => (store as unknown as { kernel: { executionStore: Marker } }).kernel.executionStore;
 
 test("a session stored as a blob is moved to rows the first time it is read, and answers identically", () => {
   const { directory, expected } = blobShaped();
@@ -263,10 +263,10 @@ test("a migration killed before it commits leaves the blob and no marker", () =>
    * asserted below so a rename that slips past this hook fails here rather than
    * passing as a migration that was never interrupted.
    */
-  const seam = store as unknown as { executionStore: { statement(sql: string): unknown } };
-  const real = seam.executionStore.statement.bind(seam.executionStore);
+  const seam = store as unknown as { kernel: { executionStore: { statement(sql: string): unknown } } };
+  const real = seam.kernel.executionStore.statement.bind(seam.kernel.executionStore);
   let intercepted = 0;
-  seam.executionStore.statement = (sql: string) => {
+  seam.kernel.executionStore.statement = (sql: string) => {
     if (sql.startsWith("INSERT INTO metadata")) {
       intercepted += 1;
       throw new Error("killed mid-migration");
@@ -276,7 +276,7 @@ test("a migration killed before it commits leaves the blob and no marker", () =>
 
   expect(() => store.items("session_one")).toThrow("killed mid-migration");
   expect(intercepted).toBe(1);
-  seam.executionStore.statement = real;
+  seam.kernel.executionStore.statement = real;
 
   // NOTHING MOVED. The blob is byte-for-byte what it was and the marker never
   // landed — which is a correct unmigrated session.
