@@ -462,26 +462,36 @@ export function EnvironmentStrip({
   );
 }
 
+export async function readWorkspaceGit(engine: typeof api, projectId: string, worktreeSessionId?: string): Promise<GitOverview> {
+  const { git } = await engine.projectGit(projectId);
+  if (!worktreeSessionId) return git;
+  const rest = { ...git };
+  delete rest.dirtyFiles;
+  const own = await engine.sessionDiff(worktreeSessionId, { base: null }).catch(() => undefined);
+  return own?.diff.repository ? { ...rest, dirtyFiles: own.diff.files.length } : rest;
+}
+
 export function WorkspaceEnvironment({
   onAvailability,
   ...props
 }: Omit<Parameters<typeof EnvironmentStrip>[0], "git" | "reachable" | "onRetry"> & {
   onAvailability?: (availability: Exclude<ProjectAvailability, "available"> | undefined) => void;
 }) {
-  const { projectId } = props;
+  const { projectId, session } = props;
+  const worktreeSessionId = session?.workspace.mode === "worktree" ? session.id : undefined;
   const [git, setGit] = useState<GitOverview>();
   const [reachable, setReachable] = useState(true);
 
   const load = useCallback(async () => {
     try {
-      const result = await api.projectGit(projectId);
-      setGit(result.git);
+      const next = await readWorkspaceGit(api, projectId, worktreeSessionId);
+      setGit(next);
       setReachable(true);
-      onAvailability?.(result.git.availability === "available" ? undefined : result.git.availability);
+      onAvailability?.(next.availability === "available" ? undefined : next.availability);
     } catch {
       setReachable(false);
     }
-  }, [projectId, onAvailability]);
+  }, [projectId, worktreeSessionId, onAvailability]);
 
   usePoll(load, REFRESH_MS, { key: load });
 
