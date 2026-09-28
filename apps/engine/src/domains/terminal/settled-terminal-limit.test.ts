@@ -7,7 +7,8 @@ import { terminalLauncher } from "./launcher";
 import { RunManager } from "./manager";
 import { type StartRunInput } from "./live-run";
 import { RunTerminalClient } from "./terminal-client";
-import { EngineStore, SETTLED_TERMINAL_GRACE_MS } from "../../state";
+import { EngineStore } from "../../state";
+import { SETTLED_TERMINAL_GRACE_MS } from "./session-terminals";
 import { desktopTerminalServer } from "../../../test/desktop-terminal";
 
 type StartServer = (options: {

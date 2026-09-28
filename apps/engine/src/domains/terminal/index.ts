@@ -7,3 +7,4 @@ export { createRunMount } from "./mount";
 export { processGroupFor } from "./platform";
 export { resolveShell } from "./shell";
 export { runTools } from "./tools";
+export { type AttachedTerminals, SessionTerminals } from "./session-terminals";
