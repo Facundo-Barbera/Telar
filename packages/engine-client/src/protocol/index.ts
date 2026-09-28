@@ -8,7 +8,6 @@ export * from "./tools";
 export * from "./assignments";
 export * from "./plugins";
 export * from "./run";
-export * from "./github";
 export * from "./events";
 export * from "./observations";
 export * from "./workspace";
