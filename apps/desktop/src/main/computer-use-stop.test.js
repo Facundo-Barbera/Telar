@@ -71,7 +71,7 @@ function alive(pid) {
 
 describe("the helper's paths", () => {
   test("are the ones the engine launches the daemon with", async () => {
-    const { bundledHelper } = await import("../../../engine/src/computer-use.ts");
+    const { bundledHelper } = await import("../../../engine/src/domains/computer-use/gate.ts");
     const engine = bundledHelper("/Applications/Telar.app/Contents/Helpers/Computer Use for Telar.app", "/Users/someone");
     const shell = bundledHelperDaemon("/Applications/Telar.app/Contents/Helpers/Computer Use for Telar.app", "/Users/someone");
     expect(shell).toEqual({ binary: engine.binary, socket: engine.socket, pidFile: engine.pidFile });

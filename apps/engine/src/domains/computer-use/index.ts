@@ -1,0 +1,1 @@
+export { claimHasComputerUse, createComputerUseGate, grantComputerUseAccess, resetComputerUseAccess, revealComputerUseHelper, withComputerUse, type ComputerUseGate, type ResolvedComputerUse } from "./gate";

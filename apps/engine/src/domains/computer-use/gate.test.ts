@@ -1,11 +1,3 @@
-/**
- * Telar's own computer use — cua-driver, and the gate that decides whether a
- * claim gets it.
- *
- * Pinned against the REAL layout on this machine: cua-driver installs a
- * symlink in ~/.local/bin pointing at CuaDriver.app. NOTHING HERE SPAWNS: the
- * gate is driven with an injected `status`, never the real probe.
- */
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
@@ -28,19 +20,17 @@ import {
   interpretListApps,
   resetComputerUseAccess,
   resolveComputerUse,
-  resolveComputerUseServer,
   revealComputerUseHelper,
   SETTINGS_PANE_URL,
   type HelperDeps,
   withComputerUse,
   type ComputerUseProbe,
   type ResolvedComputerUse,
-} from "../src/computer-use";
+} from "./gate";
 
 const HOME = "/Users/tester";
 const CUA_SYMLINK = `${HOME}/.local/bin/cua-driver`;
 
-/** cua installed. */
 const cuaOnly = (overrides: Partial<ComputerUseProbe> = {}): ComputerUseProbe => ({
   env: {},
   home: HOME,
@@ -70,11 +60,6 @@ describe("resolveComputerUse", () => {
     expect(resolveComputerUse(cuaOnly({ env: { TELAR_COMPUTER_USE: "0" } }))).toBeUndefined();
     expect(resolveComputerUse(cuaOnly({ platform: "linux" }))).toBeUndefined();
   });
-
-  test("resolveComputerUseServer is the server half, for the claim", () => {
-    expect(resolveComputerUseServer(cuaOnly())?.id).toBe("mac");
-    expect(resolveComputerUseServer(cuaOnly({ exists: () => false }))).toBeUndefined();
-  });
 });
 
 describe("the helper bundled inside Telar.app", () => {
@@ -100,14 +85,12 @@ describe("the helper bundled inside Telar.app", () => {
     expect(helper.bundleId).toBe(COMPUTER_USE_HELPER_BUNDLE_ID);
     expect(helper.socket).toBe(`${HOME}/Library/Caches/com.telar.desktop.computer-use/driver.sock`);
     expect(helper.pidFile).toBe(`${HOME}/Library/Caches/com.telar.desktop.computer-use/driver.pid`);
-    // cua's defaults, which a separately installed CuaDriver.app uses.
     for (const shared of [`${HOME}/Library/Caches/cua-driver`, `${HOME}/.cua-driver`]) {
       expect([helper.socket, helper.pidFile, helper.stateDir].some((p) => p.startsWith(shared))).toBe(false);
     }
     for (const key of ["CUA_DRIVER_RS_HOME", "CUA_DRIVER_HOME", "CUA_DRIVER_TELEMETRY_HOME"]) expect(helper.env[key]).toBe(helper.stateDir);
     expect(helper.env.CUA_DRIVER_RS_TELEMETRY_ENABLED).toBe("false");
     expect(helper.env.CUA_DRIVER_RS_UPDATE_CHECK).toBe("false");
-    // A socket path must fit sockaddr_un (104 bytes on macOS) for a long home.
     expect(bundledHelper(APP, "/Users/a-rather-long-account-name-for-this").socket.length).toBeLessThan(104);
   });
 
@@ -151,7 +134,6 @@ describe("the helper bundled inside Telar.app", () => {
   test("one daemon per socket across processes: a launch lock held elsewhere is waited on, not doubled", async () => {
     const helper = bundledHelper(APP, fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-home-")));
     fs.mkdirSync(path.dirname(helper.socket), { recursive: true });
-    // Another engine is mid-launch: it holds the lock, and its daemon comes up.
     fs.writeFileSync(`${helper.socket}.launch.lock`, "");
     const spawned: string[][] = [];
     let polls = 0;
@@ -163,7 +145,6 @@ describe("the helper bundled inside Telar.app", () => {
     };
     expect(await ensureHelperDaemon(helper, deps)).toBe(true);
     expect(spawned).toEqual([]);
-    // The lock is the other launcher's to release, not ours.
     expect(fs.existsSync(`${helper.socket}.launch.lock`)).toBe(true);
   });
 
@@ -221,7 +202,6 @@ describe("the helper bundled inside Telar.app", () => {
       { pid: 501, command: `${BINARY} serve --socket ${bundledHelper(APP, HOME).socket} --no-permissions-gate` },
     ];
     expect(await resetComputerUseAccess(bundled(), { spawn: spawnStub, processes, kill: (pid) => void killed.push(pid) })).toEqual({ reset: true });
-    // Our daemon stops so nothing holds the old grants; the person's own cua is untouched.
     expect(killed).toEqual([501]);
     expect(ran.map((argv) => argv.slice(0, 3))).toEqual([
       ["/usr/bin/tccutil", "reset", "Accessibility"],
@@ -232,17 +212,10 @@ describe("the helper bundled inside Telar.app", () => {
     expect(ran).toEqual([]);
   });
 
-  /**
-   * A stand-in for macOS: `open` runs the helper's hidden probe (answering
-   * `grants` into the `--stdout` file) or opens a Settings pane / Finder; the
-   * MCP proxy answers `check_permissions` with the daemon's (possibly stale)
-   * view. Records everything, spawns nothing.
-   */
   const fakeMac = (
     options: {
       grants?: { accessibility: boolean; screen_recording: boolean } | "silent";
       daemonSees?: { accessibility: boolean; screen_recording: boolean };
-      /** Whether each successive window capture brings a frame back. */
       captures?: boolean[];
       windows?: { window_id: number; pid: number; bounds: { width: number; height: number } }[];
       up?: boolean;
@@ -275,7 +248,6 @@ describe("the helper bundled inside Telar.app", () => {
           up = true;
           return { unref() {} };
         }
-        // The MCP proxy: initialize, then one tool call.
         const child = Object.assign(new EventEmitter(), {
           stdout: new EventEmitter(),
           kill() {},
@@ -307,14 +279,11 @@ describe("the helper bundled inside Telar.app", () => {
   };
 
   test("Grant asks through the helper's own fresh probe, never `check_permissions {prompt:true}` and never `permissions grant`", async () => {
-    // THE BUG: cua refuses prompt:true on the tool path
-    // (`os_permission_prompt_requires_trusted_host`), and the refusal was swallowed.
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-grant-"));
     const mac = fakeMac();
     const answer = await grantComputerUseAccess(bundled({ home }), mac.deps);
     expect(mac.tools).toEqual([]);
     const probe = mac.opened[0]!;
-    // Through LaunchServices from the helper's bundle, so the prompts name it.
     expect(probe.slice(0, 3)).toEqual(["-n", "-g", "-W"]);
     expect(probe.slice(probe.indexOf("-a"))).toEqual(["-a", APP, "--args", "--cua-internal-permission-probe-request"]);
     expect(mac.opened.flat()).not.toContain("grant");
@@ -342,7 +311,6 @@ describe("the helper bundled inside Telar.app", () => {
   test("Grant says what went wrong instead of swallowing it — and still opens Accessibility", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-cu-grant-"));
     const silent = fakeMac({ grants: "silent", up: false });
-    // The daemon never comes up: `open` for the daemon is stubbed not to raise it.
     silent.deps.spawn = (() => ({ unref() {} })) as never;
     const answer = await grantComputerUseAccess(bundled({ home }), silent.deps);
     expect(answer.daemon).toBe(false);
@@ -455,12 +423,10 @@ describe("classifyProbeError", () => {
   test("a backend refusing the CALLER is its own state, not a denial", () => {
     expect(classifyProbeError("Computer Use server error -10000: Sender process is not authenticated")).toBe("unauthenticated");
     expect(classifyProbeError("Sender process is not authenticated")).toBe("unauthenticated");
-    // A code must be a code, not a prefix of a longer number.
     expect(classifyProbeError("-100001")).toBe("unknown");
   });
 
   test("Sky's Apple-event codes are no longer read", () => {
-    // Sky is gone, so -1743 (errAEEventNotPermitted) is just a number now.
     expect(classifyProbeError("Computer Use server error -1743 (unknown error)")).toBe("unknown");
   });
 });
@@ -562,11 +528,6 @@ describe("withComputerUse — who gets it", () => {
   });
 
   test("Codex gets it too (#521)", () => {
-    // #368 withheld it, reasoning that Codex ships its own provider and a second
-    // desktop under a second name is the thing to avoid. The second desktop was
-    // never the risk the withholding removed — the driver already switches the
-    // native feature off whenever a `mac` server is in the claim — and what the
-    // withholding did remove was the only desktop a Codex session had.
     expect(withComputerUse([], [], "codex", cua).map((s) => s.id)).toEqual([COMPUTER_USE_SERVER_ID]);
   });
 
@@ -577,9 +538,6 @@ describe("withComputerUse — who gets it", () => {
   test("a user's own entry wins — including a DISABLED one", () => {
     const theirs = user(COMPUTER_USE_SERVER_ID);
     expect(withComputerUse([theirs], [theirs], "claude", cua)).toEqual([theirs]);
-    // Disabled is filtered out of the enabled list before the fold, so the
-    // check reads the unfiltered one: switching the server off must not
-    // resurrect the built-in.
     const disabled = user(COMPUTER_USE_SERVER_ID, false);
     expect(withComputerUse([], [disabled], "opencode", cua)).toEqual([]);
   });
@@ -595,7 +553,5 @@ describe("claimHasComputerUse — the Codex native-disable signal", () => {
   });
 });
 
-// A `ResolvedComputerUse` is `{ server, backend }` — pinned so a shape change
-// is caught here rather than at the state.ts injection site.
 const _shape: ResolvedComputerUse | undefined = resolveComputerUse(cuaOnly());
 void _shape;
