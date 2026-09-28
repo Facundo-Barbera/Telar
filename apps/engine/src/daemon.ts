@@ -175,7 +175,7 @@ type RouteContext = {
   remoteStore: ReturnType<typeof createRemoteStore>;
   remoteDir: string;
   push: ReturnType<typeof createPushService>;
-  syncOrientationSkill: (policy: ReturnType<EngineStore["getAgentOrientation"]>) => Promise<unknown>;
+  syncOrientationSkill: (policy: ReturnType<EngineStore["settings"]["orientation"]>) => Promise<unknown>;
   computerUseGate: ComputerUseGate;
   storageMeter: ReturnType<typeof createStorageMeter>;
   notesDoor: ReturnType<typeof notesSocketDoor>;

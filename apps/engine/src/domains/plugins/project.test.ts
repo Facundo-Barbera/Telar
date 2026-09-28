@@ -27,7 +27,7 @@ afterEach(() => {
 
 function readyStore(): EngineStore {
   const store = new EngineStore(dir("telar-plugin-home-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: dir("telar-plugin-checkout-") });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: dir("telar-plugin-checkout-") });
   return store;
 }
 
@@ -40,7 +40,7 @@ function onDisk(store: EngineStore): Record<string, unknown> {
 describe("the legacy keys are a DEPRECATED INPUT ALIAS, and only the map is written", () => {
   test("a legacy patch lands in the map, and no legacy key is stored or returned", () => {
     const store = readyStore();
-    const project = store.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
+    const project = store.projectRegistry.update("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
 
     expect("latex" in project).toBe(false);
     expect(pluginEnabled(project.plugins!, "latex")).toBe(true);
@@ -54,8 +54,8 @@ describe("the legacy keys are a DEPRECATED INPUT ALIAS, and only the map is writ
 
   test("a legacy patch for one plugin does not disturb the other's entry", () => {
     const store = readyStore();
-    store.updateProject("project_one", { dataScience: { enabled: true, stack: ["pandas"] } });
-    const project = store.updateProject("project_one", { latex: { enabled: true } });
+    store.projectRegistry.update("project_one", { dataScience: { enabled: true, stack: ["pandas"] } });
+    const project = store.projectRegistry.update("project_one", { latex: { enabled: true } });
 
     expect(pluginEnabled(project.plugins!, "data-science")).toBe(true);
     expect(pluginSettings(project.plugins!, "data-science")).toEqual({ stack: ["pandas"] });
@@ -64,14 +64,14 @@ describe("the legacy keys are a DEPRECATED INPUT ALIAS, and only the map is writ
 
   test("an invalid legacy block is refused BEFORE anything is written", () => {
     const store = readyStore();
-    store.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
+    store.projectRegistry.update("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
     const before = onDisk(store);
-    expect(() => store.updateProject("project_one", { dataScience: { enabled: "yes" } as never })).toThrow(
+    expect(() => store.projectRegistry.update("project_one", { dataScience: { enabled: "yes" } as never })).toThrow(
       EngineStateError,
     );
     // The refusal must not have half-applied: LaTeX is untouched and no
     // data-science entry appeared.
-    const project = store.getProject("project_one");
+    const project = store.projectRegistry.get("project_one");
     expect(pluginEnabled(project.plugins!, "latex")).toBe(true);
     expect(pluginEnabled(project.plugins!, "data-science")).toBe(false);
     expect(onDisk(store)).toEqual(before);
@@ -81,7 +81,7 @@ describe("the legacy keys are a DEPRECATED INPUT ALIAS, and only the map is writ
 describe("the generic write path", () => {
   test("a plugin patch reaches a plugin the legacy arm has never heard of", () => {
     const store = readyStore();
-    const project = store.updateProject("project_one", {
+    const project = store.projectRegistry.update("project_one", {
       plugins: { hello: { enabled: true, settings: { greeting: "hola" } } },
     });
     expect(pluginEnabled(project.plugins!, "hello")).toBe(true);
@@ -95,7 +95,7 @@ describe("the generic write path", () => {
 
   test("a plugin patch for a formerly mirrored plugin writes the map and NO legacy key", () => {
     const store = readyStore();
-    store.updateProject("project_one", {
+    store.projectRegistry.update("project_one", {
       plugins: { latex: { enabled: true, settings: { mainFile: "thesis.tex" } } },
     });
     const stored = onDisk(store);
@@ -110,7 +110,7 @@ describe("the generic write path", () => {
     // Both arms can name the same plugin. The precedence is stated rather than
     // accidental: the generic map is the authority, so it is applied last.
     const store = readyStore();
-    const project = store.updateProject("project_one", {
+    const project = store.projectRegistry.update("project_one", {
       latex: { enabled: true, mainFile: "legacy.tex" },
       plugins: { latex: { enabled: true, settings: { mainFile: "generic.tex" } } },
     });
@@ -121,7 +121,7 @@ describe("the generic write path", () => {
 
   test("an empty patch does not migrate a project that never configured anything", () => {
     const store = readyStore();
-    store.updateProject("project_one", {});
+    store.projectRegistry.update("project_one", {});
     expect(onDisk(store).plugins).toBeUndefined();
   });
 });
@@ -129,8 +129,8 @@ describe("the generic write path", () => {
 describe("disabling", () => {
   test("A NULL PATCH DELETES THE ENTRY, so no reader anywhere still sees the settings", () => {
     const store = readyStore();
-    store.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
-    const project = store.updateProject("project_one", { latex: null });
+    store.projectRegistry.update("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
+    const project = store.projectRegistry.update("project_one", { latex: null });
 
     expect("latex" in project).toBe(false);
     expect(pluginEnabled(project.plugins!, "latex")).toBe(false);
@@ -143,8 +143,8 @@ describe("disabling", () => {
 
   test("a generic null does the same as a legacy null", () => {
     const store = readyStore();
-    store.updateProject("project_one", { dataScience: { enabled: true, stack: ["pandas"] } });
-    const project = store.updateProject("project_one", { plugins: { "data-science": null } });
+    store.projectRegistry.update("project_one", { dataScience: { enabled: true, stack: ["pandas"] } });
+    const project = store.projectRegistry.update("project_one", { plugins: { "data-science": null } });
     expect("dataScience" in project).toBe(false);
     expect(pluginEnabled(project.plugins!, "data-science")).toBe(false);
     expect((onDisk(store).plugins as { entries: Record<string, unknown> }).entries["data-science"]).toBeUndefined();
@@ -154,8 +154,8 @@ describe("disabling", () => {
     // Unticking a checkbox is not the same as removing the plugin: the settings
     // beside it are meant to survive so re-enabling does not start from blank.
     const store = readyStore();
-    store.updateProject("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
-    const project = store.updateProject("project_one", { latex: { enabled: false, mainFile: "paper.tex" } });
+    store.projectRegistry.update("project_one", { latex: { enabled: true, mainFile: "paper.tex" } });
+    const project = store.projectRegistry.update("project_one", { latex: { enabled: false, mainFile: "paper.tex" } });
 
     expect(pluginEnabled(project.plugins!, "latex")).toBe(false);
     expect(pluginSettings(project.plugins!, "latex")).toEqual({ mainFile: "paper.tex" });
@@ -172,8 +172,8 @@ describe("disabling", () => {
     // last entry would put the project back on the legacy read path, which is
     // exactly where the resurrection bug lives.
     const store = readyStore();
-    store.updateProject("project_one", { latex: { enabled: true } });
-    store.updateProject("project_one", { latex: null });
+    store.projectRegistry.update("project_one", { latex: { enabled: true } });
+    store.projectRegistry.update("project_one", { latex: null });
     expect((onDisk(store).plugins as { version: number }).version).toBe(1);
   });
 });
@@ -210,7 +210,7 @@ describe("a legacy-only record on disk folds into the map on open", () => {
         "data-science": { enabled: true, settings: { stack: ["pandas"] } },
       },
     });
-    const project = reopened.getProject("project_one");
+    const project = reopened.projectRegistry.get("project_one");
     expect("latex" in project).toBe(false);
     expect(pluginSettings(project.plugins!, "latex")).toEqual({ mainFile: "paper.tex" });
   });
@@ -220,7 +220,7 @@ describe("a legacy-only record on disk folds into the map on open", () => {
     writeLegacyRecord(store, { latex: { enabled: false, mainFile: "paper.tex" }, dataScience: { enabled: true } });
 
     const reopened = new EngineStore(store.paths.root, () => 200);
-    const { plugins } = readProjectPlugins(reopened.getProject("project_one"));
+    const { plugins } = readProjectPlugins(reopened.projectRegistry.get("project_one"));
     expect(pluginEnabled(plugins, "latex")).toBe(false);
     expect(pluginSettings(plugins, "latex")).toEqual({ mainFile: "paper.tex" });
     expect(pluginEnabled(plugins, "data-science")).toBe(true);
@@ -246,7 +246,7 @@ describe("a legacy-only record on disk folds into the map on open", () => {
 
     writeLegacyRecord(store, { latex: { enabled: true, mainFile: "paper.tex" } });
     const reopened = new EngineStore(store.paths.root, () => 300);
-    reopened.updateProject("project_one", { dataScience: { enabled: true } });
+    reopened.projectRegistry.update("project_one", { dataScience: { enabled: true } });
     const stored = onDisk(reopened);
     expect((stored.plugins as { version: number }).version).toBe(1);
     expect((stored.plugins as { entries: Record<string, { settings?: unknown }> }).entries.latex?.settings).toEqual({

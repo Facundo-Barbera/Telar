@@ -10,12 +10,12 @@ const documents = (store: EngineStore) => (store as unknown as { kernel: { execu
 
 test("tasks are journalled AND projected, so a cold session still knows a sub-agent ran", () => {
   const { store, root: stateRoot } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
   const token = claimed.claim!.token;
-  store.markRunning("session_one", "run_one", token);
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
 
-  store.ingestObservations("session_one", "run_one", token, [
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { id: "task_a", kind: "agent", state: "running", title: "Audit the parser", role: "Explore" } },
     // A row produced INSIDE the sub-agent.
     { kind: "item.started", item: { id: "i1", detail: { type: "command_execution", command: { command: "rg x" } }, taskId: "task_a" } },
@@ -60,12 +60,12 @@ test("a close the level signal inferred yields to the notification that says the
    * would keep the green row — for an agent that failed.
    */
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
-  const claimed = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claimed = store.claims.claimNextTurn("worker_one")!;
   const token = claimed.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
   const agent = { id: "task_agent", providerTaskId: "a1", kind: "agent" as const, backgrounded: true };
-  store.ingestObservations("session_one", "run_one", token, [
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { ...agent, state: "running" } },
     { kind: "task.completed", task: { ...agent, state: "completed" } },
     { kind: "task.completed", task: { ...agent, state: "failed", resultText: "could not reach the API" } },
@@ -74,7 +74,7 @@ test("a close the level signal inferred yields to the notification that says the
 
   // A STATED ending is never rewritten: a completion that carried its result
   // stays completed whatever arrives after it.
-  store.ingestObservations("session_one", "run_one", token, [
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "running" } },
     { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "completed", resultText: "done" } },
     { kind: "task.completed", task: { ...agent, id: "task_other", providerTaskId: "a2", state: "stopped" } },
@@ -84,18 +84,18 @@ test("a close the level signal inferred yields to the notification that says the
 
 test("task reports between turns fold onto the rows they name, and open nothing", () => {
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
-  const first = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claims.claimNextTurn("worker_one")!;
   const token = first.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { id: "task_toolu_bg", providerTaskId: "bg1", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" } },
   ]);
-  store.completeTurn("session_one", "run_one", token, { text: "Watching" });
-  expect(store.getSession("session_one").activity).toBe("monitoring");
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "Watching" });
+  expect(store.records.get("session_one").activity).toBe("monitoring");
 
   // The shell ends while the session is idle: no claim, no turn.
-  const accepted = store.reportSessionTasks("session_one", "worker_one", [
+  const accepted = store.ingest.reportSessionTasks("session_one", "worker_one", [
     { kind: "task.completed", task: { id: "task_toolu_bg", providerTaskId: "bg1", kind: "background", state: "completed", resultText: "green" } },
     // A row nobody opened is not minted here.
     { kind: "task.started", task: { id: "task_ghost", kind: "agent", state: "running" } },
@@ -103,24 +103,24 @@ test("task reports between turns fold onto the rows they name, and open nothing"
   expect(accepted).toEqual({ accepted: 1 });
   expect(store.tasks("session_one")).toHaveLength(1);
   expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_bg", state: "completed", resultText: "green", runId: "run_one" });
-  expect(store.getSession("session_one").activity).toBe("idle");
+  expect(store.records.get("session_one").activity).toBe("idle");
   expect(store.readEvents("session_one").at(-1)).toMatchObject({ type: "task.completed", runId: "run_one" });
 });
 
 test("a claim carries the session's live task rows, and only those, as seeds", () => {
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
-  const first = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claims.claimNextTurn("worker_one")!;
   const token = first.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { id: "task_toolu_ci", providerTaskId: "b7ohaj89n", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" } },
     { kind: "task.started", task: { id: "task_toolu_done", providerTaskId: "x1", kind: "agent", state: "completed", title: "Explore" } },
   ]);
-  store.completeTurn("session_one", "run_one", token, { text: "Watching" });
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "Watching" });
 
-  store.submitTurn("session_one", { runId: "run_two", input: "Next" });
-  const second = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_two", input: "Next" });
+  const second = store.claims.claimNextTurn("worker_one")!;
   // The seed is a `TaskSeed`: the engine-minted fields are stripped.
   expect(second.tasks).toEqual([
     { id: "task_toolu_ci", providerTaskId: "b7ohaj89n", kind: "background", backgrounded: true, state: "running", title: "Wait for CI" },
@@ -131,22 +131,22 @@ test("a settled task is not re-announced by a report that adds nothing", () => {
   // A buffered report replayed about an already-closed task must not append another
   // completion event; a tailing client would fold it as a fresh one.
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
-  const first = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Watch it" });
+  const first = store.claims.claimNextTurn("worker_one")!;
   const token = first.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { id: "task_toolu_mon", providerTaskId: "b7ohaj89n", kind: "background", state: "running", title: "Tick" } },
   ]);
-  store.completeTurn("session_one", "run_one", token, { text: "Watching" });
-  expect(store.stopBackgroundTasks("session_one")).toBe(1);
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "Watching" });
+  expect(store.worker.stopBackgroundTasks("session_one")).toBe(1);
 
-  store.submitTurn("session_one", { runId: "run_two", input: "Next" });
-  const second = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_two", input: "Next" });
+  const second = store.claims.claimNextTurn("worker_one")!;
   const token2 = second.turn.claim!.token;
-  store.markRunning("session_one", "run_two", token2);
+  store.turnLifecycle.markRunning("session_one", "run_two", token2);
   // A bare restatement of the ending — the CLI's late `task_updated{killed}`.
-  store.ingestObservations("session_one", "run_two", token2, [
+  store.ingest.ingestObservations("session_one", "run_two", token2, [
     { kind: "task.completed", task: { id: "task_toolu_mon", providerTaskId: "b7ohaj89n", kind: "background", state: "stopped" } },
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed" } },
   ]);
@@ -154,14 +154,14 @@ test("a settled task is not re-announced by a report that adds nothing", () => {
   expect(closes()).toHaveLength(1);
   // The summary the notification carries IS new — it lands on the row, but
   // a summary arriving a frame after the close is not a second close.
-  store.ingestObservations("session_one", "run_two", token2, [
+  store.ingest.ingestObservations("session_one", "run_two", token2, [
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "agent", state: "completed", resultText: "tick 2" } },
   ]);
   expect(closes()).toHaveLength(1);
   expect(store.tasks("session_one")).toHaveLength(1);
   expect(store.tasks("session_one")[0]).toMatchObject({ id: "task_toolu_mon", kind: "background", state: "stopped", resultText: "tick 2" });
   // The log path rides the same late notification, and is folded the same way.
-  store.ingestObservations("session_one", "run_two", token2, [
+  store.ingest.ingestObservations("session_one", "run_two", token2, [
     { kind: "task.completed", task: { id: "task_b7ohaj89n", providerTaskId: "b7ohaj89n", kind: "background", state: "completed", outputFile: "/tmp/claude-501/p/s/tasks/b7ohaj89n.output" } },
   ]);
   expect(closes()).toHaveLength(1);
@@ -172,22 +172,22 @@ test("a task's kind is decided once, and a later turn's partial report cannot do
   // A reaped shell is reported in the next turn with no type, which the seam reads as
   // an agent. Kind is fixed by the report that established it; the seed folds over it.
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Start the dev server" });
-  const first = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Start the dev server" });
+  const first = store.claims.claimNextTurn("worker_one")!;
   const firstToken = first.turn.claim!.token;
-  store.markRunning("session_one", "run_one", firstToken);
-  store.ingestObservations("session_one", "run_one", firstToken, [
+  store.turnLifecycle.markRunning("session_one", "run_one", firstToken);
+  store.ingest.ingestObservations("session_one", "run_one", firstToken, [
     { kind: "task.started", task: { id: "task_b", kind: "background", state: "running", title: "Start the dev server" } },
   ]);
-  store.completeTurn("session_one", "run_one", firstToken, { text: "Started it" });
+  store.turnLifecycle.completeTurn("session_one", "run_one", firstToken, { text: "Started it" });
   expect(store.tasks("session_one").find((task) => task.id === "task_b")).toMatchObject({ kind: "background" });
 
   // The next turn. The seam has no memory of task_b and says "agent".
-  store.submitTurn("session_one", { runId: "run_two", input: "anything" });
-  const second = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_two", input: "anything" });
+  const second = store.claims.claimNextTurn("worker_one")!;
   const secondToken = second.turn.claim!.token;
-  store.markRunning("session_one", "run_two", secondToken);
-  store.ingestObservations("session_one", "run_two", secondToken, [
+  store.turnLifecycle.markRunning("session_one", "run_two", secondToken);
+  store.ingest.ingestObservations("session_one", "run_two", secondToken, [
     { kind: "task.completed", task: { id: "task_b", kind: "agent", state: "completed" } },
   ]);
 
@@ -199,15 +199,15 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
   // Detached agents must not read failed when their turn ends, and a late progress line
   // must not spread a closed record under a running seed (failed and spinning at once).
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
-  const claim = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Fan out" });
+  const claim = store.claims.claimNextTurn("worker_one")!;
   const token = claim.turn.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "task.started", task: { id: "task_detached", kind: "agent", backgrounded: true, state: "running", title: "Explore, detached" } },
     { kind: "task.started", task: { id: "task_attached", kind: "agent", state: "running", title: "Explore, attached" } },
   ]);
-  store.completeTurn("session_one", "run_one", token, { text: "Launched them" });
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "Launched them" });
 
   const after = new Map(store.tasks("session_one").map((task) => [task.id, task]));
   // The attached agent is swept — no process reports for it any more. The
@@ -217,18 +217,18 @@ test("a backgrounded agent outlives its turn, and a later report cannot resurrec
   expect(after.get("task_attached")).toMatchObject({ state: "failed" });
   expect(after.get("task_detached")).toMatchObject({ state: "running", kind: "agent", backgrounded: true });
   expect(after.get("task_detached")?.failure).toBeUndefined();
-  expect(store.getSession("session_one").activity).toBe("monitoring");
+  expect(store.records.get("session_one").activity).toBe("monitoring");
 
   // The next turn's driver has never heard of the sweep and reports the
   // ATTACHED agent (now closed) as still running. The first ending is the
   // ending: the record stays failed, and a report that adds nothing to a
   // settled row is not announced at all — neither as progress on a corpse
   // nor as a second completion.
-  store.submitTurn("session_one", { runId: "run_two", input: "Carry on" });
-  const second = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_two", input: "Carry on" });
+  const second = store.claims.claimNextTurn("worker_one")!;
   const secondToken = second.turn.claim!.token;
-  store.markRunning("session_one", "run_two", secondToken);
-  store.ingestObservations("session_one", "run_two", secondToken, [
+  store.turnLifecycle.markRunning("session_one", "run_two", secondToken);
+  store.ingest.ingestObservations("session_one", "run_two", secondToken, [
     { kind: "task.progress", task: { id: "task_attached", kind: "agent", state: "running" }, message: "Reading a file" },
     { kind: "task.progress", task: { id: "task_detached", kind: "agent", backgrounded: true, state: "running" }, message: "Reading a file" },
   ]);
@@ -247,19 +247,19 @@ test("a later turn's report on a task it knows only by provider id folds onto th
   // A notification carrying only the provider task id must fold onto the row announced
   // under the tool id, not mint a second row on the Agents surface.
   const { store } = readyStore();
-  store.submitTurn("session_one", { runId: "run_one", input: "Watch" });
-  const first = store.claimNextTurn("worker_one")!;
-  store.markRunning("session_one", "run_one", first.turn.claim!.token);
-  store.ingestObservations("session_one", "run_one", first.turn.claim!.token, [
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Watch" });
+  const first = store.claims.claimNextTurn("worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_one", first.turn.claim!.token);
+  store.ingest.ingestObservations("session_one", "run_one", first.turn.claim!.token, [
     { kind: "task.started", task: { id: "task_toolu_mon", kind: "background", state: "running", title: "Monitor", providerTaskId: "b7ohaj89n", backgrounded: true } },
   ]);
-  store.completeTurn("session_one", "run_one", first.turn.claim!.token, { text: "armed" });
-  expect(store.stopBackgroundTasks("session_one")).toBe(1);
+  store.turnLifecycle.completeTurn("session_one", "run_one", first.turn.claim!.token, { text: "armed" });
+  expect(store.worker.stopBackgroundTasks("session_one")).toBe(1);
 
-  store.submitTurn("session_one", { runId: "run_two", input: "Next" });
-  const second = store.claimNextTurn("worker_one")!;
-  store.markRunning("session_one", "run_two", second.turn.claim!.token);
-  store.ingestObservations("session_one", "run_two", second.turn.claim!.token, [
+  store.intake.submitTurn("session_one", { runId: "run_two", input: "Next" });
+  const second = store.claims.claimNextTurn("worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_two", second.turn.claim!.token);
+  store.ingest.ingestObservations("session_one", "run_two", second.turn.claim!.token, [
     { kind: "task.completed", task: { id: "task_b7ohaj89n", kind: "agent", state: "completed", providerTaskId: "b7ohaj89n", resultText: "stream ended" } },
   ]);
   const tasks = store.tasks("session_one");

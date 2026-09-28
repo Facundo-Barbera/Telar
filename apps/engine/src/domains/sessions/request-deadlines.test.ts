@@ -49,12 +49,12 @@ function harness(runtimeMode: "approval-required" | "auto" = "approval-required"
   let now = OPENED_AT;
   const store = new EngineStore(home, () => now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one", title: "A worker" });
-  store.updateSession("session_one", { runtimeMode });
-  store.submitTurn("session_one", { runId: "run_one", input: "Do the thing" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  store.markRunning("session_one", "run_one", claimed.claim!.token);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", title: "A worker" });
+  store.lifecycle.updateSession("session_one", { runtimeMode });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Do the thing" });
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_one", claimed.claim!.token);
   return {
     store,
     token: claimed.claim!.token,
@@ -82,7 +82,7 @@ const command = { kind: "command_execution" as const, detail: { kind: "command_e
 test("a deadline with a default resolves as `timeout`", () => {
   const h = harness();
 
-  const opened = h.store.openRequest("session_one", "run_one", h.token, {
+  const opened = h.store.requestGate.open("session_one", "run_one", h.token, {
     requestId: "req_deadline",
     ...question,
     deadlineMs: 60_000,
@@ -92,13 +92,13 @@ test("a deadline with a default resolves as `timeout`", () => {
 
   // Not yet. The clock, not the sweep, is what decides.
   h.advance(59_999);
-  expect(h.store.sweepRequestDeadlines()).toEqual([]);
-  expect(h.store.requests("session_one")[0]!.state).toBe("open");
+  expect(h.store.requestGate.sweepDeadlines()).toEqual([]);
+  expect(h.store.requestGate.list("session_one")[0]!.state).toBe("open");
 
   h.advance(60_000);
-  expect(h.store.sweepRequestDeadlines()).toEqual(["req_deadline"]);
+  expect(h.store.requestGate.sweepDeadlines()).toEqual(["req_deadline"]);
 
-  const resolved = h.store.requests("session_one").find((request) => request.id === "req_deadline")!;
+  const resolved = h.store.requestGate.list("session_one").find((request) => request.id === "req_deadline")!;
   // THE ENUM VALUE, not a sentence that happens to contain a word.
   expect(resolved.state).toBe("resolved");
   expect(resolved.resolvedBy).toBe("timeout");
@@ -117,7 +117,7 @@ test("a deadline with a default resolves as `timeout`", () => {
  */
 test("a deadline with NO default resolves nothing, however long it sits", () => {
   const h = harness();
-  h.store.openRequest("session_one", "run_one", h.token, {
+  h.store.requestGate.open("session_one", "run_one", h.token, {
     requestId: "req_no_default",
     ...question,
     deadlineMs: 60_000,
@@ -125,10 +125,10 @@ test("a deadline with NO default resolves nothing, however long it sits", () => 
 
   // An hour past a one-minute deadline, swept repeatedly.
   h.advance(3_600_000);
-  expect(h.store.sweepRequestDeadlines()).toEqual([]);
-  expect(h.store.sweepRequestDeadlines()).toEqual([]);
+  expect(h.store.requestGate.sweepDeadlines()).toEqual([]);
+  expect(h.store.requestGate.sweepDeadlines()).toEqual([]);
 
-  const still = h.store.requests("session_one")[0]!;
+  const still = h.store.requestGate.list("session_one")[0]!;
   expect(still.state).toBe("open");
   expect(still.resolvedBy).toBeUndefined();
   expect(still.decision).toBeUndefined();
@@ -136,23 +136,23 @@ test("a deadline with NO default resolves nothing, however long it sits", () => 
 
 test("a request with no deadline at all is never swept", () => {
   const h = harness();
-  h.store.openRequest("session_one", "run_one", h.token, { requestId: "req_plain", ...question });
+  h.store.requestGate.open("session_one", "run_one", h.token, { requestId: "req_plain", ...question });
   h.advance(86_400_000);
-  expect(h.store.sweepRequestDeadlines()).toEqual([]);
-  expect(h.store.requests("session_one")[0]!.state).toBe("open");
+  expect(h.store.requestGate.sweepDeadlines()).toEqual([]);
+  expect(h.store.requestGate.list("session_one")[0]!.state).toBe("open");
 });
 
 test("sweeping twice resolves once — the second pass has nothing left to find", () => {
   const h = harness();
-  h.store.openRequest("session_one", "run_one", h.token, {
+  h.store.requestGate.open("session_one", "run_one", h.token, {
     requestId: "req_once",
     ...question,
     deadlineMs: 1_000,
     default: { decision: "decline" },
   });
   h.advance(5_000);
-  expect(h.store.sweepRequestDeadlines()).toEqual(["req_once"]);
-  expect(h.store.sweepRequestDeadlines()).toEqual([]);
+  expect(h.store.requestGate.sweepDeadlines()).toEqual(["req_once"]);
+  expect(h.store.requestGate.sweepDeadlines()).toEqual([]);
 });
 
 /* ------------------------------------------------------------------ *
@@ -162,7 +162,7 @@ test("sweeping twice resolves once — the second pass has nothing left to find"
 test("a secret-access request may not carry a default, and is refused rather than stripped", () => {
   const h = harness();
   expect(() =>
-    h.store.openRequest("session_one", "run_one", h.token, {
+    h.store.requestGate.open("session_one", "run_one", h.token, {
       requestId: "req_secret",
       kind: "secret_access",
       detail: {
@@ -179,13 +179,13 @@ test("a secret-access request may not carry a default, and is refused rather tha
   ).toThrow(EngineStateError);
   // REFUSED, NOT SILENTLY DROPPED: no request exists, so a caller cannot come
   // away believing it set a fallback it did not set.
-  expect(h.store.requests("session_one")).toHaveLength(0);
+  expect(h.store.requestGate.list("session_one")).toHaveLength(0);
 });
 
 test("a default with no deadline is refused — nothing would ever take it", () => {
   const h = harness();
   expect(() =>
-    h.store.openRequest("session_one", "run_one", h.token, {
+    h.store.requestGate.open("session_one", "run_one", h.token, {
       requestId: "req_orphan",
       ...question,
       default: { decision: "accept" },
@@ -197,7 +197,7 @@ test("a deadline that is not a positive whole number of milliseconds is refused"
   const h = harness();
   for (const deadlineMs of [0, -1, 1.5]) {
     expect(() =>
-      h.store.openRequest("session_one", "run_one", h.token, { requestId: `req_${String(deadlineMs)}`, ...question, deadlineMs }),
+      h.store.requestGate.open("session_one", "run_one", h.token, { requestId: `req_${String(deadlineMs)}`, ...question, deadlineMs }),
     ).toThrow(EngineStateError);
   }
 });
@@ -210,18 +210,18 @@ test("a deadline that is not a positive whole number of milliseconds is refused"
  */
 test("an auto-resolved request stores neither deadline nor default", () => {
   const h = harness("auto");
-  const opened = h.store.openRequest("session_one", "run_one", h.token, {
+  const opened = h.store.requestGate.open("session_one", "run_one", h.token, {
     requestId: "req_auto",
     ...command,
     deadlineMs: 1_000,
     default: { decision: "decline" },
   });
   expect(opened).toMatchObject({ state: "resolved", resolvedBy: "policy" });
-  const stored = h.store.requests("session_one")[0]!;
+  const stored = h.store.requestGate.list("session_one")[0]!;
   expect(stored.deadlineMs).toBeUndefined();
   expect(stored.default).toBeUndefined();
   h.advance(10_000);
-  expect(h.store.sweepRequestDeadlines()).toEqual([]);
+  expect(h.store.requestGate.sweepDeadlines()).toEqual([]);
 });
 
 /* ------------------------------------------------------------------ *
@@ -235,18 +235,18 @@ test("an auto-resolved request stores neither deadline nor default", () => {
  */
 test("the blocked worker takes the answer off the heartbeat, with a reason that says a person did not decide", () => {
   const h = harness();
-  h.store.openRequest("session_one", "run_one", h.token, {
+  h.store.requestGate.open("session_one", "run_one", h.token, {
     requestId: "req_worker",
     ...command,
     deadlineMs: 1_000,
     default: { decision: "decline" },
   });
-  expect(h.store.resolutionsForWorker("worker_one")).toHaveLength(0);
+  expect(h.store.requestGate.resolutionsForWorker("worker_one")).toHaveLength(0);
 
   h.advance(2_000);
-  h.store.sweepRequestDeadlines();
+  h.store.requestGate.sweepDeadlines();
 
-  const pending = h.store.resolutionsForWorker("worker_one");
+  const pending = h.store.requestGate.resolutionsForWorker("worker_one");
   expect(pending).toHaveLength(1);
   expect(pending[0]).toMatchObject({ requestId: "req_worker", decision: "decline" });
   // The model is told nobody decided this. Keyed on a phrase only this sentence
@@ -282,13 +282,13 @@ test("a deadline survives a restart, and the reopened store sweeps it", () => {
   let now = OPENED_AT;
   const store = new EngineStore(home, () => now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  store.updateSession("session_one", { runtimeMode: "approval-required" });
-  store.submitTurn("session_one", { runId: "run_one", input: "Do the thing" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.openRequest("session_one", "run_one", token, {
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  store.lifecycle.updateSession("session_one", { runtimeMode: "approval-required" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Do the thing" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.requestGate.open("session_one", "run_one", token, {
     requestId: "req_durable",
     ...question,
     deadlineMs: 60_000,
@@ -299,7 +299,7 @@ test("a deadline survives a restart, and the reopened store sweeps it", () => {
   now = OPENED_AT + 120_000;
   const reopened = new EngineStore(home, () => now);
   stores.push(reopened);
-  const carried = reopened.requests("session_one")[0]!;
+  const carried = reopened.requestGate.list("session_one")[0]!;
   expect(carried.deadlineMs).toBe(60_000);
   expect(carried.default).toEqual({ decision: "decline" });
 
@@ -310,6 +310,6 @@ test("a deadline survives a restart, and the reopened store sweeps it", () => {
    * that never went down has. What this pins is that the two FIELDS crossed the
    * restart; the sweep proves it is still actionable.
    */
-  expect(reopened.sweepRequestDeadlines()).toEqual(["req_durable"]);
-  expect(reopened.requests("session_one")[0]!.resolvedBy).toBe("timeout");
+  expect(reopened.requestGate.sweepDeadlines()).toEqual(["req_durable"]);
+  expect(reopened.requestGate.list("session_one")[0]!.resolvedBy).toBe("timeout");
 });

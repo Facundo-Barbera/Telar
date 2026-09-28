@@ -53,7 +53,7 @@ function ready(): { store: EngineStore; projectRoot: string; tick: (ms: number) 
   let now = 1_000;
   const store = new EngineStore(dir("telar-registry-state-"), () => now);
   const projectRoot = dir("telar-registry-checkout-");
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
   return { store, projectRoot, tick: (ms) => { now += ms; } };
 }
 

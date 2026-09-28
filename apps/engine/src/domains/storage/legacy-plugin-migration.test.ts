@@ -41,7 +41,7 @@ const python = { source: "chosen", path: ".venv/bin/python", resolvedAt: 1 };
 function fixture(extras: Record<string, Record<string, unknown>>): { engineRoot: string; file: string } {
   const engineRoot = root();
   const seed = new EngineStore(engineRoot, () => 100);
-  for (const id of Object.keys(extras)) seed.registerProject({ id, name: id, root: root() });
+  for (const id of Object.keys(extras)) seed.projectRegistry.register({ id, name: id, root: root() });
   const file = path.join(engineRoot, "projects.json");
   const registry = JSON.parse(fs.readFileSync(file, "utf8")) as { projects: Record<string, unknown>[] };
   registry.projects = registry.projects.map((project) => ({ ...project, ...extras[project.id as string] }));
@@ -73,7 +73,7 @@ test("a legacy-only record is folded into the map on open, settings whole, legac
       latex: { enabled: false, settings: { mainFile: "paper.tex" } },
     },
   });
-  expect(pluginBlock(store.getProject("project_old"), "latex")).toEqual({ enabled: false, mainFile: "paper.tex" });
+  expect(pluginBlock(store.projectRegistry.get("project_old"), "latex")).toEqual({ enabled: false, mainFile: "paper.tex" });
 });
 
 test("an existing map entry wins; a legacy block only fills an id the map lacks", () => {

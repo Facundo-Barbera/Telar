@@ -40,7 +40,7 @@ function settle(store: EngineDaemon["store"], sessionId: string, runId: string) 
 test("the bootstrap IS the snapshot, plus the journal and the subscriptions", async () => {
   const { client, store } = await ready();
   for (let index = 0; index < 4; index += 1) {
-    store.submitTurn("session_one", { runId: `run_${index}`, input: `message ${index}` });
+    store.intake.submitTurn("session_one", { runId: `run_${index}`, input: `message ${index}` });
     settle(store, "session_one", `run_${index}`);
   }
   await client.subscribe("session_one", { targetSessionId: "session_two" });
@@ -61,11 +61,11 @@ test("the bootstrap IS the snapshot, plus the journal and the subscriptions", as
 
 test("a bootstrap taken with work above the cursor carries it, and never a gap", async () => {
   const { client, store } = await ready();
-  store.submitTurn("session_one", { runId: "run_old", input: "settled" });
+  store.intake.submitTurn("session_one", { runId: "run_old", input: "settled" });
   settle(store, "session_one", "run_old");
 
   const first = await client.sessionBootstrap("session_one");
-  store.submitTurn("session_one", { runId: "run_new", input: "later" });
+  store.intake.submitTurn("session_one", { runId: "run_new", input: "later" });
 
   const second = await client.sessionBootstrap("session_one");
   expect(second.cursor ?? 0).toBeGreaterThan(first.cursor ?? 0);
@@ -76,7 +76,7 @@ test("a bootstrap taken with work above the cursor carries it, and never a gap",
 test("the window and its refusals are the snapshot route's, not a second set", async () => {
   const { client, store } = await ready();
   for (let index = 0; index < 6; index += 1) {
-    store.submitTurn("session_one", { runId: `run_${index}`, input: `message ${index}` });
+    store.intake.submitTurn("session_one", { runId: `run_${index}`, input: `message ${index}` });
     settle(store, "session_one", `run_${index}`);
   }
 
@@ -106,15 +106,17 @@ test("the cursor is read before the rows, and the journal after them", () => {
   const session = { id: "session_one" } as never;
   const stub: SessionBootstrapStore = {
     eventCursor: () => record("cursor", 7),
-    getSession: () => record("session", session),
+    records: { get: () => record("session", session) },
     turns: () => record("turns", []),
     items: () => record("items", []),
     tasks: () => record("tasks", []),
-    snapshotRequests: () => record("requests", []),
-    snapshotWindow: () => record("window", { turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
-    openItemPrefix: () => undefined,
+    queries: {
+      snapshotRequests: () => record("requests", []),
+      snapshotWindow: () => record("window", { turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
+    },
+    prefixes: { get: () => undefined },
     sessionAssignments: () => record("assignments", []),
-    subscriptionsFor: () => record("subscriptions", []),
+    subscriptions: { subscriptionsFor: () => record("subscriptions", []) },
     readEvents: (_id, after) => record(`events@${after}`, []),
   };
 
@@ -131,18 +133,22 @@ test("an open item's prefix is stamped with the cursor the journal resumes from"
   let askedThrough: number | undefined;
   const stub: SessionBootstrapStore = {
     eventCursor: () => 42,
-    getSession: () => ({ id: "session_one" }) as never,
+    records: { get: () => ({ id: "session_one" }) as never },
     turns: () => [],
     items: () => [open as never],
     tasks: () => [],
-    snapshotRequests: () => [],
-    snapshotWindow: () => ({ turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
-    openItemPrefix: (_id, _itemId, through) => {
-      askedThrough = through;
-      return { streamed: "half a repl", streamedThrough: 40 };
+    queries: {
+      snapshotRequests: () => [],
+      snapshotWindow: () => ({ turns: [], items: [], tasks: [], requests: [], page: { before: null, more: false } }),
+    },
+    prefixes: {
+      get: (_id, _itemId, through) => {
+        askedThrough = through;
+        return { streamed: "half a repl", streamedThrough: 40 };
+      },
     },
     sessionAssignments: () => [],
-    subscriptionsFor: () => [],
+    subscriptions: { subscriptionsFor: () => [] },
     readEvents: () => [],
   };
 

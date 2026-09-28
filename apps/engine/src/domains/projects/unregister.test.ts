@@ -35,7 +35,7 @@ function ready(): { store: EngineStore; projectRoot: string; tick: (ms: number) 
   let now = 1_000;
   const store = new EngineStore(dir("telar-registry-state-"), () => now);
   const projectRoot = dir("telar-registry-checkout-");
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
   return { store, projectRoot, tick: (ms) => { now += ms; } };
 }
 
@@ -53,7 +53,7 @@ test("removing touches NOTHING on disk", () => {
   fs.writeFileSync(path.join(projectRoot, ".git/HEAD"), "ref: refs/heads/main\n");
   fs.writeFileSync(path.join(projectRoot, "source.ts"), "export const kept = true;\n");
 
-  expect(store.unregisterProject("project_one").project.id).toBe("project_one");
+  expect(store.projectRegistry.unregister("project_one").project.id).toBe("project_one");
 
   expect(fs.readFileSync(path.join(projectRoot, "source.ts"), "utf8")).toBe("export const kept = true;\n");
   expect(fs.readFileSync(path.join(projectRoot, ".git/HEAD"), "utf8")).toBe("ref: refs/heads/main\n");
@@ -62,30 +62,30 @@ test("removing touches NOTHING on disk", () => {
 
 test("the record is KEPT and marked, not deleted — that is what makes restoring an undo", () => {
   const { store } = ready();
-  store.updateProject("project_one", { dataScience: { enabled: true } });
-  store.unregisterProject("project_one");
+  store.projectRegistry.update("project_one", { dataScience: { enabled: true } });
+  store.projectRegistry.unregister("project_one");
 
   const stored = registryOnDisk(store);
   expect(stored).toHaveLength(1);
   expect(stored[0]!.id).toBe("project_one");
   expect(typeof stored[0]!.removedAt).toBe("number");
   // Gone from the registry every surface reads…
-  expect(store.listProjects()).toEqual([]);
+  expect(store.projectRegistry.list()).toEqual([]);
   // …and still there for the one screen that offers to put it back.
-  expect(store.listProjects({ includeRemoved: true }).map((project) => project.id)).toEqual(["project_one"]);
-  expect(pluginBlock(store.getProject("project_one"), "data-science")).toEqual({ enabled: true });
+  expect(store.projectRegistry.list({ includeRemoved: true }).map((project) => project.id)).toEqual(["project_one"]);
+  expect(pluginBlock(store.projectRegistry.get("project_one"), "data-science")).toEqual({ enabled: true });
 });
 
 test("removal and restoration both survive a restart", () => {
   const { store } = ready();
-  store.unregisterProject("project_one");
+  store.projectRegistry.unregister("project_one");
   const reopened = new EngineStore(store.paths.root, () => 2_000);
-  expect(reopened.listProjects()).toEqual([]);
-  expect(reopened.listProjects({ includeRemoved: true })).toHaveLength(1);
+  expect(reopened.projectRegistry.list()).toEqual([]);
+  expect(reopened.projectRegistry.list({ includeRemoved: true })).toHaveLength(1);
 
-  reopened.restoreProject("project_one");
+  reopened.projectRegistry.restore("project_one");
   const again = new EngineStore(store.paths.root, () => 3_000);
-  expect(again.listProjects().map((project) => project.id)).toEqual(["project_one"]);
+  expect(again.projectRegistry.list().map((project) => project.id)).toEqual(["project_one"]);
 });
 
 /* ------------------------------------------------------------------ *
@@ -97,40 +97,40 @@ test("registering the same checkout again restores the SAME project", () => {
   // browser profiles are keyed on. A new id here would silently orphan all
   // three from an action that reads like an undo.
   const { store, projectRoot } = ready();
-  store.updateProject("project_one", { dataScience: { enabled: true } });
-  const session = store.createSession({ projectId: "project_one", title: "before" });
-  store.unregisterProject("project_one");
+  store.projectRegistry.update("project_one", { dataScience: { enabled: true } });
+  const session = store.lifecycle.createSession({ projectId: "project_one", title: "before" });
+  store.projectRegistry.unregister("project_one");
 
-  const back = store.registerProject({ name: "One", root: projectRoot });
+  const back = store.projectRegistry.register({ name: "One", root: projectRoot });
   expect(back.id).toBe("project_one");
   expect(back.removedAt).toBeUndefined();
   expect(pluginBlock(back, "data-science")).toEqual({ enabled: true });
-  expect(store.listProjects().map((project) => project.id)).toEqual(["project_one"]);
+  expect(store.projectRegistry.list().map((project) => project.id)).toEqual(["project_one"]);
   // The session that ran here is its session again, not an orphan.
   expect(store.listSessions("project_one").map((each) => each.id)).toEqual([session.id]);
 });
 
 test("restoreProject does the same thing without needing the path, and is idempotent", () => {
   const { store } = ready();
-  store.unregisterProject("project_one");
-  expect(store.restoreProject("project_one").removedAt).toBeUndefined();
-  expect(store.restoreProject("project_one").id).toBe("project_one");
-  expect(store.listProjects()).toHaveLength(1);
+  store.projectRegistry.unregister("project_one");
+  expect(store.projectRegistry.restore("project_one").removedAt).toBeUndefined();
+  expect(store.projectRegistry.restore("project_one").id).toBe("project_one");
+  expect(store.projectRegistry.list()).toHaveLength(1);
 });
 
 test("a renamed restore keeps the id and takes the new name", () => {
   const { store, projectRoot } = ready();
-  store.unregisterProject("project_one");
-  const back = store.registerProject({ name: "One, renamed", root: projectRoot });
+  store.projectRegistry.unregister("project_one");
+  const back = store.projectRegistry.register({ name: "One, renamed", root: projectRoot });
   expect(back.id).toBe("project_one");
   expect(back.name).toBe("One, renamed");
 });
 
 test("removing twice is a conflict, and an unknown id is a not_found", () => {
   const { store } = ready();
-  store.unregisterProject("project_one");
-  expect(() => store.unregisterProject("project_one")).toThrow(EngineStateError);
-  expect(() => store.unregisterProject("project_nope")).toThrow(EngineStateError);
+  store.projectRegistry.unregister("project_one");
+  expect(() => store.projectRegistry.unregister("project_one")).toThrow(EngineStateError);
+  expect(() => store.projectRegistry.unregister("project_nope")).toThrow(EngineStateError);
 });
 
 /* ------------------------------------------------------------------ *
@@ -139,34 +139,34 @@ test("removing twice is a conflict, and an unknown id is a not_found", () => {
 
 test("a removed project's sessions and history stay readable", () => {
   const { store } = ready();
-  const session = store.createSession({ projectId: "project_one", title: "a finished conversation" });
-  const removed = store.unregisterProject("project_one");
+  const session = store.lifecycle.createSession({ projectId: "project_one", title: "a finished conversation" });
+  const removed = store.projectRegistry.unregister("project_one");
   // Reported rather than acted on: the engine says how many sessions belong to
   // the put-away project and leaves them alone.
   expect(removed.sessions).toBe(1);
 
-  const after = store.getSession(session.id);
+  const after = store.records.get(session.id);
   expect(after.title).toBe("a finished conversation");
   expect(after.projectId).toBe("project_one");
   // The project still resolves for reads, which is what keeps the session's
   // past coherent instead of blank.
-  expect(store.getProject("project_one").removedAt).toBeDefined();
+  expect(store.projectRegistry.get("project_one").removedAt).toBeDefined();
   expect(store.listSessions("project_one").map((each) => each.id)).toEqual([session.id]);
   expect(store.turns(session.id)).toEqual([]);
 });
 
 test("no new session, no new turn, no settings change while a project is away", () => {
   const { store } = ready();
-  const session = store.createSession({ projectId: "project_one", title: "idle" });
-  store.unregisterProject("project_one");
+  const session = store.lifecycle.createSession({ projectId: "project_one", title: "idle" });
+  store.projectRegistry.unregister("project_one");
 
-  expect(() => store.createSession({ projectId: "project_one", title: "after" })).toThrow(EngineStateError);
-  expect(() => store.submitTurn(session.id, { runId: "run_one", input: "carry on" })).toThrow(EngineStateError);
-  expect(() => store.updateProject("project_one", { dataScience: { enabled: true } })).toThrow(EngineStateError);
+  expect(() => store.lifecycle.createSession({ projectId: "project_one", title: "after" })).toThrow(EngineStateError);
+  expect(() => store.intake.submitTurn(session.id, { runId: "run_one", input: "carry on" })).toThrow(EngineStateError);
+  expect(() => store.projectRegistry.update("project_one", { dataScience: { enabled: true } })).toThrow(EngineStateError);
 
   // …and all three work again the moment it is back.
-  store.restoreProject("project_one");
-  expect(store.submitTurn(session.id, { runId: "run_one", input: "carry on" }).turn.state).toBe("queued");
+  store.projectRegistry.restore("project_one");
+  expect(store.intake.submitTurn(session.id, { runId: "run_one", input: "carry on" }).turn.state).toBe("queued");
 });
 
 test("a peer's wake cannot restart a provider on a removed project", () => {
@@ -175,10 +175,10 @@ test("a peer's wake cannot restart a provider on a removed project", () => {
   // watching; `fireSubscriptions` treats the conflict as "the subscriber
   // cannot take this" and writes the reason to that session's own journal.
   const { store } = ready();
-  const session = store.createSession({ projectId: "project_one", title: "subscriber" });
-  store.unregisterProject("project_one");
+  const session = store.lifecycle.createSession({ projectId: "project_one", title: "subscriber" });
+  store.projectRegistry.unregister("project_one");
   expect(() =>
-    store.submitTurn(session.id, {
+    store.intake.submitTurn(session.id, {
       runId: "run_wake",
       input: "a peer finished",
       origin: "session",
@@ -193,21 +193,21 @@ test("a peer's wake cannot restart a provider on a removed project", () => {
 
 test("a queued turn blocks the removal instead of being stopped", () => {
   const { store } = ready();
-  const session = store.createSession({ projectId: "project_one", title: "mid-turn" });
-  store.submitTurn(session.id, { runId: "run_one", input: "keep going" });
-  expect(() => store.unregisterProject("project_one")).toThrow(EngineStateError);
+  const session = store.lifecycle.createSession({ projectId: "project_one", title: "mid-turn" });
+  store.intake.submitTurn(session.id, { runId: "run_one", input: "keep going" });
+  expect(() => store.projectRegistry.unregister("project_one")).toThrow(EngineStateError);
   // Still registered, and the turn is untouched.
-  expect(store.getProject("project_one").removedAt).toBeUndefined();
+  expect(store.projectRegistry.get("project_one").removedAt).toBeUndefined();
   expect(store.turns(session.id)).toHaveLength(1);
-  expect(store.listProjects()).toHaveLength(1);
+  expect(store.projectRegistry.list()).toHaveLength(1);
 });
 
 test("a settled turn does not block it", () => {
   const { store } = ready();
-  const session = store.createSession({ projectId: "project_one", title: "finished" });
-  store.submitTurn(session.id, { runId: "run_one", input: "hello" });
-  store.stopTurn(session.id, "run_one");
-  expect(store.unregisterProject("project_one").project.removedAt).toBeDefined();
+  const session = store.lifecycle.createSession({ projectId: "project_one", title: "finished" });
+  store.intake.submitTurn(session.id, { runId: "run_one", input: "hello" });
+  store.turnLifecycle.stopTurn(session.id, "run_one");
+  expect(store.projectRegistry.unregister("project_one").project.removedAt).toBeDefined();
 });
 
 test("a live BACKGROUNDED TASK blocks the removal even with every turn settled", () => {
@@ -216,18 +216,18 @@ test("a live BACKGROUNDED TASK blocks the removal even with every turn settled",
   // watcher, a dev server or a long shell is still running against this
   // checkout while every turn reads as finished.
   const { store } = ready();
-  const session = store.createSession({ id: "session_bg", projectId: "project_one", title: "runs a server" });
-  store.submitTurn(session.id, { runId: "run_one", input: "start the dev server" });
-  const token = store.claimTurn(session.id, "worker_one")!.claim!.token;
-  store.markRunning(session.id, "run_one", token);
-  store.ingestObservations(session.id, "run_one", token, [
+  const session = store.lifecycle.createSession({ id: "session_bg", projectId: "project_one", title: "runs a server" });
+  store.intake.submitTurn(session.id, { runId: "run_one", input: "start the dev server" });
+  const token = store.claims.claimTurn(session.id, "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning(session.id, "run_one", token);
+  store.ingest.ingestObservations(session.id, "run_one", token, [
     { kind: "task.started", task: { id: "task_bg", kind: "background", state: "running", title: "dev server", backgrounded: true } },
   ]);
-  store.stopTurn(session.id, "run_one");
+  store.turnLifecycle.stopTurn(session.id, "run_one");
 
   expect(store.turns(session.id).every((turn) => turn.state === "stopped")).toBe(true);
   expect(store.tasks(session.id).find((task) => task.id === "task_bg")?.state).toBe("running");
-  expect(() => store.unregisterProject("project_one")).toThrow(EngineStateError);
+  expect(() => store.projectRegistry.unregister("project_one")).toThrow(EngineStateError);
 });
 
 test("a backgrounded task that has ENDED does not block it", () => {
@@ -235,16 +235,16 @@ test("a backgrounded task that has ENDED does not block it", () => {
   // and refusing on it would make the action unreachable for any project that
   // ever ran a dev server.
   const { store } = ready();
-  const session = store.createSession({ id: "session_bg", projectId: "project_one", title: "ran a server" });
-  store.submitTurn(session.id, { runId: "run_one", input: "start the dev server" });
-  const token = store.claimTurn(session.id, "worker_one")!.claim!.token;
-  store.markRunning(session.id, "run_one", token);
-  store.ingestObservations(session.id, "run_one", token, [
+  const session = store.lifecycle.createSession({ id: "session_bg", projectId: "project_one", title: "ran a server" });
+  store.intake.submitTurn(session.id, { runId: "run_one", input: "start the dev server" });
+  const token = store.claims.claimTurn(session.id, "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning(session.id, "run_one", token);
+  store.ingest.ingestObservations(session.id, "run_one", token, [
     { kind: "task.started", task: { id: "task_bg", kind: "background", state: "running", title: "dev server", backgrounded: true } },
     { kind: "task.completed", task: { id: "task_bg", kind: "background", state: "completed", title: "dev server", backgrounded: true } },
   ]);
-  store.stopTurn(session.id, "run_one");
+  store.turnLifecycle.stopTurn(session.id, "run_one");
 
   expect(store.tasks(session.id).find((task) => task.id === "task_bg")?.state).toBe("completed");
-  expect(store.unregisterProject("project_one").project.removedAt).toBeDefined();
+  expect(store.projectRegistry.unregister("project_one").project.removedAt).toBeDefined();
 });

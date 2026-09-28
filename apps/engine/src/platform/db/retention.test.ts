@@ -23,7 +23,7 @@ function build(plan: (engine: EngineStore, set: (at: number) => void) => void): 
   homes.push(home);
   let clock = START;
   const engine = new EngineStore(home, () => clock);
-  engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
+  engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   plan(engine, (at) => { clock = at; });
   const events: Record<string, number> = {};
   const cursors: Record<string, number> = {};
@@ -39,22 +39,22 @@ function build(plan: (engine: EngineStore, set: (at: number) => void) => void): 
  *  so its journal holds deltas, item events and a terminal turn event, and its
  *  `turn_summaries` row is written by the path production uses. */
 function conversation(engine: EngineStore, sessionId: string, turns = 2): void {
-  engine.createSession({ id: sessionId, projectId: "project_one" });
+  engine.lifecycle.createSession({ id: sessionId, projectId: "project_one" });
   for (let turn = 0; turn < turns; turn += 1) {
     const runId = `run_${turn}`;
-    engine.submitTurn(sessionId, { runId, input: `ask ${turn}` });
-    const token = engine.claimTurn(sessionId, "worker_one")!.claim!.token;
-    engine.markRunning(sessionId, runId, token);
-    engine.ingestObservations(sessionId, runId, token, [
+    engine.intake.submitTurn(sessionId, { runId, input: `ask ${turn}` });
+    const token = engine.claims.claimTurn(sessionId, "worker_one")!.claim!.token;
+    engine.turnLifecycle.markRunning(sessionId, runId, token);
+    engine.ingest.ingestObservations(sessionId, runId, token, [
       { kind: "item.started", item: { id: `item_${turn}`, title: "answering", detail: { type: "assistant_message", text: "" } } },
       { kind: "content.delta", itemId: `item_${turn}`, stream: "assistant_text", text: "part one " },
       { kind: "content.delta", itemId: `item_${turn}`, stream: "assistant_text", text: "part two" },
       { kind: "item.completed", itemId: `item_${turn}`, status: "completed", detail: { type: "assistant_message", text: "part one part two" } },
     ]);
-    engine.completeTurn(sessionId, runId, token, { text: `answer ${turn}` });
+    engine.turnLifecycle.completeTurn(sessionId, runId, token, { text: `answer ${turn}` });
     // READ, so the session is not held out of every window by its own unread
     // result. That exemption has a test of its own below.
-    engine.markSessionRead(sessionId, runId);
+    engine.records.markRead(sessionId, runId);
   }
 }
 
@@ -140,16 +140,16 @@ test("an unread result and a live turn are never taken, however old", () => {
     // Completed but never read: `hasUnreadResult` holds it out, because the
     // clock's premise is "nothing happened here" and an answer waiting to be
     // read IS something that happened.
-    engine.createSession({ id: "session_unread", projectId: "project_one" });
-    engine.submitTurn("session_unread", { runId: "run_one", input: "ask" });
-    const token = engine.claimTurn("session_unread", "worker_one")!.claim!.token;
-    engine.markRunning("session_unread", "run_one", token);
-    engine.completeTurn("session_unread", "run_one", token, { text: "answer" });
+    engine.lifecycle.createSession({ id: "session_unread", projectId: "project_one" });
+    engine.intake.submitTurn("session_unread", { runId: "run_one", input: "ask" });
+    const token = engine.claims.claimTurn("session_unread", "worker_one")!.claim!.token;
+    engine.turnLifecycle.markRunning("session_unread", "run_one", token);
+    engine.turnLifecycle.completeTurn("session_unread", "run_one", token, { text: "answer" });
     // Claimed and running: a live turn outranks everything, including a pin.
-    engine.createSession({ id: "session_live", projectId: "project_one" });
-    engine.submitTurn("session_live", { runId: "run_live", input: "ask" });
-    const live = engine.claimTurn("session_live", "worker_two")!.claim!.token;
-    engine.markRunning("session_live", "run_live", live);
+    engine.lifecycle.createSession({ id: "session_live", projectId: "project_one" });
+    engine.intake.submitTurn("session_live", { runId: "run_live", input: "ask" });
+    const live = engine.claims.claimTurn("session_live", "worker_two")!.claim!.token;
+    engine.turnLifecycle.markRunning("session_live", "run_live", live);
   });
   const store = reopen(built);
   expect(store.retireJournal(window(7, START + 400 * DAY), { exportTo: built.exportTo }))
@@ -159,7 +159,7 @@ test("an unread result and a live turn are never taken, however old", () => {
 });
 
 test("an archived session is eligible, not exempt", () => {
-  const built = build((engine) => { conversation(engine, "session_one"); engine.archiveSession("session_one"); });
+  const built = build((engine) => { conversation(engine, "session_one"); engine.lifecycle.archiveSession("session_one"); });
   const store = reopen(built);
   expect(store.retireJournal(window(7, START + 30 * DAY), { exportTo: built.exportTo }).retired).toBe(1);
   expect(store.events("session_one")).toHaveLength(0);
@@ -192,9 +192,9 @@ test("the rail survives: the row, its summaries and its search row outlive the j
   store.close();
 
   const engine = reopenEngine(built, START + 31 * DAY);
-  expect(engine.getSession("session_one").id).toBe("session_one");
+  expect(engine.records.get("session_one").id).toBe("session_one");
   expect(engine.readEvents("session_one")).toHaveLength(0);
-  expect(engine.turnOutline("session_one", { limit: 10 }).turns).toHaveLength(2);
+  expect(engine.queries.turnOutline("session_one", { limit: 10 }).turns).toHaveLength(2);
 });
 
 test("the id floor: emptying a journal does not restart the session's event ids", () => {
@@ -207,7 +207,7 @@ test("the id floor: emptying a journal does not restart the session's event ids"
 
   const engine = reopenEngine(built, START + 31 * DAY);
   expect(engine.eventCursor("session_one")).toBe(highest);
-  engine.submitTurn("session_one", { runId: "run_after", input: "again" });
+  engine.intake.submitTurn("session_one", { runId: "run_after", input: "again" });
   expect(engine.readEvents("session_one")[0]!.id).toBeGreaterThan(highest);
 });
 
@@ -250,15 +250,15 @@ test("a per-session export pages rather than materialising the whole journal", (
   const built = build((engine) => {
     // More than one page (`EXPORT_PAGE` is 1,000) so the paging is exercised
     // rather than merely present.
-    engine.createSession({ id: "session_big", projectId: "project_one" });
-    engine.submitTurn("session_big", { runId: "run_one", input: "ask" });
-    const token = engine.claimTurn("session_big", "worker_one")!.claim!.token;
-    engine.markRunning("session_big", "run_one", token);
-    engine.ingestObservations("session_big", "run_one", token, [
+    engine.lifecycle.createSession({ id: "session_big", projectId: "project_one" });
+    engine.intake.submitTurn("session_big", { runId: "run_one", input: "ask" });
+    const token = engine.claims.claimTurn("session_big", "worker_one")!.claim!.token;
+    engine.turnLifecycle.markRunning("session_big", "run_one", token);
+    engine.ingest.ingestObservations("session_big", "run_one", token, [
       { kind: "item.started", item: { id: "item_one", title: "answering", detail: { type: "assistant_message", text: "" } } },
       ...Array.from({ length: 1_200 }, () => ({ kind: "content.delta" as const, itemId: "item_one", stream: "assistant_text" as const, text: "x" })),
     ]);
-    engine.completeTurn("session_big", "run_one", token, { text: "done" });
+    engine.turnLifecycle.completeTurn("session_big", "run_one", token, { text: "done" });
   });
   const store = reopen(built);
   const destination = path.join(built.home, "one-off");
@@ -278,16 +278,16 @@ test("the default is never, and a window with nowhere to export is refused", () 
   homes.push(home);
   const engine = new EngineStore(home, () => START);
   closers.push(() => engine.closeExecutionStore());
-  expect(engine.getRetentionPolicy()).toEqual({ idleAfterDays: null, exportTo: null });
+  expect(engine.settings.retention()).toEqual({ idleAfterDays: null, exportTo: null });
   // A DELETE MUST NOT BE REACHABLE BY ACCIDENT. Enabling a window with no copy
   // to fall back on is the one shape the approved design rules out, so it is a
   // refusal rather than a setting that looks on and does nothing.
-  expect(() => engine.setRetentionPolicy({ idleAfterDays: 7 })).toThrow(/export/);
-  expect(engine.getRetentionPolicy().idleAfterDays).toBeNull();
-  expect(() => engine.setRetentionPolicy({ idleAfterDays: 7, exportTo: "relative/path" })).toThrow(/absolute/);
-  expect(() => engine.setRetentionPolicy({ idleAfterDays: 0, exportTo: path.join(home, "out") })).toThrow(/between/);
-  engine.setRetentionPolicy({ idleAfterDays: 7, exportTo: path.join(home, "out") });
-  expect(engine.getRetentionPolicy()).toEqual({ idleAfterDays: 7, exportTo: path.join(home, "out") });
+  expect(() => engine.settings.setRetention({ idleAfterDays: 7 })).toThrow(/export/);
+  expect(engine.settings.retention().idleAfterDays).toBeNull();
+  expect(() => engine.settings.setRetention({ idleAfterDays: 7, exportTo: "relative/path" })).toThrow(/absolute/);
+  expect(() => engine.settings.setRetention({ idleAfterDays: 0, exportTo: path.join(home, "out") })).toThrow(/between/);
+  engine.settings.setRetention({ idleAfterDays: 7, exportTo: path.join(home, "out") });
+  expect(engine.settings.retention()).toEqual({ idleAfterDays: 7, exportTo: path.join(home, "out") });
 });
 
 test("a hand-edited retention document costs the preference and never the history", () => {
@@ -297,7 +297,7 @@ test("a hand-edited retention document costs the preference and never the histor
   closers.push(() => engine.closeExecutionStore());
   for (const document of ["{ not json at all", JSON.stringify({ idleAfterDays: "soon", exportTo: 7 })]) {
     fs.writeFileSync(path.join(home, "retention.json"), document);
-    expect(engine.getRetentionPolicy()).toEqual({ idleAfterDays: null, exportTo: null });
+    expect(engine.settings.retention()).toEqual({ idleAfterDays: null, exportTo: null });
   }
 });
 
@@ -307,16 +307,16 @@ test("with the default in place the sweep reads nothing and takes nothing", () =
   let clock = START;
   const engine = new EngineStore(home, () => clock);
   closers.push(() => engine.closeExecutionStore());
-  engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
+  engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
   const before = engine.readEvents("session_one").length;
   clock = START + 400 * DAY;
-  expect(engine.sweepRetention()).toEqual({ retired: 0, skipped: 0, events: 0 });
+  expect(engine.settings.sweepRetention()).toEqual({ retired: 0, skipped: 0, events: 0 });
   expect(engine.readEvents("session_one")).toHaveLength(before);
   // And the preview still answers, because reading what a window WOULD take is
   // not the same act as taking it.
-  expect(engine.retentionPreview().map((bucket) => bucket.days)).toEqual([7, 14, 30, 60]);
-  expect(engine.retentionPreview().find((bucket) => bucket.days === 7)?.sessions).toBe(1);
+  expect(engine.settings.retentionPreview().map((bucket) => bucket.days)).toEqual([7, 14, 30, 60]);
+  expect(engine.settings.retentionPreview().find((bucket) => bucket.days === 7)?.sessions).toBe(1);
 });
 
 test("the configured window sweeps through the policy, end to end", () => {
@@ -325,15 +325,15 @@ test("the configured window sweeps through the policy, end to end", () => {
   let clock = START;
   const engine = new EngineStore(home, () => clock);
   closers.push(() => engine.closeExecutionStore());
-  engine.registerProject({ id: "project_one", name: "one", root: "/tmp" });
+  engine.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
   conversation(engine, "session_one");
   const before = engine.readEvents("session_one").length;
   clock = START + 30 * DAY;
-  engine.setRetentionPolicy({ idleAfterDays: 7, exportTo: path.join(home, "exports") });
-  expect(engine.sweepRetention()).toEqual({ retired: 1, skipped: 0, events: before });
+  engine.settings.setRetention({ idleAfterDays: 7, exportTo: path.join(home, "exports") });
+  expect(engine.settings.sweepRetention()).toEqual({ retired: 1, skipped: 0, events: before });
   expect(engine.readEvents("session_one")).toHaveLength(0);
   // The conversation is still a conversation: the rail row and the outline are
   // backed by documents and `turn_summaries`, neither of which this touched.
-  expect(engine.getSession("session_one").id).toBe("session_one");
-  expect(engine.turnOutline("session_one", { limit: 10 }).turns).toHaveLength(2);
+  expect(engine.records.get("session_one").id).toBe("session_one");
+  expect(engine.queries.turnOutline("session_one", { limit: 10 }).turns).toHaveLength(2);
 });

@@ -164,9 +164,9 @@ test("the live-session read carries the arrangement, so a drag on one device rea
   const { store } = readyStore();
   expect(store.liveSessions().layout).toEqual({ projectOrder: [], sessionOrder: {}, pinnedOrder: [], mode: "grouped" });
 
-  store.setSidebarLayout({ projectOrder: ["p2", "p1"] });
-  store.setSidebarLayout({ sessionOrder: { p1: ["s2", "s1"] } });
-  store.setSidebarLayout({ pinnedOrder: ["s9"] });
+  store.settings.setSidebarLayout({ projectOrder: ["p2", "p1"] });
+  store.settings.setSidebarLayout({ sessionOrder: { p1: ["s2", "s1"] } });
+  store.settings.setSidebarLayout({ pinnedOrder: ["s9"] });
   expect(store.liveSessions().layout).toEqual({
     projectOrder: ["p2", "p1"],
     sessionOrder: { p1: ["s2", "s1"] },

@@ -3,7 +3,7 @@ import { ok, type Route } from "../../platform/http/route";
 import { TELAR_ORIENTATION } from "../sessions";
 import type { EngineStore } from "../../state";
 
-type AgentOrientation = ReturnType<EngineStore["getAgentOrientation"]>;
+type AgentOrientation = ReturnType<EngineStore["settings"]["orientation"]>;
 
 const present = (input: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> =>
   Object.fromEntries(keys.filter((key) => key in input).map((key) => [key, input[key]]));

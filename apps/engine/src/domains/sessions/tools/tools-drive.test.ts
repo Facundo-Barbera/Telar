@@ -15,14 +15,14 @@ describe("driving a session", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
-    store.submitTurn(id, { runId: "run_busy", input: "a long think" });
-    const token = store.claimTurn(id, "worker_busy")!.claim!.token;
-    store.markRunning(id, "run_busy", token);
+    store.intake.submitTurn(id, { runId: "run_busy", input: "a long think" });
+    const token = store.claims.claimTurn(id, "worker_busy")!.claim!.token;
+    store.turnLifecycle.markRunning(id, "run_busy", token);
     const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
     expect(sent.isError).toBe(false);
     expect(sent.json!.delivery).toBe("passive");
     expect(String(sent.json!.note)).toContain("No model was started or steered");
-    expect(store.claimTurn(id, "worker_test")).toBeUndefined();
+    expect(store.claims.claimTurn(id, "worker_test")).toBeUndefined();
   });
 
   test("send to an IDLE session is held as mail, not turned into a turn", async () => {
@@ -32,8 +32,8 @@ describe("driving a session", () => {
     const sent = await call(tools, "sessions_send", { sessionId: id, input: "routine checkpoint" });
     expect(sent.isError).toBe(false);
     expect(sent.json!.delivery).toBe("passive");
-    expect(store.claimTurn(id, "worker_test")).toBeUndefined();
-    expect(store.pendingNotifications(id)).toHaveLength(1);
+    expect(store.claims.claimTurn(id, "worker_test")).toBeUndefined();
+    expect(store.wakes.pendingNotifications(id)).toHaveLength(1);
   });
 
   test("send queues one turn and says plainly that it is not the answer", async () => {
@@ -73,13 +73,13 @@ describe("driving a session", () => {
     expect(settled.isError).toBe(false);
     expect(settled.json).toMatchObject({ sessionId: id, settled: true });
     expect(String(settled.json!.note)).toContain("Nothing was archived");
-    expect(store.getSession(id)).toMatchObject({ state: "active", settledOverride: "settled" });
+    expect(store.records.get(id)).toMatchObject({ state: "active", settledOverride: "settled" });
 
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "one more thing" });
-    expect(store.getSession(id).settledOverride).toBeUndefined();
+    expect(store.records.get(id).settledOverride).toBeUndefined();
 
     const back = await call(tools, "sessions_settle", { sessionId: id, settled: false });
-    expect(store.getSession(id).settledOverride).toBe("active");
+    expect(store.records.get(id).settledOverride).toBe("active");
     expect(String(back.json!.note)).toContain("Back in the active list");
 
     const missing = await call(tools, "sessions_settle", { sessionId: "session_nope" });
@@ -89,7 +89,7 @@ describe("driving a session", () => {
   test("settle says what it ended: the session's terminals, closed as Telar (#883)", async () => {
     const { store, projectId } = engine();
     const closed: string[] = [];
-    store.attachTerminals({ openCount: () => 0, openSessions: () => [], closeSession: async (sessionId) => (closed.push(sessionId), 2) });
+    store.sessionTerminals.attach({ openCount: () => 0, openSessions: () => [], closeSession: async (sessionId) => (closed.push(sessionId), 2) });
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
 
@@ -104,14 +104,14 @@ describe("driving a session", () => {
 
   test("status lists the mail a session is holding, so held never reads as lost", async () => {
     const { store, projectId } = engine();
-    const host = store.createSession({ projectId, title: "coordinator" });
-    const worker = store.createSession({ projectId, title: "worker" });
+    const host = store.lifecycle.createSession({ projectId, title: "coordinator" });
+    const worker = store.lifecycle.createSession({ projectId, title: "worker" });
     const tools = wall(store, { sessionId: host.id });
 
-    store.submitTurn(worker.id, { runId: "run_source", input: "work" });
-    const token = store.claimTurn(worker.id, "worker_one")!.claim!.token;
-    store.markRunning(worker.id, "run_source", token);
-    store.submitAgentTurn(host.id, { runId: "run_report", input: "progress", intent: "report" }, { sessionId: worker.id, runId: "run_source", claimToken: token });
+    store.intake.submitTurn(worker.id, { runId: "run_source", input: "work" });
+    const token = store.claims.claimTurn(worker.id, "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning(worker.id, "run_source", token);
+    store.intake.submitAgentTurn(host.id, { runId: "run_report", input: "progress", intent: "report" }, { sessionId: worker.id, runId: "run_source", claimToken: token });
 
     const status = await call(tools, "sessions_status", { sessionId: host.id });
     expect((status.json!.pendingNotifications as string[]).length).toBe(1);
@@ -123,24 +123,24 @@ describe("driving a session", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "go" });
-    const claimed = store.claimTurn(id, "worker_one")!;
-    store.markRunning(id, claimed.runId, claimed.claim!.token);
+    const claimed = store.claims.claimTurn(id, "worker_one")!;
+    store.turnLifecycle.markRunning(id, claimed.runId, claimed.claim!.token);
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "and then this" });
 
     const stopped = await call(tools, "sessions_stop", { sessionId: id });
     expect(stopped.json!).toMatchObject({ stopped: 2, runId: claimed.runId, state: "stopped" });
     expect(String(stopped.json!.note)).toContain("stopping ends work, it never undoes it");
     expect(String(stopped.json!.note)).toContain("IDLE now, not paused");
-    expect(store.getSession(id).paused).toBeUndefined();
+    expect(store.records.get(id).paused).toBeUndefined();
     const [first, second] = store.turns(id);
     expect(first!.state).toBe("stopped");
     expect(second).toMatchObject({ state: "stopped", stopReason: "agent", input: "and then this" });
     expect(second!.held).toBeUndefined();
-    expect(store.claimNextTurn("worker_two")).toBeUndefined();
+    expect(store.claims.claimNextTurn("worker_two")).toBeUndefined();
     expect([...tools.keys()]).not.toContain("sessions_resume");
 
     await call(tools, "sessions_send", { intent: "task", sessionId: id, input: "carry on" });
-    expect(store.claimNextTurn("worker_two")?.turn.input).toBe("carry on");
+    expect(store.claims.claimNextTurn("worker_two")?.turn.input).toBe("carry on");
 
     const again = await call(tools, "sessions_stop", { sessionId: id });
     expect(again.isError).toBe(false);
@@ -151,7 +151,7 @@ describe("driving a session", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
     await worktreeReady(store, id);
-    fs.writeFileSync(path.join(workspacePath(store.getSession(id).workspace)!, "new-file.txt"), "written by the session\n");
+    fs.writeFileSync(path.join(workspacePath(store.records.get(id).workspace)!, "new-file.txt"), "written by the session\n");
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });
     expect((diff.json!.files as Array<{ path: string }>).map((file) => file.path)).toContain("new-file.txt");
@@ -169,7 +169,7 @@ describe("driving a session", () => {
         ? { status: 0, stdout: "true\n", stderr: "" }
         : { status: GIT_TIMEOUT_STATUS, stdout: "", stderr: "git did not finish within 30000ms and was killed", timedOut: true };
     const tools = wall(store, undefined, async (sessionId) =>
-      await sessionDiffAsync(async (cwd, args) => killed(cwd, args), { cwd: workspacePath(store.getSession(sessionId).workspace)!, baseRef: "base000" }),
+      await sessionDiffAsync(async (cwd, args) => killed(cwd, args), { cwd: workspacePath(store.records.get(sessionId).workspace)!, baseRef: "base000" }),
     );
 
     const diff = await call(tools, "sessions_diff", { sessionId: id });
@@ -197,9 +197,9 @@ describe("driving a session", () => {
     const { store, projectId } = engine();
     const tools = wall(store);
     const made = (await call(tools, "sessions_create", { projectId, title: "made by an agent", envMode: "local" })).json!.id as string;
-    const byHand = store.createSession({ projectId, title: "made by a person" }).id;
-    const gone = store.createSession({ projectId, title: "finished" }).id;
-    store.archiveSession(gone);
+    const byHand = store.lifecycle.createSession({ projectId, title: "made by a person" }).id;
+    const gone = store.lifecycle.createSession({ projectId, title: "finished" }).id;
+    store.lifecycle.archiveSession(gone);
 
     const listed = await call(tools, "sessions_list");
     const ids = (listed.json!.sessions as Array<{ id: string; project: string }>).map((session) => session.id);
@@ -216,11 +216,11 @@ describe("sessions_status reports a stalled turn", () => {
     let now = 1_000_000;
     const timed = new EngineStore(tmp("telar-stall-wall-"), () => now);
     openStores.push(timed);
-    const project = timed.registerProject({ name: "aurora", root: repo() });
-    const session = timed.createSession({ projectId: project.id, envMode: "local" });
-    timed.submitTurn(session.id, { runId: "run_one", input: "run the suite" });
-    const claim = timed.claimNextTurn("worker_one")!;
-    timed.markRunning(session.id, "run_one", claim.turn.claim!.token);
+    const project = timed.projectRegistry.register({ name: "aurora", root: repo() });
+    const session = timed.lifecycle.createSession({ projectId: project.id, envMode: "local" });
+    timed.intake.submitTurn(session.id, { runId: "run_one", input: "run the suite" });
+    const claim = timed.claims.claimNextTurn("worker_one")!;
+    timed.turnLifecycle.markRunning(session.id, "run_one", claim.turn.claim!.token);
 
     const tools = wall(timed);
     const healthy = await call(tools, "sessions_status", { sessionId: session.id });
@@ -228,7 +228,7 @@ describe("sessions_status reports a stalled turn", () => {
     expect((healthy.json!.turns as Array<Record<string, unknown>>)[0]!.stalled).toBeUndefined();
 
     now += STALLED_AFTER_MS + 60_000;
-    timed.claimNextTurn("worker_one");
+    timed.claims.claimNextTurn("worker_one");
 
     const stalled = await call(tools, "sessions_status", { sessionId: session.id });
     const turns = stalled.json!.turns as Array<{ state: string; stalled?: { since: number }; lastProgressAt?: number }>;
@@ -249,15 +249,15 @@ describe("sessions_status says what a session with no turn is still doing", () =
     const { store, projectId } = engine();
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
-    store.submitTurn(id, { runId: "run_bg", input: "Fan out" });
-    const claimed = store.claimNextTurn("worker_one")!;
+    store.intake.submitTurn(id, { runId: "run_bg", input: "Fan out" });
+    const claimed = store.claims.claimNextTurn("worker_one")!;
     const token = claimed.turn.claim!.token;
-    store.markRunning(id, "run_bg", token);
-    store.ingestObservations(id, "run_bg", token, [
+    store.turnLifecycle.markRunning(id, "run_bg", token);
+    store.ingest.ingestObservations(id, "run_bg", token, [
       { kind: "task.started", task: { id: "task_a", kind: "agent", backgrounded: true, state: "running" } },
       { kind: "task.started", task: { id: "task_b", kind: "background", backgrounded: true, state: "running" } },
     ]);
-    store.completeTurn(id, "run_bg", token, { text: "Launched" });
+    store.turnLifecycle.completeTurn(id, "run_bg", token, { text: "Launched" });
 
     const status = await call(tools, "sessions_status", { sessionId: id });
     expect(status.json!.running).toBe(false);
@@ -270,8 +270,8 @@ describe("sessions_status says what a session with no turn is still doing", () =
     const tools = wall(store);
     const waiter = (await call(tools, "sessions_create", { projectId, envMode: "local" })).json!.id as string;
     const worker = (await call(tools, "sessions_create", { projectId, envMode: "local", title: "port the parser" })).json!.id as string;
-    store.subscribe(waiter, { targetSessionId: worker });
-    store.submitTurn(worker, { runId: "run_w", input: "go" });
+    store.subscriptions.subscribe(waiter, { targetSessionId: worker });
+    store.intake.submitTurn(worker, { runId: "run_w", input: "go" });
 
     const status = await call(tools, "sessions_status", { sessionId: waiter });
     expect(status.json!.activity).toBe("waiting");

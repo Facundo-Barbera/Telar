@@ -29,31 +29,31 @@ function fixture() {
   const root = tmp("telar-diagnose-");
   const store = new EngineStore(root, () => now);
   stores.push(store);
-  const project = store.registerProject({ name: "aurora", root: tmp("telar-diagnose-project-") });
-  const session = (title: string) => store.createSession({ projectId: project.id, envMode: "local", title }).id;
+  const project = store.projectRegistry.register({ name: "aurora", root: tmp("telar-diagnose-project-") });
+  const session = (title: string) => store.lifecycle.createSession({ projectId: project.id, envMode: "local", title }).id;
 
   const stranded = session("stranded");
-  store.submitTurn(stranded, { runId: "run_stranded", input: "start" });
+  store.intake.submitTurn(stranded, { runId: "run_stranded", input: "start" });
 
   const start = (sessionId: string, runId: string, workerId: string) => {
-    const claim = store.claimTurn(sessionId, workerId)!;
-    store.markRunning(sessionId, runId, claim.claim!.token);
+    const claim = store.claims.claimTurn(sessionId, workerId)!;
+    store.turnLifecycle.markRunning(sessionId, runId, claim.claim!.token);
     return claim.claim!.token;
   };
 
   const wedged = session("wedged");
-  store.submitTurn(wedged, { runId: "run_wedged", input: "start" });
+  store.intake.submitTurn(wedged, { runId: "run_wedged", input: "start" });
   start(wedged, "run_wedged", "worker_one");
 
   const finished = session("finished");
-  store.submitTurn(finished, { runId: "run_finished", input: "start" });
+  store.intake.submitTurn(finished, { runId: "run_finished", input: "start" });
   const finishedToken = start(finished, "run_finished", "worker_two");
-  store.completeTurn(finished, "run_finished", finishedToken, { text: "done" });
+  store.turnLifecycle.completeTurn(finished, "run_finished", finishedToken, { text: "done" });
 
   now += STALLED_AFTER_MS * 2;
 
   const healthy = session("healthy");
-  store.submitTurn(healthy, { runId: "run_healthy", input: "start" });
+  store.intake.submitTurn(healthy, { runId: "run_healthy", input: "start" });
   start(healthy, "run_healthy", "worker_three");
 
   const scannedAt = now + 60_000;

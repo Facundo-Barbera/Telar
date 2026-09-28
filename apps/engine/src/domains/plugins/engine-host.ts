@@ -28,10 +28,10 @@ export function createEnginePlugins(store: EngineStore, { dir, daemonId, stateDi
   };
   const bundled = bundledPlugins({
     resolveHello: (sessionId) => resolve("hello", sessionId),
-    latex: { resolve: (sessionId) => store.pluginDoors.latex(sessionId), jobs: store.latexJobs, settings: store },
+    latex: { resolve: (sessionId) => store.pluginDoors.latex(sessionId), jobs: store.latexJobs, settings: store.latexOps, managed: store.toolchains },
     dataScience: {
       resolve: (sessionId) => store.pluginDoors.dataScience(sessionId),
-      settings: store,
+      settings: store.dataScienceOps,
       // Kernels only on an engine that runs turns; outputs are journaled by the store, the host persists images.
       ...(withKernels
         ? {

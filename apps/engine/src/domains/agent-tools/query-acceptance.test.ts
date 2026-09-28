@@ -139,8 +139,8 @@ describe("the fixture the numbers are taken on", () => {
     expect(store.eventCursor(CONTROL_SESSION)).toBeLessThan(store.eventCursor(BIG_SESSION) / 5);
     // Turn for turn identical, which is what makes the journal the only
     // variable between the two readings.
-    expect(store.turnOutline(BIG_SESSION, { limit: 200 }).total).toBe(MEASURED_TURNS + 1);
-    expect(store.turnOutline(CONTROL_SESSION, { limit: 200 }).total).toBe(MEASURED_TURNS + 1);
+    expect(store.queries.turnOutline(BIG_SESSION, { limit: 200 }).total).toBe(MEASURED_TURNS + 1);
+    expect(store.queries.turnOutline(CONTROL_SESSION, { limit: 200 }).total).toBe(MEASURED_TURNS + 1);
   });
 });
 
@@ -240,12 +240,12 @@ describe("#516's tools, on the same 300-session fixture", () => {
   const wall = (): Map<string, SocketTool> => {
     const store = daemon.store;
     const tools = collectTools(sessionQueryTools as never, {
-      find: async (query: Parameters<typeof store.findSessions>[0]) => store.findSessions(query),
-      outline: async (sessionId: string, window: Parameters<typeof store.turnOutline>[1]) => store.turnOutline(sessionId, window),
-      answer: async (sessionId: string, options: Parameters<typeof store.turnAnswer>[1]) => store.turnAnswer(sessionId, options),
-      steps: async (sessionId: string, runId: string) => ({ items: store.runItems(sessionId, runId) }),
-      step: async (sessionId: string, runId: string, step: number | string, maxChars: number) => store.runItem(sessionId, runId, step, maxChars),
-      grep: async (sessionId: string, pattern: string, window: Parameters<typeof store.grepSession>[2]) => store.grepSession(sessionId, pattern, window),
+      find: async (query: Parameters<typeof store.queries.findSessions>[0]) => store.queries.findSessions(query),
+      outline: async (sessionId: string, window: Parameters<typeof store.queries.turnOutline>[1]) => store.queries.turnOutline(sessionId, window),
+      answer: async (sessionId: string, options: Parameters<typeof store.queries.turnAnswer>[1]) => store.queries.turnAnswer(sessionId, options),
+      steps: async (sessionId: string, runId: string) => ({ items: store.queries.runItems(sessionId, runId) }),
+      step: async (sessionId: string, runId: string, step: number | string, maxChars: number) => store.queries.runItem(sessionId, runId, step, maxChars),
+      grep: async (sessionId: string, pattern: string, window: Parameters<typeof store.queries.grepSession>[2]) => store.queries.grepSession(sessionId, pattern, window),
     } as never);
     return new Map(tools.map((tool) => [tool.name, tool]));
   };
@@ -463,8 +463,8 @@ describe("outline does not fold the journal", () => {
     const store = daemon.store;
     return {
       outline: {
-        smallMs: measure(() => store.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
-        bigMs: measure(() => store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
+        smallMs: measure(() => store.queries.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
+        bigMs: measure(() => store.queries.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
       },
       fold: {
         smallMs: measure(() => foldOutline(store.readEvents(CONTROL_SESSION, 0), OUTLINE_LIMIT)),
@@ -481,7 +481,7 @@ describe("outline does not fold the journal", () => {
    */
   test("the fold control returns the outline's own rows", () => {
     const store = daemon.store;
-    const projected = store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }).turns;
+    const projected = store.queries.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }).turns;
     const folded = foldOutline(store.readEvents(BIG_SESSION, 0), OUTLINE_LIMIT).slice(0, projected.length);
     expect(folded.length).toBe(projected.length);
     expect(folded.length).toBeGreaterThan(0);
@@ -560,11 +560,11 @@ describe("the instrument can report a bad result", () => {
   test("the check rejects a reader that does fold — outline, made slow on purpose", () => {
     const store = daemon.store;
     const honest: Shape = {
-      smallMs: measure(() => store.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
-      bigMs: measure(() => store.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
+      smallMs: measure(() => store.queries.turnOutline(CONTROL_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
+      bigMs: measure(() => store.queries.turnOutline(BIG_SESSION, { limit: OUTLINE_LIMIT }), 5, OUTLINE_BATCH),
     };
     const slowed = (sessionId: string) => {
-      const answer = store.turnOutline(sessionId, { limit: OUTLINE_LIMIT });
+      const answer = store.queries.turnOutline(sessionId, { limit: OUTLINE_LIMIT });
       foldOutline(store.readEvents(sessionId, 0), OUTLINE_LIMIT);
       return answer;
     };

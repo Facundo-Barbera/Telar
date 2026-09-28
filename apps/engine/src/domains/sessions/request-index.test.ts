@@ -39,16 +39,16 @@ const bashDetail = { kind: "command_execution" as const, command: { command: "rm
  */
 function readyStore(directory = root()): EngineStore {
   const store = new EngineStore(directory, () => 100, { notifier: () => true });
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
   return store;
 }
 
 /** A session with one claimed, running turn — what a request needs to exist. */
 function runningSession(store: EngineStore, sessionId: string, runId: string): string {
-  store.createSession({ id: sessionId, projectId: "project_one", detached: false });
-  store.submitTurn(sessionId, { runId, input: "Hello" });
-  const claimed = store.claimTurn(sessionId, "worker_one")!;
-  store.markRunning(sessionId, runId, claimed.claim!.token);
+  store.lifecycle.createSession({ id: sessionId, projectId: "project_one", detached: false });
+  store.intake.submitTurn(sessionId, { runId, input: "Hello" });
+  const claimed = store.claims.claimTurn(sessionId, "worker_one")!;
+  store.turnLifecycle.markRunning(sessionId, runId, claimed.claim!.token);
   return claimed.claim!.token;
 }
 
@@ -81,22 +81,22 @@ test("the index follows one request through open, resolve and retire", () => {
   const token = runningSession(store, "session_one", "run_one");
 
   // OPEN — the activity fold reads the index, so this is the index answering.
-  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  expect(store.getSession("session_one")).toMatchObject({ activity: "blocked", activityAt: 100 });
-  expect(store.resolutionsForWorker("worker_one")).toEqual([]);
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  expect(store.records.get("session_one")).toMatchObject({ activity: "blocked", activityAt: 100 });
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toEqual([]);
 
   // RESOLVE — no longer blocking, and now deliverable to the blocked worker.
-  store.resolveRequest("session_one", "req_1", { decision: "accept" });
-  expect(store.getSession("session_one").activity).toBe("working");
-  expect(store.resolutionsForWorker("worker_one")).toEqual([
+  store.requestGate.resolve("session_one", "req_1", { decision: "accept" });
+  expect(store.records.get("session_one").activity).toBe("working");
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toEqual([
     { requestId: "req_1", sessionId: "session_one", runId: "run_one", decision: "accept" },
   ]);
 
   // RETIRE — the turn ends, so the resolution is no longer deliverable and the
   // document keeps it as history.
-  store.stopSession("session_one");
-  expect(store.resolutionsForWorker("worker_one")).toEqual([]);
-  expect(store.requests("session_one")).toMatchObject([{ id: "req_1", state: "resolved", decision: "accept" }]);
+  store.turnLifecycle.stopSession("session_one");
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toEqual([]);
+  expect(store.requestGate.list("session_one")).toMatchObject([{ id: "req_1", state: "resolved", decision: "accept" }]);
 });
 
 test("a request left open when its turn ends stops blocking the session", () => {
@@ -104,28 +104,28 @@ test("a request left open when its turn ends stops blocking the session", () => 
   // the index has to let go of it too or the rail says "waiting on you" forever.
   const store = readyStore();
   const token = runningSession(store, "session_one", "run_one");
-  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  expect(store.getSession("session_one").activity).toBe("blocked");
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  expect(store.records.get("session_one").activity).toBe("blocked");
 
-  store.stopSession("session_one");
-  expect(store.getSession("session_one").activity).toBe("idle");
-  expect(store.requests("session_one")).toMatchObject([{ id: "req_1", state: "resolved", resolvedBy: "cancelled" }]);
+  store.turnLifecycle.stopSession("session_one");
+  expect(store.records.get("session_one").activity).toBe("idle");
+  expect(store.requestGate.list("session_one")).toMatchObject([{ id: "req_1", state: "resolved", resolvedBy: "cancelled" }]);
 });
 
 test("a restart rebuilds the index from the documents", () => {
   const directory = root();
   const first = readyStore(directory);
   const token = runningSession(first, "session_one", "run_one");
-  first.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  first.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
 
   // A second store over the same root has no index at all until it builds one.
   const second = new EngineStore(directory, () => 200, { notifier: () => true });
-  expect(second.getSession("session_one")).toMatchObject({ activity: "blocked", activityAt: 100 });
-  expect(second.requests("session_one")).toMatchObject([{ id: "req_1", state: "open" }]);
+  expect(second.records.get("session_one")).toMatchObject({ activity: "blocked", activityAt: 100 });
+  expect(second.requestGate.list("session_one")).toMatchObject([{ id: "req_1", state: "open" }]);
 
   // And the rebuilt index is maintained from there, not frozen at boot.
-  second.resolveRequest("session_one", "req_1", { decision: "accept" });
-  expect(second.getSession("session_one").activity).toBe("working");
+  second.requestGate.resolve("session_one", "req_1", { decision: "accept" });
+  expect(second.records.get("session_one").activity).toBe("working");
 });
 
 test("the live-list fold reads no requests document", () => {
@@ -140,7 +140,7 @@ test("the live-list fold reads no requests document", () => {
   })).toBe(0);
 
   // And it is still the RIGHT answer, not merely a cheap one.
-  const token = store.claimTurn("session_1", "worker_one") ?? undefined;
+  const token = store.claims.claimTurn("session_1", "worker_one") ?? undefined;
   expect(token).toBeUndefined(); // already claimed by `runningSession`
   expect(store.liveSessions().sessions).toHaveLength(3);
 });
@@ -151,15 +151,15 @@ test("a heartbeat with N claimed sessions does no whole-document request read", 
   // One parked request per session, so every one of them has something to find.
   tokens.forEach((token, at) => {
     const n = at + 1;
-    store.openRequest(`session_${n}`, `run_${n}`, token, { requestId: `req_${n}`, kind: "command_execution", detail: bashDetail });
-    store.resolveRequest(`session_${n}`, `req_${n}`, { decision: "accept" });
+    store.requestGate.open(`session_${n}`, `run_${n}`, token, { requestId: `req_${n}`, kind: "command_execution", detail: bashDetail });
+    store.requestGate.resolve(`session_${n}`, `req_${n}`, { decision: "accept" });
   });
 
   expect(requestDocumentReads(() => {
-    for (let beat = 0; beat < 10; beat += 1) store.resolutionsForWorker("worker_one");
+    for (let beat = 0; beat < 10; beat += 1) store.requestGate.resolutionsForWorker("worker_one");
   })).toBe(0);
 
-  expect(store.resolutionsForWorker("worker_one")).toHaveLength(5);
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toHaveLength(5);
 });
 
 test("the index does not keep a resolution for a session no worker is on", () => {
@@ -167,14 +167,14 @@ test("the index does not keep a resolution for a session no worker is on", () =>
   // whose queue stops concerning any worker cannot have anything polling it.
   const store = readyStore();
   const token = runningSession(store, "session_one", "run_one");
-  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  store.resolveRequest("session_one", "req_1", { decision: "accept" });
-  expect(store.resolutionsForWorker("worker_one")).toHaveLength(1);
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  store.requestGate.resolve("session_one", "req_1", { decision: "accept" });
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toHaveLength(1);
 
-  store.completeTurn("session_one", "run_one", token, { text: "done" });
-  expect(store.resolutionsForWorker("worker_one")).toEqual([]);
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "done" });
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toEqual([]);
   // The record is untouched: only the in-memory copy went.
-  expect(store.requests("session_one")).toMatchObject([{ id: "req_1", state: "resolved" }]);
+  expect(store.requestGate.list("session_one")).toMatchObject([{ id: "req_1", state: "resolved" }]);
 });
 
 test("an existence check folds no activity", () => {
@@ -184,7 +184,7 @@ test("an existence check folds no activity", () => {
   // `sessionSnapshot` makes seven such calls to open one conversation.
   const store = readyStore();
   const token = runningSession(store, "session_one", "run_one");
-  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
 
   expect(documentReads(["queue.json", "requests.json", "tasks.json"], () => {
     store.readEvents("session_one");
@@ -207,5 +207,5 @@ test("a requests document that is not this store's is rejected rather than trust
   const file = path.join(directory, "sessions", "session_one", "requests.json");
   fs.writeFileSync(file, JSON.stringify({ version: 1, requests: [{ id: "req_1", state: "elsewhere" }] }));
   const store = new EngineStore(directory, () => 100, { notifier: () => true });
-  expect(() => store.requests("session_one")).toThrow("invalid request projection");
+  expect(() => store.requestGate.list("session_one")).toThrow("invalid request projection");
 });

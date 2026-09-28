@@ -52,32 +52,32 @@ function repo(): string {
 test("a range answers about two commits, and the working tree cannot change it (#741)", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-741-range-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_cut");
 
-  const workspace = store.getSession("session_cut").workspace;
+  const workspace = store.records.get("session_cut").workspace;
   if (workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   const checkout = workspace.path;
   const sha = (...args: string[]): string => execFileSync("git", args, { cwd: checkout, encoding: "utf8" }).trim();
 
   const before = sha("rev-parse", "HEAD");
   fs.writeFileSync(path.join(checkout, "inside.ts"), "export const a = 1;\n");
-  await store.commitSessionWork("session_cut", "inside the range");
+  await store.sessionGit.commit("session_cut", "inside the range");
   const after = sha("rev-parse", "HEAD");
   expect(after).not.toBe(before);
 
   // ...and then the world moves on, which is exactly what a range must ignore.
   fs.writeFileSync(path.join(checkout, "outside.ts"), "export const b = 2;\n");
-  await store.commitSessionWork("session_cut", "after the range closed");
+  await store.sessionGit.commit("session_cut", "after the range closed");
   fs.writeFileSync(path.join(checkout, "dirty.ts"), "export const c = 3;\n");
 
-  const ranged = await store.sessionDiffAsync("session_cut", { base: before, to: after });
+  const ranged = await store.workspaceReads.sessionDiff("session_cut", { base: before, to: after });
   expect(ranged.files.map((file) => file.path)).toEqual(["inside.ts"]);
   // THE ASSERTION THAT IS NOT VACUOUS: the same session read WITHOUT a right
   // hand side sees all three, so "one file" is a property of the range rather
   // than of the fixture.
-  const open = await store.sessionDiffAsync("session_cut", { base: before });
+  const open = await store.workspaceReads.sessionDiff("session_cut", { base: before });
   expect(open.files.map((file) => file.path).sort()).toEqual(["dirty.ts", "inside.ts", "outside.ts"]);
 });
 
@@ -91,20 +91,20 @@ test("an untracked file is in no commit, so it is in no range (#741)", async () 
    */
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-741-range-untracked-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_cut");
 
-  const workspace = store.getSession("session_cut").workspace;
+  const workspace = store.records.get("session_cut").workspace;
   if (workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   const checkout = workspace.path;
   const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
   fs.writeFileSync(path.join(checkout, "committed.ts"), "export const a = 1;\n");
-  await store.commitSessionWork("session_cut", "one commit");
+  await store.sessionGit.commit("session_cut", "one commit");
   const after = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
   fs.writeFileSync(path.join(checkout, "never-committed.ts"), "export const d = 4;\n");
 
-  const ranged = await store.sessionDiffAsync("session_cut", { base: before, to: after });
+  const ranged = await store.workspaceReads.sessionDiff("session_cut", { base: before, to: after });
   expect(ranged.files.map((file) => file.path)).toEqual(["committed.ts"]);
   // ...and the absence is not a read that failed, which would put a warning
   // band over an answer that is complete.
@@ -112,33 +112,33 @@ test("an untracked file is in no commit, so it is in no range (#741)", async () 
 
   // The negative: without the range, the untracked file is exactly what the
   // working-tree read is FOR.
-  const open = await store.sessionDiffAsync("session_cut", { base: null });
+  const open = await store.workspaceReads.sessionDiff("session_cut", { base: null });
   expect(open.files.map((file) => file.path)).toEqual(["never-committed.ts"]);
 });
 
 test("a row's patch over a range is the range's patch (#741)", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-741-range-patch-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_cut");
 
-  const workspace = store.getSession("session_cut").workspace;
+  const workspace = store.records.get("session_cut").workspace;
   if (workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   const checkout = workspace.path;
   const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
   fs.writeFileSync(path.join(checkout, "moving.ts"), "export const inRange = 1;\n");
-  await store.commitSessionWork("session_cut", "in range");
+  await store.sessionGit.commit("session_cut", "in range");
   const after = execFileSync("git", ["rev-parse", "HEAD"], { cwd: checkout, encoding: "utf8" }).trim();
 
   // Changed again afterwards, on the disk. A patch read against the working
   // tree would show this; the range must not.
   fs.writeFileSync(path.join(checkout, "moving.ts"), "export const afterwards = 99;\n");
 
-  const ranged = await store.sessionFilePatchAsync("session_cut", "moving.ts", { base: before, to: after });
+  const ranged = await store.workspaceReads.sessionFilePatch("session_cut", "moving.ts", { base: before, to: after });
   expect(ranged.patch).toContain("+export const inRange = 1;");
   expect(ranged.patch).not.toContain("afterwards");
 
-  const open = await store.sessionFilePatchAsync("session_cut", "moving.ts", { base: before });
+  const open = await store.workspaceReads.sessionFilePatch("session_cut", "moving.ts", { base: before });
   expect(open.patch).toContain("afterwards");
 });

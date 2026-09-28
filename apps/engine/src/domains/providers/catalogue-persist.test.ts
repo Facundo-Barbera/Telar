@@ -50,13 +50,13 @@ test("a cold start answers from the persisted catalogue, with no spawn", async (
   const clock = { now: 1_000 };
   const first = provider(["gpt-a", "gpt-b"]);
   const before = new EngineStore(dir, () => clock.now, first.options);
-  expect((await before.modelCatalogue("codex")).models.map((model) => model.id)).toEqual(["gpt-a", "gpt-b"]);
+  expect((await before.catalogues.catalogue("codex")).models.map((model) => model.id)).toEqual(["gpt-a", "gpt-b"]);
   expect(first.state.reads).toBe(1);
 
   // A new engine on the same home — the restart that used to cost a spinner.
   const second = provider(["never-read"]);
   const after = new EngineStore(dir, () => clock.now, second.options);
-  const answer = await after.modelCatalogue("codex");
+  const answer = await after.catalogues.catalogue("codex");
   expect(answer.models.map((model) => model.id)).toEqual(["gpt-a", "gpt-b"]);
   expect(second.state.reads).toBe(0);
 });
@@ -66,24 +66,24 @@ test("a stale catalogue is answered at once and refreshed in the background", as
   const clock = { now: 1_000 };
   const fake = provider(["gpt-a"]);
   const store = new EngineStore(dir, () => clock.now, fake.options);
-  await store.modelCatalogue("codex");
+  await store.catalogues.catalogue("codex");
 
   // Past its life. The answer is still the old one, now, and says a newer one
   // is on its way.
   clock.now += 6 * 60_000;
   fake.state.answer = ["gpt-a", "gpt-new"];
-  const stale = await store.modelCatalogue("codex");
+  const stale = await store.catalogues.catalogue("codex");
   expect(stale.models.map((model) => model.id)).toEqual(["gpt-a"]);
   expect(stale.refreshing).toBe(true);
   await settle();
   expect(fake.state.reads).toBe(2);
 
-  const fresh = await store.modelCatalogue("codex");
+  const fresh = await store.catalogues.catalogue("codex");
   expect(fresh.models.map((model) => model.id)).toEqual(["gpt-a", "gpt-new"]);
   expect(fresh.refreshing).toBeUndefined();
   // And it was persisted: a restart sees the new list without reading.
   const restarted = provider(["never-read"]);
-  expect((await new EngineStore(dir, () => clock.now, restarted.options).modelCatalogue("codex")).models.map((model) => model.id)).toEqual(["gpt-a", "gpt-new"]);
+  expect((await new EngineStore(dir, () => clock.now, restarted.options).catalogues.catalogue("codex")).models.map((model) => model.id)).toEqual(["gpt-a", "gpt-new"]);
   expect(restarted.state.reads).toBe(0);
 });
 
@@ -92,17 +92,17 @@ test("a CLI version change refreshes a catalogue that is otherwise fresh", async
   const clock = { now: 1_000 };
   const fake = provider(["opencode/a"]);
   const store = new EngineStore(dir, () => clock.now, fake.options);
-  await store.modelCatalogue("opencode");
+  await store.catalogues.catalogue("opencode");
 
   // Same version, well inside its life: the prefetch has nothing to do.
-  await store.prefetchModelCatalogues(["opencode"]);
+  await store.catalogues.prefetch(["opencode"]);
   expect(fake.state.reads).toBe(1);
 
   fake.state.version = "1.1.0";
   fake.state.answer = ["opencode/a", "opencode/b"];
-  await store.prefetchModelCatalogues(["opencode"]);
+  await store.catalogues.prefetch(["opencode"]);
   expect(fake.state.reads).toBe(2);
-  expect((await store.modelCatalogue("opencode")).models.map((model) => model.id)).toEqual(["opencode/a", "opencode/b"]);
+  expect((await store.catalogues.catalogue("opencode")).models.map((model) => model.id)).toEqual(["opencode/a", "opencode/b"]);
 });
 
 test("a failed refresh keeps the last good answer", async () => {
@@ -110,17 +110,17 @@ test("a failed refresh keeps the last good answer", async () => {
   const clock = { now: 1_000 };
   const fake = provider(["gpt-a"]);
   const store = new EngineStore(dir, () => clock.now, fake.options);
-  await store.modelCatalogue("codex");
+  await store.catalogues.catalogue("codex");
 
   fake.state.answer = new Error("codex is not signed in");
-  const forced = await store.modelCatalogue("codex", { force: true });
+  const forced = await store.catalogues.catalogue("codex", { force: true });
   expect(forced.models.map((model) => model.id)).toEqual(["gpt-a"]);
   expect(forced.message).toBeUndefined();
 
   clock.now += 6 * 60_000;
-  await store.modelCatalogue("codex");
+  await store.catalogues.catalogue("codex");
   await settle();
-  expect((await store.modelCatalogue("codex")).models.map((model) => model.id)).toEqual(["gpt-a"]);
+  expect((await store.catalogues.catalogue("codex")).models.map((model) => model.id)).toEqual(["gpt-a"]);
 });
 
 test("a provider never read well shows its error, and is not respawned on every open", async () => {
@@ -128,8 +128,8 @@ test("a provider never read well shows its error, and is not respawned on every 
   const fake = provider([]);
   fake.state.answer = new Error("opencode is not installed");
   const store = new EngineStore(home(), () => clock.now, fake.options);
-  expect((await store.modelCatalogue("opencode")).message).toBe("opencode is not installed");
-  await store.modelCatalogue("opencode");
+  expect((await store.catalogues.catalogue("opencode")).message).toBe("opencode is not installed");
+  await store.catalogues.catalogue("opencode");
   expect(fake.state.reads).toBe(1);
 });
 
@@ -149,7 +149,7 @@ test("readers of one provider share one read, and providers are read one at a ti
     },
     cliVersion: async () => ({ installed: true, version: "1" }),
   });
-  await Promise.all([store.modelCatalogue("codex"), store.modelCatalogue("codex"), store.modelCatalogue("opencode"), store.modelCatalogue("claude")]);
+  await Promise.all([store.catalogues.catalogue("codex"), store.catalogues.catalogue("codex"), store.catalogues.catalogue("opencode"), store.catalogues.catalogue("claude")]);
   expect(reads).toBe(3);
   expect(most).toBe(1);
 });
@@ -158,12 +158,12 @@ test("after a failed refresh, opening the picker again does not respawn the prov
   const clock = { now: 1_000 };
   const fake = provider(["gpt-a"]);
   const store = new EngineStore(home(), () => clock.now, fake.options);
-  await store.modelCatalogue("codex");
+  await store.catalogues.catalogue("codex");
   clock.now += 6 * 60_000;
   fake.state.answer = new Error("offline");
-  await store.modelCatalogue("codex");
+  await store.catalogues.catalogue("codex");
   await settle();
-  for (let open = 0; open < 5; open += 1) await store.modelCatalogue("codex");
+  for (let open = 0; open < 5; open += 1) await store.catalogues.catalogue("codex");
   await settle();
   expect(fake.state.reads).toBe(2);
 });

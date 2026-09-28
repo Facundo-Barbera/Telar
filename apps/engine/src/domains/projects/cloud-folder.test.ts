@@ -47,7 +47,7 @@ function cloudRepo(): { home: string; root: string } {
 test("a cloud-folder repository registers as an ordinary project on this Mac's own disk", () => {
   const { root } = cloudRepo();
   const store = new EngineStore(tmp("telar-cloud-engine-"), () => 100);
-  const project = store.registerProject({ name: "repo", root });
+  const project = store.projectRegistry.register({ name: "repo", root });
   expect(project.root).toBe(root);
   // Not a removable volume: it is under home, not a mount root, so there is no
   // drive to wait for and nothing that would read "unplugged".
@@ -72,14 +72,14 @@ test("its worktrees are cut in the worktrees root, never inside the cloud folder
 test("a folder that is there and unreadable is refused with the reason, not as missing", () => {
   const { home, root } = cloudRepo();
   const store = new EngineStore(tmp("telar-cloud-engine-"), () => 100);
-  expect(() => store.registerProject({ name: "gone", root: path.join(root, "nope") })).toThrow("project root must be an existing directory");
+  expect(() => store.projectRegistry.register({ name: "gone", root: path.join(root, "nope") })).toThrow("project root must be an existing directory");
   // Take the drive's permission away, as macOS does before it is granted.
   const drive = path.join(home, "Library", "CloudStorage");
   fs.chmodSync(drive, 0o000);
   try {
     let refusal: unknown;
     try {
-      store.registerProject({ name: "repo", root });
+      store.projectRegistry.register({ name: "repo", root });
     } catch (cause) {
       refusal = cause;
     }

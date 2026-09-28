@@ -60,23 +60,23 @@ const BODY = "x".repeat(800);
 function seeded(turns: number, perTurn: number): string {
   const home = root();
   const store = open(home);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   for (let turn = 0; turn < turns; turn += 1) {
     const runId = `run_${turn}`;
-    store.submitTurn("session_one", { runId, input: `message ${turn}` });
-    const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-    store.markRunning("session_one", runId, token);
+    store.intake.submitTurn("session_one", { runId, input: `message ${turn}` });
+    const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning("session_one", runId, token);
     for (let step = 0; step < perTurn; step += 1) {
       const id = `${runId}_item_${step}`;
-      store.ingestObservations("session_one", runId, token, [
+      store.ingest.ingestObservations("session_one", runId, token, [
         { kind: "item.started", item: { id, detail: { type: "assistant_message", text: "" } } },
       ]);
-      store.ingestObservations("session_one", runId, token, [
+      store.ingest.ingestObservations("session_one", runId, token, [
         { kind: "item.completed", itemId: id, status: "completed", detail: { type: "assistant_message", text: `${BODY} ${turn}.${step}` } },
       ]);
     }
-    store.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
+    store.turnLifecycle.completeTurn("session_one", runId, token, { text: `answer ${turn}` });
   }
   store.closeExecutionStore();
   stores.splice(stores.indexOf(store), 1);
@@ -103,9 +103,9 @@ test("a turn of item events reads the projection once, not once each", () => {
 
   const store = open(home);
   const runId = "run_measured";
-  store.submitTurn("session_one", { runId, input: "once more" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", runId, token);
+  store.intake.submitTurn("session_one", { runId, input: "once more" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", runId, token);
 
   store.readAccounting.documentBytes = 0;
   store.readAccounting.itemParses = 0;
@@ -113,15 +113,15 @@ test("a turn of item events reads the projection once, not once each", () => {
   const EVENTS = 20;
   for (let index = 0; index < EVENTS; index += 1) {
     const id = `measured_item_${index}`;
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "item.started", item: { id, detail: { type: "assistant_message", text: "" } } },
     ]);
     // The delta between them is the half of the cost the issue did not count:
     // `hasItem` re-read the projection too, once per streamed chunk.
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "content.delta", itemId: id, stream: "assistant_text", text: BODY },
     ]);
-    store.ingestObservations("session_one", runId, token, [
+    store.ingest.ingestObservations("session_one", runId, token, [
       { kind: "item.completed", itemId: id, status: "completed", detail: { type: "assistant_message", text: BODY } },
     ]);
   }

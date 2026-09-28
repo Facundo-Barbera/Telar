@@ -23,17 +23,17 @@ afterEach(() => {
 
 function readyStore(): EngineStore {
   const store = new EngineStore(root(), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   return store;
 }
 
 /** A running first turn, then a second message sent at it — which steers on submit. */
 function runningPlusSteered(store: EngineStore): { token: string } {
-  store.submitTurn("session_one", { runId: "run_live", input: "Long task" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  store.markRunning("session_one", "run_live", claimed.claim!.token);
-  const second = store.submitTurn("session_one", { runId: "run_next", input: "Also do this" });
+  store.intake.submitTurn("session_one", { runId: "run_live", input: "Long task" });
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_live", claimed.claim!.token);
+  const second = store.intake.submitTurn("session_one", { runId: "run_next", input: "Also do this" });
   expect(second.turn).toMatchObject({ state: "steering", steer: { intoRunId: "run_live" } });
   return { token: claimed.claim!.token };
 }
@@ -47,33 +47,33 @@ test("submit → heartbeat → ack is the delivery path, and ack is idempotent",
 
   // The heartbeat carries the text to the worker holding the running claim,
   // and to nobody else.
-  expect(store.steerForWorker("worker_one")).toEqual([
+  expect(store.worker.steerForWorker("worker_one")).toEqual([
     { sessionId: "session_one", runId: "run_live", claimToken: token, steerRunId: "run_next", text: "Also do this" },
   ]);
-  expect(store.steerForWorker("worker_two")).toEqual([]);
+  expect(store.worker.steerForWorker("worker_two")).toEqual([]);
 
-  const acked = store.ackSteer("session_one", "run_next", token);
+  const acked = store.turnLifecycle.ackSteer("session_one", "run_next", token);
   expect(acked.state).toBe("steered");
   expect(acked.steer?.deliveredAt).toBeDefined();
   // A retried ack after a dropped response is the same answer, not a conflict.
-  expect(store.ackSteer("session_one", "run_next", token).state).toBe("steered");
+  expect(store.turnLifecycle.ackSteer("session_one", "run_next", token).state).toBe("steered");
   // Delivered means gone from the heartbeat.
-  expect(store.steerForWorker("worker_one")).toEqual([]);
+  expect(store.worker.steerForWorker("worker_one")).toEqual([]);
 });
 
 test("with nothing running a message is queued, and promoteTurn refuses what is not queued", () => {
   const store = readyStore();
-  expect(store.submitTurn("session_one", { runId: "run_next", input: "hello" }).turn.state).toBe("queued");
+  expect(store.intake.submitTurn("session_one", { runId: "run_next", input: "hello" }).turn.state).toBe("queued");
   // Nothing running: with nothing to steer into, "send now" is
   // indistinguishable from "wait one moment".
-  expect(() => store.promoteTurn("session_one", "run_next")).toThrow(EngineStateError);
+  expect(() => store.turnLifecycle.promoteTurn("session_one", "run_next")).toThrow(EngineStateError);
 
-  const claimed = store.claimTurn("session_one", "worker_one")!;
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
   // Claimed but not yet running: still queued — a claim has no input stream yet.
-  expect(store.submitTurn("session_one", { runId: "run_early", input: "early" }).turn.state).toBe("queued");
-  store.markRunning("session_one", "run_next", claimed.claim!.token);
+  expect(store.intake.submitTurn("session_one", { runId: "run_early", input: "early" }).turn.state).toBe("queued");
+  store.turnLifecycle.markRunning("session_one", "run_next", claimed.claim!.token);
   // A running turn is not a promotable one.
-  expect(() => store.promoteTurn("session_one", "run_next")).toThrow(EngineStateError);
+  expect(() => store.turnLifecycle.promoteTurn("session_one", "run_next")).toThrow(EngineStateError);
   /**
    * AND THE MESSAGE WRITTEN INTO THE CLAIM WINDOW NO LONGER WAITS TO BE SENT
    * BY HAND. It was typed against a session the composer showed as live, and
@@ -82,58 +82,58 @@ test("with nothing running a message is queued, and promoteTurn refuses what is 
    * It is refused now for exactly the reason the running turn is: not queued.
    */
   expect(turnState(store, "run_early")).toBe("steering");
-  expect(() => store.promoteTurn("session_one", "run_early")).toThrow(EngineStateError);
+  expect(() => store.turnLifecycle.promoteTurn("session_one", "run_early")).toThrow(EngineStateError);
 });
 
 test("the running turn settling FIRST puts an undelivered message back in the queue", () => {
   const store = readyStore();
   const { token } = runningPlusSteered(store);
 
-  store.completeTurn("session_one", "run_live", token, { text: "done" });
+  store.turnLifecycle.completeTurn("session_one", "run_live", token, { text: "done" });
   // NOT-LOSING: the message is queued again, claimable as an ordinary turn.
   expect(turnState(store, "run_next")).toBe("queued");
   const events = store.readEvents("session_one").filter((event) => event.type === "turn.requeued");
   expect(events).toHaveLength(1);
-  expect(store.claimTurn("session_one", "worker_one")?.runId).toBe("run_next");
+  expect(store.claims.claimTurn("session_one", "worker_one")?.runId).toBe("run_next");
 });
 
 test("a stop and a failure sweep the same way a completion does", () => {
   const store = readyStore();
   runningPlusSteered(store);
-  store.stopTurn("session_one", "run_live");
+  store.turnLifecycle.stopTurn("session_one", "run_live");
   expect(turnState(store, "run_next")).toBe("queued");
 
   // Again, with a failure.
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  store.markRunning("session_one", "run_next", claimed.claim!.token);
-  expect(store.submitTurn("session_one", { runId: "run_third", input: "and this" }).turn.state).toBe("steering");
-  store.failTurn("session_one", "run_next", claimed.claim!.token, { code: "driver_failed", message: "boom" });
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_next", claimed.claim!.token);
+  expect(store.intake.submitTurn("session_one", { runId: "run_third", input: "and this" }).turn.state).toBe("steering");
+  store.turnLifecycle.failTurn("session_one", "run_next", claimed.claim!.token, { code: "driver_failed", message: "boom" });
   expect(turnState(store, "run_third")).toBe("queued");
 });
 
 test("a DELIVERED message stays steered when the turn settles — its words are part of that run", () => {
   const store = readyStore();
   const { token } = runningPlusSteered(store);
-  store.ackSteer("session_one", "run_next", token);
-  store.completeTurn("session_one", "run_live", token, { text: "done" });
+  store.turnLifecycle.ackSteer("session_one", "run_next", token);
+  store.turnLifecycle.completeTurn("session_one", "run_live", token, { text: "done" });
   expect(turnState(store, "run_next")).toBe("steered");
   // And it is not claimable: the queue holds nothing.
-  expect(store.claimTurn("session_one", "worker_one")).toBeUndefined();
+  expect(store.claims.claimTurn("session_one", "worker_one")).toBeUndefined();
 });
 
 test("recover() SETTLES an orphaned steering turn instead of stranding or replaying it", () => {
   const stateRoot = root();
   const first = new EngineStore(stateRoot, () => 100);
-  first.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  first.createSession({ id: "session_one", projectId: "project_one" });
-  first.submitTurn("session_one", { runId: "run_live", input: "Long task" });
-  const claimed = first.claimTurn("session_one", "worker_one")!;
-  first.markRunning("session_one", "run_live", claimed.claim!.token);
-  expect(first.submitTurn("session_one", { runId: "run_next", input: "Also this" }).turn.state).toBe("steering");
+  first.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  first.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  first.intake.submitTurn("session_one", { runId: "run_live", input: "Long task" });
+  const claimed = first.claims.claimTurn("session_one", "worker_one")!;
+  first.turnLifecycle.markRunning("session_one", "run_live", claimed.claim!.token);
+  expect(first.intake.submitTurn("session_one", { runId: "run_next", input: "Also this" }).turn.state).toBe("steering");
 
   // A fresh store over the same root is the restart.
   const second = new EngineStore(stateRoot, () => 200);
-  const recovered = second.recover();
+  const recovered = second.recovery.recover();
   // BOTH END. The live turn is not left ambiguous for a human to adjudicate,
   // and the message that never reached it is not requeued to run by itself —
   // "not lost" is satisfied by keeping it readable, not by running it.
@@ -143,24 +143,24 @@ test("recover() SETTLES an orphaned steering turn instead of stranding or replay
     stopReason: "engine_restart",
     input: "Also this",
   });
-  expect(second.claimNextTurn("worker_two")).toBeUndefined();
+  expect(second.claims.claimNextTurn("worker_two")).toBeUndefined();
 });
 
 test("while the provider compacts a message falls back to queued, and can be sent once the gate opens", () => {
   const store = readyStore();
-  store.submitTurn("session_one", { runId: "run_live", input: "Long task" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
+  store.intake.submitTurn("session_one", { runId: "run_live", input: "Long task" });
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
   const token = claimed.claim!.token;
-  store.markRunning("session_one", "run_live", token);
+  store.turnLifecycle.markRunning("session_one", "run_live", token);
   // The running turn opens a compaction row.
-  store.ingestObservations("session_one", "run_live", token, [
+  store.ingest.ingestObservations("session_one", "run_live", token, [
     { kind: "item.started", item: { id: "item_cc", detail: { type: "context_compaction" }, title: "Compacting context" } },
   ]);
   // Codex refuses a steer during compaction at the protocol level; the engine
   // mirrors that by NOT steering — queued, never lost.
-  expect(store.submitTurn("session_one", { runId: "run_next", input: "Also do this" }).turn.state).toBe("queued");
-  expect(() => store.promoteTurn("session_one", "run_next")).toThrow(/compacting/);
+  expect(store.intake.submitTurn("session_one", { runId: "run_next", input: "Also do this" }).turn.state).toBe("queued");
+  expect(() => store.turnLifecycle.promoteTurn("session_one", "run_next")).toThrow(/compacting/);
   // Closed, the gate opens again.
-  store.ingestObservations("session_one", "run_live", token, [{ kind: "item.completed", itemId: "item_cc", status: "completed" }]);
-  expect(store.promoteTurn("session_one", "run_next").state).toBe("steering");
+  store.ingest.ingestObservations("session_one", "run_live", token, [{ kind: "item.completed", itemId: "item_cc", status: "completed" }]);
+  expect(store.turnLifecycle.promoteTurn("session_one", "run_next").state).toBe("steering");
 });

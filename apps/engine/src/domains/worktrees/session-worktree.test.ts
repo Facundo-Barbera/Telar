@@ -131,8 +131,8 @@ test("a branch slug outside the engine-owned namespaces is refused", () => {
 test("a titled worktree session derives its branch from the title", () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  const session = store.createSession({
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  const session = store.lifecycle.createSession({
     id: "session_abcdef123456",
     projectId: "project_one",
     title: "Fix «Presupuestos» login!",
@@ -145,8 +145,8 @@ test("a titled worktree session derives its branch from the title", () => {
 test("a session created with envMode worktree records its branch and base", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  const session = store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
 
   expect(session.envMode).toBe("worktree");
   // THE ROW IS COMPLETE BEFORE THE DIRECTORY IS (#496): the branch and the base
@@ -158,13 +158,13 @@ test("a session created with envMode worktree records its branch and base", asyn
   expect(session.preparation).toEqual({ state: "preparing", at: 100 });
 
   await settled(store, "session_one");
-  expect(store.getSession("session_one").preparation).toBeUndefined();
+  expect(store.records.get("session_one").preparation).toBeUndefined();
   expect(fs.existsSync(session.workspace.path)).toBe(true);
 
   // The claim hands the worker the SESSION's checkout, not the project root —
   // otherwise the isolation is cosmetic.
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(store.claimNextTurn("worker_one")?.projectRoot).toBe(session.workspace.path);
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.claims.claimNextTurn("worker_one")?.projectRoot).toBe(session.workspace.path);
 });
 
 test("a turn does not dispatch until the checkout it would run in exists", async () => {
@@ -173,16 +173,16 @@ test("a turn does not dispatch until the checkout it would run in exists", async
   // to a directory nothing has made yet.
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(store.claimNextTurn("worker_one")).toBeUndefined();
-  expect(store.claimTurn("session_one", "worker_one")).toBeUndefined();
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.claims.claimNextTurn("worker_one")).toBeUndefined();
+  expect(store.claims.claimTurn("session_one", "worker_one")).toBeUndefined();
 
   // The message kept its place rather than being dropped, and runs once the
   // checkout lands.
   await settled(store, "session_one");
-  expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
+  expect(store.claims.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
 });
 
 test("a cut that fails flips the row to failed, with git's own words on it", async () => {
@@ -194,18 +194,18 @@ test("a cut that fails flips the row to failed, with git's own words on it", asy
         ? { status: 128, stdout: "", stderr: "fatal: Unable to create '.git/index.lock': File exists" }
         : defaultAsyncGitRunner(cwd, args),
   });
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
 
   await settled(store, "session_one");
-  const failed = store.getSession("session_one").preparation;
+  const failed = store.records.get("session_one").preparation;
   expect(failed?.state).toBe("failed");
   // GIT'S OWN STDERR, not a rewrite: the person reading the row is the one who
   // can act on a stale lock, and our sentence for it would say less.
   expect(failed?.error).toContain("index.lock");
   // And nothing runs in a checkout that was never made.
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(store.claimNextTurn("worker_one")).toBeUndefined();
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(store.claims.claimNextTurn("worker_one")).toBeUndefined();
 });
 
 test("the standing default decides an omitted envMode, and an explicit one still wins", () => {
@@ -214,37 +214,37 @@ test("the standing default decides an omitted envMode, and an explicit one still
   // preference says.
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.setSessionDefaults({ envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.settings.setSessionDefaults({ envMode: "worktree" });
 
-  const silent = store.createSession({ id: "session_one", projectId: "project_one" });
+  const silent = store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   expect(silent.envMode).toBe("worktree");
   expect(silent.workspace.mode).toBe("worktree");
 
   // A caller who ASKED for the shared checkout gets it regardless.
-  const asked = store.createSession({ id: "session_two", projectId: "project_one", envMode: "local" });
+  const asked = store.lifecycle.createSession({ id: "session_two", projectId: "project_one", envMode: "local" });
   expect(asked.envMode).toBe("local");
 });
 
 test("a local session's diff says the checkout is shared, and a worktree session's does not (#690)", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
 
   // Somebody else's uncommitted work, already in the tree before either session.
   fs.writeFileSync(path.join(projectRoot, "README.md"), "hello\nsomebody else\n");
 
-  store.createSession({ id: "session_local", projectId: "project_one", envMode: "local" });
-  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  store.lifecycle.createSession({ id: "session_local", projectId: "project_one", envMode: "local" });
+  store.lifecycle.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await settled(store, "session_cut");
 
-  const local = await store.sessionDiffAsync("session_local");
+  const local = await store.workspaceReads.sessionDiff("session_local");
   expect(local.shared).toBe(true);
   // The flag withdraws a CLAIM, not the reading: the row is still there.
   expect(local.files.map((entry) => entry.path)).toEqual(["README.md"]);
-  expect((await store.sessionDiffAsync("session_cut")).shared).toBeUndefined();
+  expect((await store.workspaceReads.sessionDiff("session_cut")).shared).toBeUndefined();
   // And a project diff has no session to misattribute anything to.
-  expect((await store.projectDiffAsync("project_one")).shared).toBeUndefined();
+  expect((await store.workspaceReads.projectDiff("project_one")).shared).toBeUndefined();
 });
 
 test("the worktree default yields on an unversioned project, but a stated worktree still throws", () => {
@@ -252,13 +252,13 @@ test("the worktree default yields on an unversioned project, but a stated worktr
   // a caller who asked for a worktree, and wrong for one who asked for nothing
   // and would otherwise be unable to open a session in that project at all.
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
-  store.setSessionDefaults({ envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
+  store.settings.setSessionDefaults({ envMode: "worktree" });
 
-  const silent = store.createSession({ id: "session_one", projectId: "project_one" });
+  const silent = store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   expect(silent.envMode).toBe("local");
 
-  expect(() => store.createSession({ id: "session_two", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
+  expect(() => store.lifecycle.createSession({ id: "session_two", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
 });
 
 test("a refused worktree request leaves no half-created session behind", () => {
@@ -266,16 +266,16 @@ test("a refused worktree request leaves no half-created session behind", () => {
   // a bad request leaves nothing to repair on read. What moved to the
   // background is only the cut itself, whose failure lands on the row.
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
-  expect(() => store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
-  expect(() => store.getSession("session_one")).toThrow(EngineStateError);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: tmp("telar-wt-plain-") });
+  expect(() => store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" })).toThrow(WorktreeError);
+  expect(() => store.records.get("session_one")).toThrow(EngineStateError);
 });
 
 test("archiving frees the checkout and KEEPS the branch", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  const session = store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   await settled(store, "session_one");
 
@@ -286,7 +286,7 @@ test("archiving frees the checkout and KEEPS the branch", async () => {
 
   store.cleanup.setPolicy({ archived: true });
 
-  const archived = store.archiveSession("session_one");
+  const archived = store.lifecycle.archiveSession("session_one");
   expect(archived.state).toBe("archived");
   // The removal runs on the same per-project queue the cut did, so it is not
   // done the instant `archiveSession` returns — see `releaseWorktree`.
@@ -306,21 +306,21 @@ test("archiving refuses while a turn is in flight", () => {
   // half-written file becomes a corrupt commit.
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  expect(() => store.archiveSession("session_one")).toThrow(/active turn/);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  expect(() => store.lifecycle.archiveSession("session_one")).toThrow(/active turn/);
 
-  store.stopTurn("session_one", "run_one");
-  expect(store.archiveSession("session_one").state).toBe("archived");
+  store.turnLifecycle.stopTurn("session_one", "run_one");
+  expect(store.lifecycle.archiveSession("session_one").state).toBe("archived");
 });
 
 test("archiving is idempotent", () => {
   const store = new EngineStore(engineHome("telar-wt-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  expect(store.archiveSession("session_one").state).toBe("archived");
-  expect(store.archiveSession("session_one").state).toBe("archived");
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  expect(store.lifecycle.archiveSession("session_one").state).toBe("archived");
+  expect(store.lifecycle.archiveSession("session_one").state).toBe("archived");
   expect(store.readEvents("session_one").filter((event) => event.type === "session.archived")).toHaveLength(1);
 });
 

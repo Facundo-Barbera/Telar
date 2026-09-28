@@ -12,7 +12,7 @@ import path from "node:path";
 import { EngineClient } from "@telar/engine-client";
 import { startEngine, type EngineDaemon } from "../daemon";
 import type { TurnDriver } from "../drivers";
-import { EngineStore } from "../state";
+import { TurnRecovery } from "../domains/turns";
 import { stubModels } from "../../test/stub-models";
 import { forgetOpenPrefixes } from "../../test/store-internals";
 
@@ -350,9 +350,9 @@ test("embedded execution does not depend on the HTTP lifecycle transport", async
       } }),
     } });
     daemons.push(daemon);
-    daemon.store.registerProject({ id: "project_direct", name: "Direct", root: "/tmp" });
-    daemon.store.createSession({ id: "session_direct", projectId: "project_direct" });
-    daemon.store.submitTurn("session_direct", { runId: "run_direct", input: "go" });
+    daemon.store.projectRegistry.register({ id: "project_direct", name: "Direct", root: "/tmp" });
+    daemon.store.lifecycle.createSession({ id: "session_direct", projectId: "project_direct" });
+    daemon.store.intake.submitTurn("session_direct", { runId: "run_direct", input: "go" });
     await eventually(() => expect(daemon.store.turns("session_direct")[0]).toMatchObject({ state: "completed", resultText: "direct" }));
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
   } finally {
@@ -365,10 +365,10 @@ test("shutdown disposes the selected OpenCode adapter and its session-lived runt
   const daemon = await startEngine({ models: stubModels, engineRoot: root(), embeddedWorker: {
     pollMs: 10, createDriver: () => (kind) => kind === "opencode" ? { run: async () => ({ text: "fixture" }), dispose: () => { disposed++; } } : undefined,
   } });
-  daemon.store.registerProject({ id: "project_dispose", name: "Dispose", root: "/tmp" });
-  daemon.store.saveProviderInstance({ id: "opencode", driver: "opencode", enabled: true });
-  daemon.store.createSession({ id: "session_dispose", projectId: "project_dispose", driver: "opencode" });
-  daemon.store.submitTurn("session_dispose", { runId: "run_dispose", input: "go" });
+  daemon.store.projectRegistry.register({ id: "project_dispose", name: "Dispose", root: "/tmp" });
+  daemon.store.providers.save({ id: "opencode", driver: "opencode", enabled: true });
+  daemon.store.lifecycle.createSession({ id: "session_dispose", projectId: "project_dispose", driver: "opencode" });
+  daemon.store.intake.submitTurn("session_dispose", { runId: "run_dispose", input: "go" });
   try { await eventually(() => expect(daemon.store.turns("session_dispose")[0]?.state).toBe("completed")); }
   finally { await daemon.close(); }
   expect(disposed).toBe(1);
@@ -385,7 +385,7 @@ test("shutdown disposes the selected OpenCode adapter and its session-lived runt
  * have arrived through `wake()`, which the store rings when it writes a queue.
  */
 test("an idle embedded worker slows its loop, and a new message still starts at once", async () => {
-  const beats = spyOn(EngineStore.prototype, "cancellationsForWorker");
+  const beats = spyOn(TurnRecovery.prototype, "cancellationsForWorker");
   try {
     const daemon = await startEngine({ models: stubModels,
       engineRoot: root(),

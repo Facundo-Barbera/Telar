@@ -35,8 +35,8 @@ function setup() {
   const clock = { now: START };
   const store = new EngineStore(home, () => clock.now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   return { store, home, clock };
 }
 
@@ -56,15 +56,15 @@ test("A THREE-DAY GAP PRODUCES EXACTLY ONE TURN (#543)", () => {
    * a conversation somebody opened after a long weekend.
    */
   const { store, clock } = setup();
-  store.putSchedule({ sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  store.schedules.put({ sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
 
   // NOTHING IS OWED YET. Without this the assertion below would pass against a
   // sweep that fires every row it is handed.
-  expect(store.sweepSchedules()).toEqual([]);
+  expect(store.schedules.sweep()).toEqual([]);
   expect(turnCount(store)).toBe(0);
 
   clock.now = START + 72 * HOUR;
-  expect(store.sweepSchedules()).toHaveLength(1);
+  expect(store.schedules.sweep()).toHaveLength(1);
   expect(turnCount(store)).toBe(1);
 
   // ...AND IT STAYS IN THE FUTURE. Four more sweeps across the next hour add
@@ -72,14 +72,14 @@ test("A THREE-DAY GAP PRODUCES EXACTLY ONE TURN (#543)", () => {
   // `while` loop would break.
   for (const minutes of [1, 15, 30, 59]) {
     clock.now = START + 72 * HOUR + minutes * MINUTE;
-    store.sweepSchedules();
+    store.schedules.sweep();
   }
   expect(turnCount(store)).toBe(1);
 
   // And the next hour does fire, or "stays in the future" would be satisfied by
   // a row that never fires again.
   clock.now = START + 73 * HOUR + MINUTE;
-  store.sweepSchedules();
+  store.schedules.sweep();
   expect(turnCount(store)).toBe(2);
 });
 
@@ -90,7 +90,7 @@ test("a LONG-MISSED fixed time is skipped and says so; a JUST-MISSED one runs (#
    * everything late. The pair is the claim.
    */
   const { store, clock } = setup();
-  const missed = store.putSchedule({
+  const missed = store.schedules.put({
     sessionId: "session_one",
     prompt: "daily digest",
     rule: { kind: "fixed", hour: 9, minute: 0, weekdays: [] },
@@ -98,9 +98,9 @@ test("a LONG-MISSED fixed time is skipped and says so; a JUST-MISSED one runs (#
   });
   // Seven hours past 09:00 — Telar was not running at nine.
   clock.now = Date.UTC(2026, 5, 1, 16, 0, 0);
-  expect(store.sweepSchedules()).toEqual([missed.id]);
+  expect(store.schedules.sweep()).toEqual([missed.id]);
   expect(turnCount(store)).toBe(0);
-  const skipped = store.readSchedule(missed.id)!;
+  const skipped = store.schedules.read(missed.id)!;
   expect(skipped.lastRunStatus).toBe("skipped");
   // THE INSTANT THAT WAS MISSED, which is what the settings surface renders as
   // a sentence — an absent number would make the boundary invisible.
@@ -109,25 +109,25 @@ test("a LONG-MISSED fixed time is skipped and says so; a JUST-MISSED one runs (#
 
   // The same shape, thirty seconds late, still runs.
   const { store: second, clock: secondClock } = setup();
-  const fresh = second.putSchedule({
+  const fresh = second.schedules.put({
     sessionId: "session_one",
     prompt: "daily digest",
     rule: { kind: "fixed", hour: 9, minute: 0, weekdays: [] },
     zone: "UTC",
   });
   secondClock.now = Date.UTC(2026, 5, 1, 9, 0, 30);
-  second.sweepSchedules();
+  second.schedules.sweep();
   expect(turnCount(second)).toBe(1);
-  expect(second.readSchedule(fresh.id)!.lastRunStatus).toBe("fired");
+  expect(second.schedules.read(fresh.id)!.lastRunStatus).toBe("fired");
 });
 
 test("a fired turn is a SCHEDULE-origin turn that names its row (#543)", () => {
   // Widened rather than borrowed: a fake `sender` would put every scheduled
   // turn into the "who sent this" surfaces as a peer message.
   const { store, clock } = setup();
-  const row = store.putSchedule({ sessionId: "session_one", prompt: "go", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  const row = store.schedules.put({ sessionId: "session_one", prompt: "go", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
   clock.now = START + 2 * HOUR;
-  store.sweepSchedules();
+  store.schedules.sweep();
 
   const turn = store.turns("session_one")[0]!;
   expect(turn.origin).toBe("schedule");
@@ -141,21 +141,21 @@ test("a schedule survives a restart, and fires for the reader that comes back (#
   // Held in memory, nothing fires after reopen — which is the whole reason the
   // row is a sqlite table rather than a Map.
   const { store, home } = setup();
-  store.putSchedule({ sessionId: "session_one", prompt: "after the restart", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  store.schedules.put({ sessionId: "session_one", prompt: "after the restart", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
   store.closeExecutionStore();
 
   const later = reopen(home, START + 5 * HOUR);
-  expect(later.sweepSchedules()).toHaveLength(1);
+  expect(later.schedules.sweep()).toHaveLength(1);
   expect(turnCount(later)).toBe(1);
 });
 
 test("a disabled row is not swept, and one bad row does not stop a good one (#543)", () => {
   const { store, clock } = setup();
-  store.putSchedule({ sessionId: "session_one", prompt: "off", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC", enabled: false });
-  const good = store.putSchedule({ sessionId: "session_one", prompt: "on", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  store.schedules.put({ sessionId: "session_one", prompt: "off", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC", enabled: false });
+  const good = store.schedules.put({ sessionId: "session_one", prompt: "on", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
   clock.now = START + 2 * HOUR;
 
-  const acted = store.sweepSchedules();
+  const acted = store.schedules.sweep();
   expect(acted).toEqual([good.id]);
   expect(turnCount(store)).toBe(1);
 });
@@ -168,27 +168,27 @@ test("a row whose session is gone is disabled rather than retried for ever (#543
    * asked for something.
    */
   const { store, clock } = setup();
-  store.createSession({ id: "session_two", projectId: "project_one" });
-  const orphan = store.putSchedule({ sessionId: "session_two", prompt: "orphan", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
-  const survivor = store.putSchedule({ sessionId: "session_one", prompt: "survivor", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
-  store.deleteSession("session_two");
+  store.lifecycle.createSession({ id: "session_two", projectId: "project_one" });
+  const orphan = store.schedules.put({ sessionId: "session_two", prompt: "orphan", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  const survivor = store.schedules.put({ sessionId: "session_one", prompt: "survivor", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  store.lifecycle.deleteSession("session_two");
 
   clock.now = START + 2 * HOUR;
-  store.sweepSchedules();
+  store.schedules.sweep();
 
   // THE GOOD ROW STILL FIRED, which is what the per-row catch buys.
   expect(turnCount(store, "session_one")).toBe(1);
-  const parked = store.readSchedule(orphan.id)!;
+  const parked = store.schedules.read(orphan.id)!;
   expect(parked.enabled).toBe(false);
   expect(parked.nextRunAt).toBeGreaterThan(clock.now);
-  expect(store.readSchedule(survivor.id)!.enabled).toBe(true);
+  expect(store.schedules.read(survivor.id)!.enabled).toBe(true);
 });
 
 test("the first nextRunAt is the ENGINE's, never the caller's (#543)", () => {
   // A client that could name it could aim a row at the past and make the grace
   // rule meaningless.
   const { store } = setup();
-  const row = store.putSchedule({
+  const row = store.schedules.put({
     sessionId: "session_one",
     prompt: "daily",
     rule: { kind: "fixed", hour: 9, minute: 0, weekdays: [] },
@@ -198,23 +198,23 @@ test("the first nextRunAt is the ENGINE's, never the caller's (#543)", () => {
   expect(row.zone).toBe("Asia/Tokyo");
   // An unknown zone is stored as the fallback rather than kept and thrown on
   // later — the row is durable and has to keep working.
-  const odd = store.putSchedule({ sessionId: "session_one", prompt: "x", rule: { kind: "interval", everyMs: HOUR }, zone: "Mars/Olympus" });
+  const odd = store.schedules.put({ sessionId: "session_one", prompt: "x", rule: { kind: "interval", everyMs: HOUR }, zone: "Mars/Olympus" });
   expect(odd.zone).toBe("UTC");
 });
 
 test("a session with an enabled schedule reads as scheduled, dated by its soonest wake", () => {
   // It used to read `idle`, exactly like a session nothing will ever wake.
   const { store } = setup();
-  expect(store.getSession("session_one").activity).toBe("idle");
-  const hourly = store.putSchedule({ sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
-  store.putSchedule({ sessionId: "session_one", prompt: "digest", rule: { kind: "interval", everyMs: 3 * HOUR }, zone: "UTC" });
+  expect(store.records.get("session_one").activity).toBe("idle");
+  const hourly = store.schedules.put({ sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC" });
+  store.schedules.put({ sessionId: "session_one", prompt: "digest", rule: { kind: "interval", everyMs: 3 * HOUR }, zone: "UTC" });
   const revision = store.sessionsRevision();
-  expect(store.getSession("session_one")).toMatchObject({ activity: "scheduled", activityDetail: { kind: "schedule", at: hourly.nextRunAt } });
+  expect(store.records.get("session_one")).toMatchObject({ activity: "scheduled", activityDetail: { kind: "schedule", at: hourly.nextRunAt } });
 
   // A disabled or deleted row wakes nothing, and the rail is told.
-  store.putSchedule({ id: hourly.id, sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC", enabled: false });
+  store.schedules.put({ id: hourly.id, sessionId: "session_one", prompt: "status?", rule: { kind: "interval", everyMs: HOUR }, zone: "UTC", enabled: false });
   expect(store.sessionsRevision()).toBeGreaterThan(revision);
-  expect(store.getSession("session_one").activityDetail).toMatchObject({ kind: "schedule", at: START + 3 * HOUR });
-  for (const row of store.listSchedules("session_one")) store.deleteSchedule(row.id);
-  expect(store.getSession("session_one").activity).toBe("idle");
+  expect(store.records.get("session_one").activityDetail).toMatchObject({ kind: "schedule", at: START + 3 * HOUR });
+  for (const row of store.schedules.list("session_one")) store.schedules.delete(row.id);
+  expect(store.records.get("session_one").activity).toBe("idle");
 });

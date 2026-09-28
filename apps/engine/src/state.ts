@@ -4,129 +4,57 @@
 // or any other legacy mutation by accident.
 import crypto from "node:crypto";
 import { ExecutionStore, type ExecutionHousekeeping } from "./platform/db/execution-store";
-import type { ScheduleRow } from "./platform/db/tables";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
   countsAsActivity,
   isBackgroundWork,
-  type RetentionPolicy,
-  type RetentionBucket,
-  type JournalRetirement,
-  type UsageLimitSource,
-  type ProjectPlugins,
   assignmentsOf,
   type AssignmentTurn,
   type SessionAssignment,
   type LiveSessionRow,
-  type PluginPatch,
-  type BrowserSnapshot,
-  type GitCommitEntry,
-  type GitHubCheckLog,
-  type GitHubCommentResult,
-  type GitHubReactionContent,
-  type GitHubReactionResult,
-  type GitHubThreadReplyResult,
-  type GitHubThreadResolveResult,
-  type GitHubLineCommentInput,
-  type GitHubLineCommentResult,
-  type GitHubPullAnchor,
-  type GitHubFacets,
-  type GitHubIssueFilter,
-  type GitHubIssueRead,
-  type GitHubMergeMethod,
-  type GitHubMergeResult,
-  type GitHubPullCreateResult,
-  type GitPushResult,
-  type GitHubPullFilter,
-  type GitHubPullRead,
-  type GitHubSnapshot,
-  type GitignoreRemoval,
-  type GitignoreResult,
-  type AgentOrientation,
   type InboxPolicy,
-  type SessionDefaults,
   type SidebarLayout,
-  type TextGenPolicy,
-  type ModelCatalogue,
-  type ModelOverlay,
-  type GitFilePatch,
-  type SessionDiff,
   type EngineEvent,
   type Item,
-  type McpServer,
-  type NotificationDetail,
-  type ProviderInstance,
-  type TurnAttachment,
   type ProviderDriverKind,
-  // The runtime enum too, not just the type: `readProviderInstances` asks it
-  // whether a row on disk names a driver this build still has.
   type Task,
   type Project,
-  type EngineRequest,
   type RequestKind,
-  type RequestOpenResult,
   type Session,
   type SessionSettleEnded,
-  type Subscription,
-  type Cohort,
-  type SubscribedCohort,
   type Turn,
   type WorkerClaim,
-  type WorkerStatus,
   type WorkspaceFile,
-  type WorkspaceListing,
   type WorkspaceWriteResult,
-  type WorktreeInventory,
-  type WorktreeReclaimItem,
-  type WorktreeReclaimResult,
 } from "@telar/engine-client";
-import { type ProjectPatch, ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
+import { ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { EngineStateError, Kernel, type JournalEntry } from "./platform/kernel";
 import { SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
-import { type McpOAuthRecord, McpOAuthStore, McpServers, type OAuthClientStore, type PendingMcpOAuth } from "./domains/agent-tools";
-import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli, type ProviderInstanceInput } from "./domains/providers";
+import { McpOAuthStore, McpServers } from "./domains/agent-tools";
+import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
-import { UsageLimitSources, type ResolvedUsageLimitSource, type UsageLimitSourceInput } from "./domains/usage";
-import { type AttachmentInput, SessionQueries, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, type OpenRequestInput, RequestGate, type ResolveRequestInput } from "./domains/sessions";
-import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, type TurnSubmission } from "./domains/turns";
+import { UsageLimitSources } from "./domains/usage";
+import { SessionQueries, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, type SessionQueue, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, RequestGate } from "./domains/sessions";
+import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, isLiveTask, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { type ProjectIcon } from "./domains/appearance";
 import { readFencedAsync, readFencedBytes, writeFenced } from "./domains/files";
-import { SessionGit, WorkspaceReads, type GitOverview } from "./domains/git";
-import {  } from "./platform/git/parse";
-import { type AttachedBrowser, SessionBrowser } from "./domains/browser";
+import { SessionGit, WorkspaceReads } from "./domains/git";
+import { SessionBrowser } from "./domains/browser";
 import { GitHubStore, defaultGhRunner, SessionPulls, type GhRunner } from "./domains/github";
-import {  } from "zod";
-import { type AdoptionInput, ConversationAdoption } from "./domains/providers";
-import { type ClaudeConversation } from "./drivers/claude";
+import { ConversationAdoption } from "./domains/providers";
 import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./domains/providers";
-import { type KernelState, PluginDoors, type BootstrapRequest, type CreateEnvironmentRequest, type DsCapability, type JobRead, JobRunner, type KernelHost, type LatexBootstrapRequest, type LatexCapability, type LatexPackagesAnswer, type LatexToolchain, type ManagedTectonicStatus, type RequirementsSource, type ResolvedLatex, type TableWindow, type Toolchain } from "./domains/plugins";
-import { ScheduleBook, type ScheduleInput } from "./domains/schedules";
-import { derivedBranchFor, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, type ReleaseRefusal, SETUP_STOP_GRACE_MS, WorktreeSetups, type MoveOutcome } from "./domains/worktrees";
+import { PluginDoors, JobRunner } from "./domains/plugins";
+import { ScheduleBook } from "./domains/schedules";
+import { derivedBranchFor, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, SETUP_STOP_GRACE_MS, WorktreeSetups } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitResult, type GitRunner } from "./platform/git/runner";
 import { backfillTurnSummaries, CheckoutSizes, CleanupStore, copyStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
-import { type AttachedTerminals, pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
+import { pipeLauncher, processGroupFor, SessionTerminals } from "./domains/terminal";
 import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes";
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /**
  * A SECOND TELAR MEETING A LIVE LOCK IS NOT A CRASH — issue #894.
@@ -149,13 +77,8 @@ import { type ProjectAvailability, type VolumeDeps } from "./platform/fs/volumes
  */
 export const ENGINE_EXIT_LOCK_HELD = 3;
 
-
-
-
 import { statePaths, type EngineStatePaths } from "./platform/fs/state-paths";
-import type { ReapCandidate } from "./domains/storage";
 export { EngineStateError };
-
 
 export function engineRootFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.TELAR_HOME?.trim();
@@ -225,7 +148,6 @@ function canonicalPath(input: string): string {
   for (const segment of missing) canonical = path.join(canonical, segment);
   return canonical;
 }
-
 
 /**
  * One session record, narrowed to the row a rail draws — see `LiveSessionRow`.
@@ -301,8 +223,6 @@ export type EngineNotifier = (input: {
   title: string;
 }) => boolean;
 
-
-
 /**
  * `DiffBaseOption` AND `FilePatchOptions` COME FROM THE CONTRACT, not from
  * here — `protocol/diff-query.ts` owns the shape, its query builder and its
@@ -310,7 +230,6 @@ export type EngineNotifier = (input: {
  * what dropped the ignore-whitespace flag in silence. Re-exported so the
  * engine's own callers need not reach past their own module boundary.
  */
-import type { DiffBaseOption, FilePatchOptions } from "@telar/engine-client";
 
 /** One git question, as `EngineStore.prefetchedGit` keys it. */
 const prefetchKey = (cwd: string, args: string[]): string => JSON.stringify([cwd, args]);
@@ -482,61 +401,8 @@ export class EngineStore {
    *  a newly-configured login is about to stop inheriting (#594). */
   private readonly ambientEnv: Record<string, string | undefined>;
 
-
-  noteForNextTurn(sessionId: string, note: string): void {
-    this.mailbox.noteForNextTurn(sessionId, note);
-  }
-
-  attachBrowser(browser: AttachedBrowser): void {
-    this.browser.attach(browser);
-  }
-
-  attachTerminals(terminals: AttachedTerminals): void {
-    this.sessionTerminals.attach(terminals);
-  }
-
-  releaseSessionWorktree(
-    sessionId: string,
-    reason: "manual" | "inactive" | "unchanged" | "archived",
-    options: { strict?: boolean } = {},
-  ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
-    return this.worktrees.release(sessionId, reason, options);
-  }
-
-  runCleanup(): Promise<void> {
-    return this.worktrees.runCleanup();
-  }
-
-  isCleanupRunning(): boolean {
-    return this.worktrees.isCleanupRunning();
-  }
-
-  restoreSessionWorktree(sessionId: string): Session {
-    return this.worktrees.restore(sessionId);
-  }
-
   private settleWorktree(sessionId: string, failure: string | undefined): void {
     this.worktrees.settle(sessionId, failure);
-  }
-
-  reapableWorktrees(): ReapCandidate[] {
-    return this.worktrees.reapable();
-  }
-
-  lockLiveWorktrees(): { locked: number } {
-    return this.worktrees.lockLive();
-  }
-
-  moveWorktrees(destination: string): Promise<MoveOutcome> {
-    return this.worktrees.move(destination);
-  }
-
-  worktreeInventory(): Promise<WorktreeInventory> {
-    return this.worktrees.inventory();
-  }
-
-  reclaimWorktrees(items: readonly WorktreeReclaimItem[]): Promise<WorktreeReclaimResult[]> {
-    return this.worktrees.reclaim(items);
   }
 
   private worktreeMaintenance(): WorktreeMaintenance {
@@ -546,33 +412,17 @@ export class EngineStore {
       queue: this.worktreeQueue,
       cleanup: this.cleanup,
       checkoutSizes: this.checkoutSizes,
-      getProject: (id) => this.getProject(id),
-      listProjects: () => this.listProjects(),
-      availability: (project) => this.projectAvailability(project),
+      getProject: (id) => this.projectRegistry.get(id),
+      listProjects: () => this.projectRegistry.list(),
+      availability: (project) => this.projectProbes.availability(project),
       forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
       setupRunning: (id) => this.setups.isRunning(id),
       startSetup: (id, worktree) => this.startWorktreeSetup(id, worktree),
       openTerminals: (id) => this.sessionTerminals.openCount(id),
       hasLiveBackgroundWork: (id) => this.hasLiveBackgroundWork(id),
-      autoSettleAfterHours: () => this.getInboxPolicy().autoSettleAfterHours,
-      archiveSession: (id, options) => this.archiveSession(id, options),
+      autoSettleAfterHours: () => this.settings.inbox().autoSettleAfterHours,
+      archiveSession: (id, options) => this.lifecycle.archiveSession(id, options),
     });
-  }
-
-  refreshTerminalCensus(): Promise<void> {
-    return this.sessionTerminals.refresh();
-  }
-
-  sessionTerminalCount(sessionId: string): Promise<number> {
-    return this.sessionTerminals.countNow(sessionId);
-  }
-
-  closeSessionTerminals(sessionId: string): Promise<number> {
-    return this.sessionTerminals.closeForPerson(sessionId);
-  }
-
-  attachKernels(host: KernelHost): void {
-    this.pluginDoors.attachKernels(host);
   }
 
   /** Environment builds and package installs, as jobs the settings page polls. */
@@ -581,83 +431,11 @@ export class EngineStore {
   /** Compile and tlmgr jobs: a sibling runner, so a compile never queues behind pip installs. */
   readonly latexJobs = new JobRunner(() => this.now());
 
-  dataScience(sessionId: string): DsCapability {
-    return this.pluginDoors.dataScience(sessionId);
-  }
-
-  resolveDataScience(session: Session): { pythonPath: string } | undefined {
-    return this.toolchains.resolveDataScience(session);
-  }
-
-  latex(sessionId: string): LatexCapability {
-    return this.pluginDoors.latex(sessionId);
-  }
-
-  resolveLatex(session: Session): ResolvedLatex | undefined {
-    return this.toolchains.resolveLatex(session);
-  }
-
-  managedTectonic(): ManagedTectonicStatus {
-    return this.toolchains.managedStatus();
-  }
-
-  installManagedTectonic(): Promise<ManagedTectonicStatus> {
-    return this.toolchains.installManaged();
-  }
-
-  recordKernelState(sessionId: string, state: KernelState, reason?: string): void {
-    this.pluginDoors.recordKernelState(sessionId, state, reason);
-  }
-
-  sessionTable(sessionId: string, target: string, options: { offset: number; limit: number; sort?: string; desc?: boolean }): Promise<TableWindow> {
-    return this.pluginDoors.table(sessionId, target, options);
-  }
-
-  listAttachments(sessionId: string, options: { tag?: string } = {}): TurnAttachment[] {
-    return this.attachments.list(sessionId, options);
-  }
-
-  attachmentBytes(sessionId: string, attachmentId: string): { attachment: TurnAttachment; data: Uint8Array } {
-    return this.attachments.bytes(sessionId, attachmentId);
-  }
-
-  tagAttachment(sessionId: string, attachmentId: string, tags: string[]): TurnAttachment {
-    return this.attachments.tag(sessionId, attachmentId, tags);
-  }
-
-  recordBrowserControl(sessionId: string, controller: "agent" | "human" | "idle", tabId?: string, interrupted = false): void {
-    this.browser.recordControl(sessionId, controller, tabId, interrupted);
-  }
-
-  browserState(sessionId: string, options: { screenshot?: boolean; start?: boolean } = {}): Promise<BrowserSnapshot> {
-    return this.browser.state(sessionId, options);
-  }
-
-  browserOpen(sessionId: string, url: string): Promise<BrowserSnapshot> {
-    return this.browser.open(sessionId, url);
-  }
-
-  listMcpServers(scope?: { projectId: string | null }): McpServer[] {
-    return this.mcpServers.list(scope);
-  }
-
-  saveMcpServer(input: { id: string; projectId?: string; label?: string; enabled?: boolean; spec: unknown }): McpServer {
-    return this.mcpServers.save(input);
-  }
-
-  removeMcpServer(id: string, projectId?: string): boolean {
-    return this.mcpServers.remove(id, projectId);
-  }
-
-  getInboxPolicy(): InboxPolicy {
-    return this.settings.inbox();
-  }
-
   setInboxPolicy(patch: { autoSettleAfterHours?: unknown; settleDelegatedAfterHours?: unknown; settledTerminalLimit?: unknown }): InboxPolicy {
     const next = this.settings.setInbox(patch);
     // A lower limit applies now rather than at the next sweep.
     if (patch.settledTerminalLimit !== undefined && this.sessionTerminals.attached) {
-      void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
+      void Promise.resolve().then(() => this.sessionTerminals.enforceLimit()).catch(() => undefined);
     }
     return next;
   }
@@ -665,95 +443,6 @@ export class EngineStore {
   /** A consistent copy of this store, without the reproducible tier, to open instead of the live one. */
   copyStoreTo(destination: string): { root: string; files: number; bytes: number } {
     return copyStore(this.paths.root, this.kernel.executionStore, destination);
-  }
-
-  getRetentionPolicy(): RetentionPolicy {
-    return this.settings.retention();
-  }
-
-  setRetentionPolicy(patch: { idleAfterDays?: unknown; exportTo?: unknown }): RetentionPolicy {
-    return this.settings.setRetention(patch);
-  }
-
-  retentionPreview(options: { bytes?: boolean } = {}): RetentionBucket[] {
-    return this.settings.retentionPreview(options);
-  }
-
-  sweepRetention(): JournalRetirement {
-    return this.settings.sweepRetention();
-  }
-
-  getAgentOrientation(): AgentOrientation {
-    return this.settings.orientation();
-  }
-
-  setAgentOrientation(patch: { preamble?: unknown; skill?: unknown }): AgentOrientation {
-    return this.settings.setOrientation(patch);
-  }
-
-  getSessionDefaults(): SessionDefaults {
-    return this.settings.sessionDefaults();
-  }
-
-  setSessionDefaults(patch: { envMode?: unknown; resumeAfterRestart?: unknown; runtimeMode?: unknown; resumeAfterRateLimit?: unknown }): SessionDefaults {
-    return this.settings.setSessionDefaults(patch);
-  }
-
-  getSidebarLayout(): SidebarLayout {
-    return this.settings.sidebarLayout();
-  }
-
-  setSidebarLayout(patch: { projectOrder?: unknown; sessionOrder?: unknown; pinnedOrder?: unknown; mode?: unknown }): SidebarLayout {
-    return this.settings.setSidebarLayout(patch);
-  }
-
-  getTextGenPolicy(): TextGenPolicy {
-    return this.settings.textGen();
-  }
-
-  setTextGenPolicy(patch: { titles?: unknown; renameBranches?: unknown; driver?: unknown; model?: unknown }): TextGenPolicy {
-    return this.settings.setTextGen(patch);
-  }
-
-
-  getAppearance(): { updatedAt: number; blob: Record<string, unknown> } | null {
-    return this.appearance.get();
-  }
-
-  setAppearance(blob: unknown): { updatedAt: number; blob: Record<string, unknown> } {
-    return this.appearance.set(blob);
-  }
-
-  clearAppearance(): void {
-    this.appearance.clear();
-  }
-
-  getMcpOAuthRecord(serverId: string, projectId?: string): McpOAuthRecord | undefined {
-    return this.mcpOAuth.get(serverId, projectId);
-  }
-
-  putMcpOAuthRecord(record: McpOAuthRecord): void {
-    this.mcpOAuth.put(record);
-  }
-
-  deleteMcpOAuthRecord(serverId: string, projectId?: string): boolean {
-    return this.mcpOAuth.delete(serverId, projectId);
-  }
-
-  mcpOAuthClientStore(): OAuthClientStore {
-    return this.mcpOAuth.clientStore();
-  }
-
-  putPendingMcpOAuth(flow: PendingMcpOAuth): void {
-    this.mcpOAuth.putPending(flow);
-  }
-
-  takePendingMcpOAuth(state: string): PendingMcpOAuth | undefined {
-    return this.mcpOAuth.takePending(state);
-  }
-
-  async resolveMcpOAuthToken(serverId: string, projectId: string | undefined, fetchImpl?: typeof fetch): Promise<string | undefined> {
-    return this.mcpOAuth.resolveToken(serverId, projectId, fetchImpl);
   }
 
   /**
@@ -770,7 +459,7 @@ export class EngineStore {
         // The grant is keyed by the scope the SERVER came from, which for a
         // project-scoped server is that project — not the session's, which for
         // a global server would be a key nothing was ever stored under.
-        const token = await this.resolveMcpOAuthToken(server.id, server.projectId, fetchImpl);
+        const token = await this.mcpOAuth.resolveToken(server.id, server.projectId, fetchImpl);
         if (!token) return server;
         return { ...server, spec: { ...server.spec, headers: { ...headers, Authorization: `Bearer ${token}` } } };
       }),
@@ -789,39 +478,6 @@ export class EngineStore {
   // has already authenticated, plus the environment its provider process runs
   // with; whether that folder actually holds a login is a question `probe()`
   // answers from the filesystem, never by reading a credential.
-
-  listProviderInstances(): ProviderInstance[] {
-    return this.providers.list();
-  }
-
-  saveProviderInstance(input: ProviderInstanceInput): { instance: ProviderInstance; stoppedInheriting: string[] } {
-    return this.providers.save(input);
-  }
-
-
-  removeProviderInstance(id: string): boolean {
-    return this.providers.remove(id);
-  }
-
-  resolveProviderInstance(instanceId: string, driver: ProviderDriverKind): ProviderInstance {
-    return this.providers.resolve(instanceId, driver);
-  }
-
-  listUsageLimitSources(): UsageLimitSource[] {
-    return this.usageSources.list();
-  }
-
-  saveUsageLimitSource(input: UsageLimitSourceInput): UsageLimitSource {
-    return this.usageSources.save(input);
-  }
-
-  removeUsageLimitSource(id: string): boolean {
-    return this.usageSources.remove(id);
-  }
-
-  resolveUsageLimitSources(): ResolvedUsageLimitSource[] {
-    return this.usageSources.resolve();
-  }
 
   constructor(
     root: string,
@@ -912,8 +568,8 @@ export class EngineStore {
     this.workspaceReads = new WorkspaceReads(this.asyncGit, {
       now: () => this.now(),
       getSession: (sessionId) => this.records.get(sessionId),
-      getProject: (projectId) => this.getProject(projectId),
-      availability: (project) => this.projectAvailability(project),
+      getProject: (projectId) => this.projectRegistry.get(projectId),
+      availability: (project) => this.projectProbes.availability(project),
     });
     // A POOL OF ITS OWN FOR THE CUTS, so the slowest git child cannot hold a
     // slot the rail's polls need — see `defaultWorktreeGitRunner`. An INJECTED
@@ -940,7 +596,7 @@ export class EngineStore {
     // path (#646). `onExecutionHousekeeping` is the daemon's line.
     const executionStore = new ExecutionStore(root, {
       onJournalCompacted: (swept) => options.onExecutionHousekeeping?.({ journal: swept }),
-      onRetentionSweep: () => { this.sweepRetention(); },
+      onRetentionSweep: () => { this.settings.sweepRetention(); },
     });
     this.kernel = new Kernel({ paths: this.paths, now, executionStore, notifier: options.notifier });
     ({
@@ -955,7 +611,7 @@ export class EngineStore {
       readEvents: (sessionId) => this.readEvents(sessionId),
       subscriptionsOf: (sessionId) => this.subscriptions.subscriptionsOf(sessionId),
       nextWake: (sessionId) => this.schedules.nextWake(sessionId),
-      autoSettleAfterHours: () => this.getInboxPolicy().autoSettleAfterHours,
+      autoSettleAfterHours: () => this.settings.inbox().autoSettleAfterHours,
       ...(options.onQueueChanged ? { onQueueChanged: options.onQueueChanged } : {}),
     }));
     this.subscriptions = this.createSubscriptions();
@@ -967,8 +623,8 @@ export class EngineStore {
       records: this.records,
       worktreeGit: this.worktreeGit,
       forgetGitReadsUnder: (root) => this.forgetGitReadsUnder(root),
-      getProject: (id) => this.getProject(id),
-      registerProject: (input) => this.registerProject(input),
+      getProject: (id) => this.projectRegistry.get(id),
+      registerProject: (input) => this.projectRegistry.register(input),
     });
     this.worker = new WorkerChannel(this.kernel, {
       records: this.records,
@@ -978,17 +634,17 @@ export class EngineStore {
       writeQueue: (id, queue) => this.writeQueue(id, queue),
       scanQueue: (id) => this.scanQueue(id),
       liveQueueSessionIds: () => this.liveQueueSessionIds(),
-      stopSession: (id) => this.stopSession(id),
+      stopSession: (id) => this.turnLifecycle.stopSession(id),
       assertProjectAvailable: (id) => this.assertProjectAvailable(id),
     });
     this.settler = new SessionSettler(this.kernel, {
       records: this.records,
       scanQueue: (id) => this.scanQueue(id),
-      settleDelegatedAfterHours: () => this.getInboxPolicy().settleDelegatedAfterHours,
+      settleDelegatedAfterHours: () => this.settings.inbox().settleDelegatedAfterHours,
       reviewCohorts: () => this.subscriptions.reviewCohorts(),
       // A shelf that just grew keeps its terminals (#883); enforced after the command, never inside it.
       onShelfGrew: () => {
-        if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.enforceSettledTerminalLimit()).catch(() => undefined);
+        if (this.sessionTerminals.attached) void Promise.resolve().then(() => this.sessionTerminals.enforceLimit()).catch(() => undefined);
       },
     });
     this.wakes = new TurnWakes(this.kernel, {
@@ -999,7 +655,7 @@ export class EngineStore {
       readQueue: (id) => this.readQueue(id),
       writeQueue: (id, queue) => this.writeQueue(id, queue),
       scanQueue: (id) => this.scanQueue(id),
-      submitTurn: (id, input) => this.submitTurn(id, input),
+      submitTurn: (id, input) => this.intake.submitTurn(id, input),
       writeNotificationItem: (id, turn) => this.writeNotificationItem(id, turn),
     });
     this.recovery = new TurnRecovery(this.kernel, {
@@ -1011,8 +667,8 @@ export class EngineStore {
       writeQueue: (id, queue) => this.writeQueue(id, queue),
       scanQueue: (id) => this.scanQueue(id),
       liveQueueSessionIds: () => this.liveQueueSessionIds(),
-      getSessionDefaults: () => this.getSessionDefaults(),
-      submitTurn: (id, input) => this.submitTurn(id, input),
+      getSessionDefaults: () => this.settings.sessionDefaults(),
+      submitTurn: (id, input) => this.intake.submitTurn(id, input),
     });
     this.ingest = new TurnIngest(this.kernel, {
       records: this.records,
@@ -1033,21 +689,21 @@ export class EngineStore {
     this.adoption = new ConversationAdoption(this.records, this.sessionItems, {
       engineRoot: this.paths.root,
       now: () => this.now(),
-      resolveInstance: (instanceId, driver) => this.resolveProviderInstance(instanceId, driver),
+      resolveInstance: (instanceId, driver) => this.providers.resolve(instanceId, driver),
       readQueue: (sessionId) => this.readQueue(sessionId),
       writeQueue: (sessionId, queue) => this.writeQueue(sessionId, queue),
       appendEvent: (sessionId, event, runId) => this.appendEvent(sessionId, event, runId),
     });
     this.sessionPulls = new SessionPulls(this.github, {
       getSession: (sessionId) => this.records.get(sessionId),
-      getProject: (projectId) => this.getProject(projectId),
+      getProject: (projectId) => this.projectRegistry.get(projectId),
       worktreeGit: this.worktreeGit,
       asyncGit: this.asyncGit,
       gh: this.gh,
     });
     this.sessionTerminals = new SessionTerminals(this.records, this.sessionIndex, {
       now: () => this.now(),
-      inboxPolicy: () => this.getInboxPolicy(),
+      inboxPolicy: () => this.settings.inbox(),
       recordSession: (session) => {
         this.writeDocument(sessionMetadataFile(this.paths, session.id), storedSession(session));
         this.appendEvent(session.id, { type: "session.updated", session });
@@ -1065,13 +721,13 @@ export class EngineStore {
       now: () => this.now(),
       getSession: (sessionId) => this.records.get(sessionId),
       requireSession: (sessionId) => this.records.require(sessionId),
-      machinePlugins: () => this.machinePlugins(),
-      resolveDataScience: (session) => this.resolveDataScience(session),
-      resolveLatex: (session) => this.resolveLatex(session),
-      latexToolchain: () => this.latexToolchain(),
+      machinePlugins: () => this.toolchains.machine(),
+      resolveDataScience: (session) => this.toolchains.resolveDataScience(session),
+      resolveLatex: (session) => this.toolchains.resolveLatex(session),
+      latexToolchain: () => this.latexOps.toolchain(),
       sessionDir: (sessionId) => sessionDir(this.paths, sessionId),
-      putAttachment: (sessionId, input) => this.putAttachment(sessionId, input),
-      attachmentBytes: (sessionId, attachmentId) => this.attachmentBytes(sessionId, attachmentId).data,
+      putAttachment: (sessionId, input) => this.attachments.put(sessionId, input),
+      attachmentBytes: (sessionId, attachmentId) => this.attachments.bytes(sessionId, attachmentId).data,
       appendEvent: (sessionId, event) => void this.appendEvent(sessionId, event),
       dataScienceOps: () => this.dataScienceOps,
     });
@@ -1081,7 +737,7 @@ export class EngineStore {
     });
     this.schedules = new ScheduleBook(this.kernel, {
       requireSession: (sessionId) => void this.records.require(sessionId),
-      submitTurn: (sessionId, input) => this.submitTurn(sessionId, input),
+      submitTurn: (sessionId, input) => this.intake.submitTurn(sessionId, input),
       bumpList: () => this.sessionIndex.bumpList(),
     });
     this.registerCacheHooks();
@@ -1103,7 +759,7 @@ export class EngineStore {
     try {
       const session = this.records.get(sessionId);
       if (!session.projectId) return;
-      const project = this.getProject(session.projectId);
+      const project = this.projectRegistry.get(session.projectId);
       const { effective } = await this.workspace.view(project);
       await this.setups.start(sessionId, { worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
     } catch {
@@ -1116,11 +772,11 @@ export class EngineStore {
       git: this.git,
       worktreeGit: this.worktreeGit,
       worktreeQueue: this.worktreeQueue,
-      getProject: (projectId) => this.getProject(projectId),
+      getProject: (projectId) => this.projectRegistry.get(projectId),
       assertProjectAvailable: (projectId) => this.assertProjectAvailable(projectId),
-      projectAvailability: (project) => this.projectAvailability(project),
+      projectAvailability: (project) => this.projectProbes.availability(project),
       projectOfSession: (session) => this.workspaceReads.projectOf(session),
-      sessionDefaults: () => this.getSessionDefaults(),
+      sessionDefaults: () => this.settings.sessionDefaults(),
       requireInstance: (instanceId) => this.providers.require(instanceId),
       cachedModels: (driver) => this.catalogues.cachedRows(driver),
       readQueue: (sessionId) => this.readQueue(sessionId),
@@ -1151,7 +807,7 @@ export class EngineStore {
       turnsOf: (sessionId) => this.scanQueue(sessionId).turns,
       hasLiveTurn: (sessionId) => this.hasLiveTurn(sessionId),
       discardQueuedWakes: (subscriberId, targetSessionId) => void this.discardQueuedWakes(subscriberId, targetSessionId),
-      submitTurn: (sessionId, input) => this.submitTurn(sessionId, input),
+      submitTurn: (sessionId, input) => this.intake.submitTurn(sessionId, input),
       warn: (sessionId, message) => void this.appendEvent(sessionId, { type: "runtime.warning", message }),
     });
   }
@@ -1161,7 +817,7 @@ export class EngineStore {
     const settings = new SettingsStore(this.kernel);
     const appearance = new AppearanceStore(this.kernel);
     const mcpOAuth = new McpOAuthStore(this.kernel);
-    const mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.getProject(id), forgetGrant: (id, projectId) => mcpOAuth.delete(id, projectId) });
+    const mcpServers = new McpServers(this.kernel, { requireProject: (id) => void this.projectRegistry.get(id), forgetGrant: (id, projectId) => mcpOAuth.delete(id, projectId) });
     const usageSources = new UsageLimitSources(this.kernel);
     const projectProbes = new ProjectProbes(this.kernel, {
       asyncGit: this.asyncGit,
@@ -1212,16 +868,11 @@ export class EngineStore {
   /** The icon's bytes-on-disk, for the daemon's serve route. Refuses when the
    *  project has none rather than guessing. */
   async projectIconFileAsync(projectId: string): Promise<ProjectIcon> {
-    const project = this.getProject(projectId);
+    const project = this.projectRegistry.get(projectId);
     const icon = await this.projectProbes.icon(project);
     if (!icon) throw new EngineStateError("not_found", "this project has no icon");
     return icon;
   }
-
-  listProjects(options: { includeRemoved?: boolean } = {}): Project[] {
-    return this.projectRegistry.list(options);
-  }
-
 
   /**
    * WHICH MOUNT CONFIGURATION EACH AWAY PROJECT HAS ALREADY BEEN SEARCHED FOR.
@@ -1231,11 +882,6 @@ export class EngineStore {
    * valued by `mountSignature`, so an unplugged drive that stays unplugged is
    * searched for exactly once no matter how long the poll runs.
    */
-
-  projectAvailability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
-    return this.projectProbes.availability(project);
-  }
-
 
   private forgetGitReadsUnder(root: string): void {
     this.workspaceReads.forgetUnder(root);
@@ -1261,7 +907,7 @@ export class EngineStore {
     let recovered = 0;
     for (const project of projects) {
       const before = this.projectProbes.lastAvailability(project.id);
-      let availability = this.projectAvailability(project);
+      let availability = this.projectProbes.availability(project);
       /**
        * A DRIVE MOUNTED SOMEWHERE ELSE IS STILL THIS DRIVE — see
        * `ProjectRemounts.recover`. Attempted only when the project cannot be
@@ -1271,24 +917,11 @@ export class EngineStore {
        */
       if (availability !== "available" && this.remounts.recover(project) !== undefined) {
         recovered += 1;
-        availability = this.projectAvailability(this.getProject(project.id));
+        availability = this.projectProbes.availability(this.projectRegistry.get(project.id));
       }
       if (availability !== before) changed += 1;
     }
     return { projects: projects.length, changed, recovered };
-  }
-
-
-  registerProject(input: { id?: string; name: string; root: string }): Project {
-    return this.projectRegistry.register(input);
-  }
-
-  unregisterProject(projectId: string): { project: Project; sessions: number } {
-    return this.projectRegistry.unregister(projectId);
-  }
-
-  restoreProject(projectId: string): Project {
-    return this.projectRegistry.restore(projectId);
   }
 
   /**
@@ -1317,23 +950,15 @@ export class EngineStore {
    * drive. Reads stay open, so a removed project's history still answers.
    */
   private assertProjectAvailable(projectId: string): void {
-    const project = this.getProject(projectId);
+    const project = this.projectRegistry.get(projectId);
     if (project.removedAt !== undefined) {
       throw new EngineStateError("conflict", "this project was removed from Telar; restore it to start work on it again");
     }
     // Probed fresh, and `unmounted` only: a missing folder is refused by the worker, in the conversation,
     // and an unplugged drive needs a cable rather than a re-registration that would mint a new project id.
-    if (this.projectAvailability(project) === "unmounted") {
+    if (this.projectProbes.availability(project) === "unmounted") {
       throw new EngineStateError("conflict", `The drive holding ${project.name} is not connected. Plug it back in and this will work again.`);
     }
-  }
-
-  getProject(projectId: string): Project {
-    return this.projectRegistry.get(projectId);
-  }
-
-  updateProject(projectId: string, patch: ProjectPatch): Project {
-    return this.projectRegistry.update(projectId, patch);
   }
 
   /**
@@ -1393,92 +1018,8 @@ export class EngineStore {
     return detached;
   }
 
-  machinePlugins(): ProjectPlugins {
-    return this.toolchains.machine();
-  }
-
-  updateMachinePlugins(patch: PluginPatch): ProjectPlugins {
-    return this.toolchains.updateMachine(patch);
-  }
-
-  pluginRuns(project: Project, id: string): boolean {
-    return this.toolchains.runs(project, id);
-  }
-
   attachPluginRelease(release: (sessionId: string, reason: string) => void): void {
     this.pluginRelease = release;
-  }
-
-  enabledPluginIds(session: Session): string[] {
-    return this.toolchains.enabledIds(session);
-  }
-
-  dataScienceToolchain(fresh = false): Promise<Toolchain> {
-    return this.dataScienceOps.toolchain(fresh);
-  }
-
-  dataScienceEnvironments(projectId: string, workspace?: string) {
-    return this.dataScienceOps.environments(projectId, workspace);
-  }
-
-  dataScienceUseEnvironment(sessionId: string, target: string) {
-    return this.dataScienceOps.useEnvironment(sessionId, target);
-  }
-
-  dataScienceCreateEnvironment(projectId: string, request: CreateEnvironmentRequest): Promise<{ jobId: string }> {
-    return this.dataScienceOps.createEnvironment(projectId, request);
-  }
-
-  dataSciencePackages(projectId: string, workspace?: string) {
-    return this.dataScienceOps.packages(projectId, workspace);
-  }
-
-  dataScienceInstall(projectId: string, input: { add?: string[]; remove?: string[]; requirements?: RequirementsSource }, workspace?: string): Promise<{ jobId: string }> {
-    return this.dataScienceOps.install(projectId, input, workspace);
-  }
-
-  dataScienceBootstrap(request: BootstrapRequest): Promise<{ jobId: string }> {
-    return this.dataScienceOps.bootstrap(request);
-  }
-
-  dataScienceJob(jobId: string, after?: number): JobRead {
-    return this.dataScienceOps.job(jobId, after);
-  }
-
-  dataScienceCancelJob(jobId: string): void {
-    this.dataScienceOps.cancelJob(jobId);
-  }
-
-  dataScienceProbe(projectId: string, target: string) {
-    return this.dataScienceOps.probe(projectId, target);
-  }
-
-  latexToolchain(fresh = false): Promise<LatexToolchain> {
-    return this.latexOps.toolchain(fresh);
-  }
-
-  latexDistributions(projectId: string) {
-    return this.latexOps.distributions(projectId);
-  }
-
-  latexBootstrap(request: LatexBootstrapRequest): Promise<{ jobId: string }> {
-    return this.latexOps.bootstrap(request);
-  }
-
-  latexPackages(projectId: string): Promise<LatexPackagesAnswer> {
-    return this.latexOps.packages(projectId);
-  }
-
-  latexInstall(projectId: string, input: { add?: string[]; remove?: string[] }): Promise<{ jobId: string }> {
-    return this.latexOps.install(projectId, input);
-  }
-
-  latexJob(jobId: string, after?: number): JobRead {
-    return this.latexOps.job(jobId, after);
-  }
-
-  latexCancelJob(jobId: string): void {
-    this.latexOps.cancelJob(jobId);
   }
 
   private createPluginOps(): { dataScienceOps: DataScienceOps; latexOps: LatexOps } {
@@ -1486,146 +1027,18 @@ export class EngineStore {
       dataScienceOps: new DataScienceOps(this.toolchains, this.dsJobs, {
         root: this.paths.root,
         now: () => this.now(),
-        getProject: (projectId) => this.getProject(projectId),
-        updateProject: (projectId, patch) => this.updateProject(projectId, patch),
+        getProject: (projectId) => this.projectRegistry.get(projectId),
+        updateProject: (projectId, patch) => this.projectRegistry.update(projectId, patch),
         getSession: (sessionId) => this.records.get(sessionId),
-        restartKernel: (sessionId) => this.dataScience(sessionId).restart(),
-        machinePlugins: () => this.machinePlugins(),
+        restartKernel: (sessionId) => this.pluginDoors.dataScience(sessionId).restart(),
+        machinePlugins: () => this.toolchains.machine(),
       }),
-      latexOps: new LatexOps(this.toolchains, this.latexJobs, (projectId) => this.getProject(projectId)),
+      latexOps: new LatexOps(this.toolchains, this.latexJobs, (projectId) => this.projectRegistry.get(projectId)),
     };
   }
 
-  projectGitAsync(projectId: string): Promise<GitOverview> {
-    return this.workspaceReads.projectOverview(projectId);
-  }
-
-  projectDiffAsync(projectId: string): Promise<SessionDiff> {
-    return this.workspaceReads.projectDiff(projectId);
-  }
-
-  sessionDiffAsync(sessionId: string, options: DiffBaseOption = {}): Promise<SessionDiff> {
-    return this.workspaceReads.sessionDiff(sessionId, options);
-  }
-
-  projectFilePatchAsync(projectId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
-    return this.workspaceReads.projectFilePatch(projectId, target, options);
-  }
-
-  sessionFilePatchAsync(sessionId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
-    return this.workspaceReads.sessionFilePatch(sessionId, target, options);
-  }
-
-  modelCatalogue(driver: ProviderDriverKind, options: { force?: boolean; instanceId?: string } = {}): Promise<ModelCatalogue> {
-    return this.catalogues.catalogue(driver, options);
-  }
-
-  prefetchModelCatalogues(drivers?: readonly ProviderDriverKind[]): Promise<void> {
-    return this.catalogues.prefetch(drivers);
-  }
-
-  getModelOverlay(instanceId: string): ModelOverlay {
-    return this.catalogues.overlay(instanceId);
-  }
-
-  setModelOverlay(instanceId: string, patch: { favorites?: unknown; hidden?: unknown; order?: unknown; custom?: unknown; default?: unknown }): ModelOverlay {
-    return this.catalogues.setOverlay(instanceId, patch);
-  }
-
-  projectGitHub(projectId: string, options: { force?: boolean; issues?: GitHubIssueFilter; pulls?: GitHubPullFilter } = {}): Promise<GitHubSnapshot> {
-    return this.github.list(projectId, options);
-  }
-
-  projectForgeFacets(projectId: string, options: { force?: boolean } = {}): Promise<GitHubFacets> {
-    return this.github.facetsOf(projectId, options);
-  }
-
-  projectCheckLog(projectId: string, jobId: string): Promise<GitHubCheckLog> {
-    return this.github.checkLog(projectId, jobId);
-  }
-
-  projectGitignore(projectId: string): GitignoreResult {
-    return this.sessionGit.gitignore(projectId);
-  }
-
-
-  undoProjectGitignore(projectId: string): GitignoreRemoval {
-    return this.sessionGit.undoGitignore(projectId);
-  }
-
-
-  cloneProject(input: { url: string; parent: string; name?: string }): Promise<Project> {
-    return this.sessionGit.cloneProject(input);
-  }
-
-
-  projectIssue(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubIssueRead> {
-    return this.github.issue(projectId, number, options);
-  }
-
-  projectPull(projectId: string, number: number, options: { force?: boolean } = {}): Promise<GitHubPullRead> {
-    return this.github.pull(projectId, number, options);
-  }
-
-  projectPullMerge(projectId: string, number: number, input: { method: GitHubMergeMethod; expectedHeadOid: string }): Promise<GitHubMergeResult> {
-    return this.github.merge(projectId, number, input);
-  }
-
-  projectGitHubComment(
-    projectId: string,
-    input: { kind: "issue" | "pull"; number: number; body: string },
-    proof: { sessionId: string; runId: string; claimToken: string },
-  ): Promise<GitHubCommentResult> {
-    return this.github.comment(projectId, input, proof);
-  }
-
-  projectGitHubReaction(
-    projectId: string,
-    input: { kind: "issue" | "pull"; number: number; subjectId: string; content: GitHubReactionContent; react: boolean },
-  ): Promise<GitHubReactionResult> {
-    return this.github.react(projectId, input);
-  }
-
-  projectThreadReply(projectId: string, number: number, input: { threadId: string; body: string }): Promise<GitHubThreadReplyResult> {
-    return this.github.threadReply(projectId, number, input);
-  }
-
-  projectThreadResolve(projectId: string, number: number, input: { threadId: string; resolved: boolean }): Promise<GitHubThreadResolveResult> {
-    return this.github.threadResolve(projectId, number, input);
-  }
-
-  commitSessionWork(sessionId: string, message: string): Promise<{ committed: boolean; commit?: GitCommitEntry; reason?: string }> {
-    return this.sessionGit.commit(sessionId, message);
-  }
-
-
-  pushSessionBranch(sessionId: string): Promise<GitPushResult> {
-    return this.sessionGit.push(sessionId);
-  }
-
-
-  openSessionPullRequest(sessionId: string, input: { title: string; body?: string; base?: string }): Promise<GitHubPullCreateResult> {
-    return this.sessionPulls.open(sessionId, input);
-  }
-
-  sessionPullAnchor(sessionId: string): Promise<GitHubPullAnchor> {
-    return this.sessionPulls.anchor(sessionId);
-  }
-
-  sessionPullLineComment(sessionId: string, input: GitHubLineCommentInput): Promise<GitHubLineCommentResult> {
-    return this.sessionPulls.lineComment(sessionId, input);
-  }
-
-  projectFilesAsync(projectId: string): Promise<WorkspaceListing> {
-    return this.workspaceReads.projectFiles(projectId);
-  }
-
-  sessionFilesAsync(sessionId: string): Promise<WorkspaceListing> {
-    return this.workspaceReads.sessionFiles(sessionId);
-  }
-
   projectFileAsync(projectId: string, target: string): Promise<WorkspaceFile> {
-    return readFencedAsync(this.getProject(projectId).root, target, "project");
+    return readFencedAsync(this.projectRegistry.get(projectId).root, target, "project");
   }
 
   sessionFileAsync(sessionId: string, target: string): Promise<WorkspaceFile> {
@@ -1633,7 +1046,7 @@ export class EngineStore {
   }
 
   projectFileBytesAsync(projectId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
-    return readFencedBytes(this.getProject(projectId).root, target, "project");
+    return readFencedBytes(this.projectRegistry.get(projectId).root, target, "project");
   }
 
   sessionFileBytesAsync(sessionId: string, target: string): Promise<{ data: Buffer; mediaType: string; bytes: number }> {
@@ -1642,7 +1055,7 @@ export class EngineStore {
 
   /** `expected` is the hash the editor read; a stale one is refused rather than overwritten. */
   projectFileWrite(projectId: string, target: string, text: string, expected: string): WorkspaceWriteResult {
-    const project = this.getProject(projectId);
+    const project = this.projectRegistry.get(projectId);
     return writeFenced(project.root, target, text, expected, "project");
   }
 
@@ -1687,17 +1100,17 @@ export class EngineStore {
    * before asking git anything, and asking git about an unplugged drive is the
    * thing #534 took out.
    */
-  async createSessionAsync(input: Parameters<EngineStore["createSession"]>[0]): Promise<Session> {
+  async createSessionAsync(input: Parameters<SessionLifecycle["createSession"]>[0]): Promise<Session> {
     let project: Project | undefined;
     try {
-      project = input.projectId === undefined ? undefined : this.getProject(input.projectId);
+      project = input.projectId === undefined ? undefined : this.projectRegistry.get(input.projectId);
     } catch {
       // `createSession` refuses this itself, in its own order and words.
-      return this.createSession(input);
+      return this.lifecycle.createSession(input);
     }
-    if (project === undefined || this.projectAvailability(project) !== "available") return this.createSession(input);
+    if (project === undefined || this.projectProbes.availability(project) !== "available") return this.lifecycle.createSession(input);
     const questions = [...EngineStore.cutQuestions(input.baseRef), ["rev-parse", "HEAD"]];
-    return this.withPrefetchedGit(project.root, questions, () => this.createSession(input));
+    return this.withPrefetchedGit(project.root, questions, () => this.lifecycle.createSession(input));
   }
 
   /**
@@ -1705,14 +1118,14 @@ export class EngineStore {
    * asks git anything — it promotes the draft and plans its cut — so every
    * other send is the synchronous command exactly as it was.
    */
-  async submitTurnAsync(...args: Parameters<EngineStore["submitTurn"]>): Promise<ReturnType<EngineStore["submitTurn"]>> {
-    return this.promotingDraft(args[0], () => this.submitTurn(...args));
+  async submitTurnAsync(...args: Parameters<TurnIntake["submitTurn"]>): Promise<ReturnType<TurnIntake["submitTurn"]>> {
+    return this.promotingDraft(args[0], () => this.intake.submitTurn(...args));
   }
 
   /** `submitAgentTurn` for the request path and the `sessions` tools — an
    *  agent's message to a worktree draft promotes it exactly as a person's does. */
-  async submitAgentTurnAsync(...args: Parameters<EngineStore["submitAgentTurn"]>): Promise<ReturnType<EngineStore["submitAgentTurn"]>> {
-    return this.promotingDraft(args[0], () => this.submitAgentTurn(...args));
+  async submitAgentTurnAsync(...args: Parameters<TurnIntake["submitAgentTurn"]>): Promise<ReturnType<TurnIntake["submitAgentTurn"]>> {
+    return this.promotingDraft(args[0], () => this.intake.submitAgentTurn(...args));
   }
 
   /**
@@ -1726,8 +1139,8 @@ export class EngineStore {
     try {
       const session = this.records.require(sessionId);
       if (session.draft && session.envMode === "worktree" && session.projectId) {
-        const project = this.getProject(session.projectId);
-        if (this.projectAvailability(project) === "available") {
+        const project = this.projectRegistry.get(session.projectId);
+        if (this.projectProbes.availability(project) === "available") {
           root = project.root;
           baseRef = session.draft.baseRef;
         }
@@ -1738,34 +1151,8 @@ export class EngineStore {
     return root === undefined ? work() : this.withPrefetchedGit(root, EngineStore.cutQuestions(baseRef), work);
   }
 
-  createSession(input: Parameters<SessionLifecycle["createSession"]>[0]): Session {
-    return this.lifecycle.createSession(input);
-  }
-
-
-
-
-
-
-
-  updateSession(sessionId: string, patch: Parameters<SessionLifecycle["updateSession"]>[1]): Session {
-    return this.lifecycle.updateSession(sessionId, patch);
-  }
-
-  refreshWorktreeBranchFromTitle(sessionId: string): Promise<string | undefined> {
-    return this.lifecycle.refreshWorktreeBranchFromTitle(sessionId);
-  }
-
-  getSession(sessionId: string): Session {
-    return this.records.get(sessionId);
-  }
-
-  markSessionRead(sessionId: string, runId: string): Session {
-    return this.records.markRead(sessionId, runId);
-  }
-
   listSessions(projectId: string): Session[] {
-    this.getProject(projectId);
+    this.projectRegistry.get(projectId);
     // By the (project_id, updated_at) index, so only this project's documents are parsed.
     const rows = this.kernel.executionStore.projectSessionRows(projectId);
     return this.records.read(new Set(rows.map((row) => row.id)));
@@ -1798,10 +1185,10 @@ export class EngineStore {
         name: project.name,
         // Removed projects are in `projects` here (it is the raw registry), and
         // a put-away checkout is never probed — see `listProjects`.
-        ...(project.removedAt === undefined ? { availability: this.projectAvailability(project) } : {}),
+        ...(project.removedAt === undefined ? { availability: this.projectProbes.availability(project) } : {}),
       })),
       assignments,
-      layout: this.getSidebarLayout(),
+      layout: this.settings.sidebarLayout(),
     };
   }
 
@@ -1822,7 +1209,7 @@ export class EngineStore {
   } {
     // Read first, so a write that lands mid-fold is reported by the next read rather than swallowed.
     const revision = this.sessionsRevision({ all: options.all === true });
-    const inbox = this.getInboxPolicy();
+    const inbox = this.settings.inbox();
     // Every conversation settles by the same rule; nothing is exempted.
     const indexed = this.activity.shelf(inbox, options.all === true);
     // Documents are read only for rows that survived the partition; activity is re-derived
@@ -1843,50 +1230,6 @@ export class EngineStore {
     return structuredClone(this.readQueue(sessionId).turns);
   }
 
-  turnOutline(...args: Parameters<SessionQueries["turnOutline"]>): ReturnType<SessionQueries["turnOutline"]> {
-    return this.queries.turnOutline(...args);
-  }
-
-  runItems(...args: Parameters<SessionQueries["runItems"]>): ReturnType<SessionQueries["runItems"]> {
-    return this.queries.runItems(...args);
-  }
-
-  runItem(...args: Parameters<SessionQueries["runItem"]>): ReturnType<SessionQueries["runItem"]> {
-    return this.queries.runItem(...args);
-  }
-
-  turnAnswer(...args: Parameters<SessionQueries["turnAnswer"]>): ReturnType<SessionQueries["turnAnswer"]> {
-    return this.queries.turnAnswer(...args);
-  }
-
-  grepSession(...args: Parameters<SessionQueries["grepSession"]>): ReturnType<SessionQueries["grepSession"]> {
-    return this.queries.grepSession(...args);
-  }
-
-  findSessions(...args: Parameters<SessionQueries["findSessions"]>): ReturnType<SessionQueries["findSessions"]> {
-    return this.queries.findSessions(...args);
-  }
-
-  snapshotWindow(...args: Parameters<SessionQueries["snapshotWindow"]>): ReturnType<SessionQueries["snapshotWindow"]> {
-    return this.queries.snapshotWindow(...args);
-  }
-
-  snapshotRequests(sessionId: string): EngineRequest[] {
-    return this.queries.snapshotRequests(sessionId);
-  }
-
-
-
-
-
-
-
-
-
-
-
-
-
   items(sessionId: string): Item[] {
     this.records.require(sessionId);
     return structuredClone([...this.sessionItems.read(sessionId).values()]);
@@ -1896,11 +1239,6 @@ export class EngineStore {
     this.records.require(sessionId);
     return structuredClone([...this.sessionTasks.read(sessionId).values()]);
   }
-
-  putAttachment(sessionId: string, input: AttachmentInput): TurnAttachment {
-    return this.attachments.put(sessionId, input);
-  }
-
 
   private createClaims(): TurnClaims {
     return new TurnClaims(this.kernel, {
@@ -1917,14 +1255,14 @@ export class EngineStore {
       requeueUndeliveredSteers: (queue, runId, at) => this.requeueUndeliveredSteers(queue, runId, at),
       fireSubscriptions: (id, kind, turn, context) => this.fireSubscriptions(id, kind, turn, context),
       flushPendingNotifications: (id) => this.flushPendingNotifications(id),
-      getSessionDefaults: () => this.getSessionDefaults(),
-      listMcpServers: () => this.listMcpServers(),
-      resolveProviderInstance: (instanceId, driver) => this.resolveProviderInstance(instanceId, driver),
-      getProject: (id) => this.getProject(id),
-      resolveDataScience: (session) => this.resolveDataScience(session),
-      resolveLatex: (session) => this.resolveLatex(session),
-      enabledPluginIds: (session) => this.enabledPluginIds(session),
-      getAgentOrientation: () => this.getAgentOrientation(),
+      getSessionDefaults: () => this.settings.sessionDefaults(),
+      listMcpServers: () => this.mcpServers.list(),
+      resolveProviderInstance: (instanceId, driver) => this.providers.resolve(instanceId, driver),
+      getProject: (id) => this.projectRegistry.get(id),
+      resolveDataScience: (session) => this.toolchains.resolveDataScience(session),
+      resolveLatex: (session) => this.toolchains.resolveLatex(session),
+      enabledPluginIds: (session) => this.toolchains.enabledIds(session),
+      getAgentOrientation: () => this.settings.orientation(),
     });
   }
 
@@ -1942,7 +1280,7 @@ export class EngineStore {
       fireSubscriptions: (id, kind, turn, context) => this.fireSubscriptions(id, kind, turn, context),
       flushPendingNotifications: (id) => this.flushPendingNotifications(id),
       evaluateDelegationSettling: (id) => this.evaluateDelegationSettling(id),
-      stopBackgroundTasks: (id) => this.stopBackgroundTasks(id),
+      stopBackgroundTasks: (id) => this.worker.stopBackgroundTasks(id),
       announceStoppedClaims: (cancellations) => this.announceStoppedClaims(cancellations),
     });
   }
@@ -1956,14 +1294,14 @@ export class EngineStore {
       git: this.git,
       readQueue: (id) => this.readQueue(id),
       writeQueue: (id, queue) => this.writeQueue(id, queue),
-      getProject: (id) => this.getProject(id),
-      availability: (project) => this.projectAvailability(project),
+      getProject: (id) => this.projectRegistry.get(id),
+      availability: (project) => this.projectProbes.availability(project),
       assertProjectAvailable: (id) => this.assertProjectAvailable(id),
-      restoreWorktree: (id) => void this.restoreSessionWorktree(id),
+      restoreWorktree: (id) => void this.worktrees.restore(id),
       prepareWorktree: (id, root, plan, baseSha) => this.lifecycle.prepareWorktree(id, root, plan, baseSha),
       planWorktree: prepareSessionWorktree,
       derivedBranchFor,
-      promoteTurn: (id, runId) => this.promoteTurn(id, runId),
+      promoteTurn: (id, runId) => this.turnLifecycle.promoteTurn(id, runId),
       requireSenderClaim: (proof) => this.requireSenderClaim(proof),
       hasLiveTurn: (id) => this.hasLiveTurn(id),
       waitingNotificationTurn: (id) => this.waitingNotificationTurn(id),
@@ -1976,188 +1314,25 @@ export class EngineStore {
     });
   }
 
-  submitTurn(sessionId: string, input: TurnSubmission): { turn: Turn; replayed: boolean } {
-    return this.intake.submitTurn(sessionId, input);
-  }
-
-  submitAgentTurn(...args: Parameters<TurnIntake["submitAgentTurn"]>): { turn: Turn; replayed: boolean } {
-    return this.intake.submitAgentTurn(...args);
-  }
-
   private writeNotificationItem(sessionId: string, turn: Turn): void {
     this.intake.writeNotificationItem(sessionId, turn);
   }
-
 
   pauseSession(sessionId: string, _by: "human" | "session" = "human"): { session: Session; stopped?: Turn; held: number; already: boolean } {
     return this.worker.pauseSession(sessionId);
   }
 
-
-  resumeSession(sessionId: string): { session: Session; released: number; already: boolean } {
-    return this.worker.resumeSession(sessionId);
-  }
-
-
-
-
-
-
-
-
-  claimTurn(sessionId: string, workerId: string): Turn | undefined {
-    return this.claims.claimTurn(sessionId, workerId);
-  }
-
-
-  openProviderTurn(...args: Parameters<TurnClaims["openProviderTurn"]>): Turn {
-    return this.claims.openProviderTurn(...args);
-  }
-
-
-  listAdoptableClaudeConversations(options: { instanceId?: string; cwd?: string; limit?: number } = {}): Promise<ClaudeConversation[]> {
-    return this.adoption.list(options);
-  }
-
-  adoptClaudeConversation(sessionId: string, input: AdoptionInput) {
-    return this.adoption.adopt(sessionId, input);
-  }
-
-  reportSessionTasks(sessionId: string, workerId: string, observations: unknown[]): { accepted: number } {
-    return this.ingest.reportSessionTasks(sessionId, workerId, observations);
-  }
-
-  claudeAdmissionNeedsCatalogue(sessionId: string, turnModel?: { model?: string }): boolean {
-    return this.claims.claudeAdmissionNeedsCatalogue(sessionId, turnModel);
-  }
-
-
-
-
-  prepareClaudeCatalogue(timeoutMs?: number): Promise<void> {
-    return this.catalogues.prepareClaude(timeoutMs);
-  }
-
-
-
-
-
-  claimNextTurn(workerId: string): WorkerClaim | undefined {
-    return this.claims.claimNextTurn(workerId);
-  }
-
-
-
-
-  markRunning(sessionId: string, runId: string, claimToken: string): Turn {
-    return this.turnLifecycle.markRunning(sessionId, runId, claimToken);
-  }
-
-
-  ingestObservations(sessionId: string, runId: string, claimToken: string, observations: unknown[]): { accepted: number } {
-    return this.ingest.ingestObservations(sessionId, runId, claimToken, observations);
-  }
-
-
-
-
-  completeTurn(...args: Parameters<TurnLifecycle["completeTurn"]>): Turn {
-    return this.turnLifecycle.completeTurn(...args);
-  }
-
-
-  resumeRateLimitedTurn(sessionId: string, runId: string): Turn {
-    return this.turnLifecycle.resumeRateLimitedTurn(sessionId, runId);
-  }
-
-
-  failTurn(...args: Parameters<TurnLifecycle["failTurn"]>): Turn {
-    return this.turnLifecycle.failTurn(...args);
-  }
-
-
-  stopSession(sessionId: string, by: "user" | "agent" = "user"): { stopped: Turn[]; live?: Turn } {
-    return this.turnLifecycle.stopSession(sessionId, by);
-  }
-
-
-  stopTurn(sessionId: string, requestedRunId?: string): { turn?: Turn; stopped: boolean } {
-    return this.turnLifecycle.stopTurn(sessionId, requestedRunId);
-  }
-
-
-
-  promoteTurn(sessionId: string, runId: string): Turn {
-    return this.turnLifecycle.promoteTurn(sessionId, runId);
-  }
-
-
-  ackSteer(sessionId: string, steerRunId: string, claimToken: string): Turn {
-    return this.turnLifecycle.ackSteer(sessionId, steerRunId, claimToken);
-  }
-
-
   private requeueUndeliveredSteers(queue: { turns: Turn[] }, runId: string, at: number): Turn[] {
     return this.turnLifecycle.requeueUndeliveredSteers(queue, runId, at);
-  }
-
-
-  releaseHeldTurn(sessionId: string, runId: string): Turn {
-    return this.turnLifecycle.releaseHeldTurn(sessionId, runId);
-  }
-
-
-  discardAmbiguousTurn(sessionId: string, runId: string): Turn {
-    return this.turnLifecycle.discardAmbiguousTurn(sessionId, runId);
-  }
-
-
-  archiveSession(sessionId: string, options: { releaseCheckout?: boolean } = {}): Session {
-    return this.lifecycle.archiveSession(sessionId, options);
-  }
-
-
-
-
-
-
-
-  deleteSession(sessionId: string): boolean {
-    return this.lifecycle.deleteSession(sessionId);
-  }
-
-
-  subscribe(...args: Parameters<SessionSubscriptions["subscribe"]>): Subscription {
-    return this.subscriptions.subscribe(...args);
-  }
-  unsubscribe(subscriptionId: string, subscriberSessionId?: string): boolean {
-    return this.subscriptions.unsubscribe(subscriptionId, subscriberSessionId);
-  }
-  subscriptionsFor(subscriberSessionId: string): Subscription[] {
-    return this.subscriptions.subscriptionsFor(subscriberSessionId);
-  }
-  sweepSubscriptions(): string[] {
-    return this.subscriptions.sweepSubscriptions();
-  }
-  subscribeCohort(...args: Parameters<SessionSubscriptions["subscribeCohort"]>): SubscribedCohort {
-    return this.subscriptions.subscribeCohort(...args);
-  }
-  cohortsFor(subscriberSessionId: string): Cohort[] {
-    return this.subscriptions.cohortsFor(subscriberSessionId);
-  }
-  sweepCohorts(): string[] {
-    return this.subscriptions.sweepCohorts();
   }
 
   private fireSubscriptions(...args: Parameters<TurnWakes["fireSubscriptions"]>): void {
     this.wakes.fireSubscriptions(...args);
   }
 
-
   private evaluateDelegationSettling(sessionId: string): void {
     this.settler.evaluate(sessionId);
   }
-
 
   /**
    * A PERSON SETTLED THIS SESSION: END WHAT IT LEFT RUNNING — issue #883.
@@ -2179,7 +1354,7 @@ export class EngineStore {
   async endSessionLeftovers(sessionId: string): Promise<SessionSettleEnded> {
     let backgroundTasks = 0;
     try {
-      backgroundTasks = this.stopBackgroundTasks(sessionId, "stopped when the session was settled");
+      backgroundTasks = this.worker.stopBackgroundTasks(sessionId, "stopped when the session was settled");
     } catch {
       // A session that cannot be read has no tasks this can stop.
     }
@@ -2188,114 +1363,29 @@ export class EngineStore {
     return { terminals, backgroundTasks };
   }
 
-  sweepSettledTerminals(): Promise<string[]> {
-    return this.sessionTerminals.sweepSettled();
-  }
-
-  enforceSettledTerminalLimit(): Promise<string[]> {
-    return this.sessionTerminals.enforceLimit();
-  }
-
-  sweepDelegatedSettling(): string[] {
-    return this.settler.sweepDelegated();
-  }
-
-
-  sweepSchedules(): string[] {
-    return this.schedules.sweep();
-  }
-
-
-  listSchedules(sessionId?: string): ScheduleRow[] {
-    return this.schedules.list(sessionId);
-  }
-
-  readSchedule(id: string): ScheduleRow | undefined {
-    return this.schedules.read(id);
-  }
-
-  putSchedule(input: ScheduleInput): ScheduleRow {
-    return this.schedules.put(input);
-  }
-
-  deleteSchedule(id: string): boolean {
-    return this.schedules.delete(id);
-  }
-
-  sweepSnoozeWakes(): string[] {
-    return this.settler.sweepSnoozeWakes();
-  }
-
-
-  sweepRequestDeadlines(): string[] {
-    return this.requestGate.sweepDeadlines();
-  }
-
-
-
-
-
-
   private waitingNotificationTurn(sessionId: string): string | undefined {
     return this.wakes.waitingNotificationTurn(sessionId);
   }
-
 
   private joinWaitingNotification(...args: Parameters<TurnWakes["joinWaitingNotification"]>): void {
     this.wakes.joinWaitingNotification(...args);
   }
 
-
-
-
-
-
   private hasLiveTurn(sessionId: string): boolean {
     return this.wakes.hasLiveTurn(sessionId);
   }
-
-
 
   private flushPendingNotifications(sessionId: string): void {
     this.wakes.flushPendingNotifications(sessionId);
   }
 
-
-  pendingNotifications(sessionId: string): NotificationDetail[] {
-    return this.wakes.pendingNotifications(sessionId);
-  }
-
-
   private rewriteNotificationItem(sessionId: string, turn: Turn): void {
     this.wakes.rewriteNotificationItem(sessionId, turn);
   }
 
-
   private discardQueuedWakes(subscriberId: string, targetSessionId?: string): number {
     return this.wakes.discardQueuedWakes(subscriberId, targetSessionId);
   }
-
-
-  requests(sessionId: string): EngineRequest[] {
-    return this.requestGate.list(sessionId);
-  }
-
-  openRequest(sessionId: string, runId: string, claimToken: string, input: OpenRequestInput): RequestOpenResult {
-    return this.requestGate.open(sessionId, runId, claimToken, input);
-  }
-
-  resolveRequest(sessionId: string, requestId: string, input: ResolveRequestInput): EngineRequest {
-    return this.requestGate.resolve(sessionId, requestId, input);
-  }
-
-  resolutionsForWorker(workerId: string): WorkerStatus["resolved"] {
-    return this.requestGate.resolutionsForWorker(workerId);
-  }
-
-  steerForWorker(workerId: string): WorkerStatus["steer"] {
-    return this.worker.steerForWorker(workerId);
-  }
-
 
   /**
    * The journal above `after`, at most `limit` rows of it — issue #494.
@@ -2325,26 +1415,6 @@ export class EngineStore {
     this.records.require(sessionId);
     return this.kernel.executionStore.cursor(sessionId);
   }
-
-  openItemPrefix(sessionId: string, itemId: string, through: number): { streamed: string; streamedThrough: number } | undefined {
-    return this.prefixes.get(sessionId, itemId, through);
-  }
-
-  recover(): { stopped: string[] } {
-    return this.recovery.recover();
-  }
-
-
-
-  retireWorkerRegistration(workerId: string): { stopped: string[] } {
-    return this.recovery.retireWorkerRegistration(workerId);
-  }
-
-
-  cancellationsForWorker(workerId: string): Array<{ sessionId: string; runId: string; claimToken: string }> {
-    return this.recovery.cancellationsForWorker(workerId);
-  }
-
 
   private scanQueue(sessionId: string): SessionQueue {
     return this.sessionQueues.scan(sessionId);
@@ -2381,29 +1451,12 @@ export class EngineStore {
     return this.worker.requireRunningClaim(sessionId, runId, claimToken);
   }
 
-
   private requireSenderClaim(proof: { sessionId: string; runId: string; claimToken: string }): Turn {
     return this.worker.requireSenderClaim(proof);
   }
 
-
-
-  stopBackgroundTasks(sessionId: string, reason = "stopped from the cockpit"): number {
-    return this.worker.stopBackgroundTasks(sessionId, reason);
-  }
-
-
-  taskStopsForWorker(workerId: string, acknowledged: string[] = []): WorkerStatus["stopTask"] {
-    return this.sessionTasks.stopsForWorker(workerId, acknowledged);
-  }
-
-
   private appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent {
     return this.kernel.appendEvent(sessionId, event, runId);
-  }
-
-  watch(listener: (event: EngineEvent) => void): () => void {
-    return this.kernel.watch(listener);
   }
 }
 

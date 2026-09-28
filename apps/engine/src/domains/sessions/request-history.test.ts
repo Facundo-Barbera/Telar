@@ -31,16 +31,16 @@ const bashDetail = { kind: "command_execution" as const, command: { command: "rm
 function readyStore(directory = root()): EngineStore {
   let clock = 100;
   const store = new EngineStore(directory, () => (clock += 1), { notifier: () => true });
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
   return store;
 }
 
 /** A claimed, running turn — the only state in which a request may be opened. */
 function runningSession(store: EngineStore, sessionId = "session_one", runId = "run_one"): string {
-  store.createSession({ id: sessionId, projectId: "project_one", detached: false });
-  store.submitTurn(sessionId, { runId, input: "Hello" });
-  const claimed = store.claimTurn(sessionId, "worker_one")!;
-  store.markRunning(sessionId, runId, claimed.claim!.token);
+  store.lifecycle.createSession({ id: sessionId, projectId: "project_one", detached: false });
+  store.intake.submitTurn(sessionId, { runId, input: "Hello" });
+  const claimed = store.claims.claimTurn(sessionId, "worker_one")!;
+  store.turnLifecycle.markRunning(sessionId, runId, claimed.claim!.token);
   return claimed.claim!.token;
 }
 
@@ -48,8 +48,8 @@ function runningSession(store: EngineStore, sessionId = "session_one", runId = "
 function churn(store: EngineStore, token: string, count: number, sessionId = "session_one", runId = "run_one"): void {
   for (let n = 0; n < count; n += 1) {
     const requestId = `req_${String(n).padStart(4, "0")}`;
-    store.openRequest(sessionId, runId, token, { requestId, kind: "command_execution", detail: bashDetail });
-    store.resolveRequest(sessionId, requestId, { decision: "accept" });
+    store.requestGate.open(sessionId, runId, token, { requestId, kind: "command_execution", detail: bashDetail });
+    store.requestGate.resolve(sessionId, requestId, { decision: "accept" });
   }
 }
 
@@ -58,7 +58,7 @@ test("the document keeps the newest 50 resolved requests and drops the rest", ()
   const token = runningSession(store);
   churn(store, token, 140);
 
-  const kept = store.requests("session_one");
+  const kept = store.requestGate.list("session_one");
   expect(kept).toHaveLength(50);
   expect(kept[0]!.id).toBe("req_0090");
   expect(kept.at(-1)!.id).toBe("req_0139");
@@ -74,7 +74,7 @@ test("a person-resolved request older than the window is still readable from the
   const token = runningSession(store);
   churn(store, token, 140);
 
-  expect(store.requests("session_one").some((request) => request.id === "req_0000")).toBe(false);
+  expect(store.requestGate.list("session_one").some((request) => request.id === "req_0000")).toBe(false);
   const events = store.readEvents("session_one");
   const opened = events.find((event) => event.type === "request.opened" && event.request.id === "req_0000");
   const resolved = events.find((event) => event.type === "request.resolved" && event.requestId === "req_0000");
@@ -89,14 +89,14 @@ test("a request parked and answered late survives the window it opened before", 
   // just resolved — the one the blocked worker is polling the heartbeat for.
   const store = readyStore();
   const token = runningSession(store);
-  store.openRequest("session_one", "run_one", token, { requestId: "req_parked", kind: "command_execution", detail: bashDetail });
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_parked", kind: "command_execution", detail: bashDetail });
   churn(store, token, 140);
-  store.resolveRequest("session_one", "req_parked", { decision: "accept" });
+  store.requestGate.resolve("session_one", "req_parked", { decision: "accept" });
 
-  expect(store.requests("session_one").map((request) => request.id)).toContain("req_parked");
+  expect(store.requestGate.list("session_one").map((request) => request.id)).toContain("req_parked");
   // And the answer still reaches the worker that is parked on it, which is what
   // dropping it by position would have broken.
-  const offered = store.resolutionsForWorker("worker_one");
+  const offered = store.requestGate.resolutionsForWorker("worker_one");
   expect(offered.map((resolution) => resolution.requestId)).toContain("req_parked");
   // Bounded by the same window as the document — the heartbeat never carries
   // more than the store keeps.
@@ -106,13 +106,13 @@ test("a request parked and answered late survives the window it opened before", 
 test("an open request is never dropped, however far past the window it sits", () => {
   const store = readyStore();
   const token = runningSession(store);
-  store.openRequest("session_one", "run_one", token, { requestId: "req_parked", kind: "command_execution", detail: bashDetail });
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_parked", kind: "command_execution", detail: bashDetail });
   churn(store, token, 140);
 
-  const kept = store.requests("session_one");
+  const kept = store.requestGate.list("session_one");
   expect(kept.filter((request) => request.state === "open")).toMatchObject([{ id: "req_parked" }]);
   // And the session still reads as waiting on a human because of it.
-  expect(store.getSession("session_one").activity).toBe("blocked");
+  expect(store.records.get("session_one").activity).toBe("blocked");
   // The window is over the RESOLVED rows; the open one rides on top of it.
   expect(kept).toHaveLength(51);
 });
@@ -139,17 +139,17 @@ test("the boot sweep trims documents written before the window existed", () => {
     key === "sessions/session_one/requests.json" ? { version: 1, requests: rows } : value);
 
   const booted = new EngineStore(directory, () => 9_000, { notifier: () => true });
-  booted.recover();
+  booted.recovery.recover();
 
-  const kept = booted.requests("session_one");
+  const kept = booted.requestGate.list("session_one");
   expect(kept).toHaveLength(50);
   expect(kept[0]!.id).toBe("old_0250");
 
   // Idempotent: a second boot has nothing left to trim.
   booted.closeExecutionStore();
   const again = new EngineStore(directory, () => 9_100, { notifier: () => true });
-  again.recover();
-  expect(again.requests("session_one")).toEqual(kept);
+  again.recovery.recover();
+  expect(again.requestGate.list("session_one")).toEqual(kept);
 });
 
 test("sessions_requests still shows only the open ones", () => {
@@ -158,7 +158,7 @@ test("sessions_requests still shows only the open ones", () => {
   const store = readyStore();
   const token = runningSession(store);
   churn(store, token, 80);
-  store.openRequest("session_one", "run_one", token, { requestId: "req_parked", kind: "command_execution", detail: bashDetail });
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_parked", kind: "command_execution", detail: bashDetail });
 
-  expect(store.requests("session_one").filter((request) => request.state === "open")).toMatchObject([{ id: "req_parked" }]);
+  expect(store.requestGate.list("session_one").filter((request) => request.state === "open")).toMatchObject([{ id: "req_parked" }]);
 });

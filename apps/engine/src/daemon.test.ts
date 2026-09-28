@@ -88,7 +88,7 @@ test("the authenticated API settles an interrupted run and takes a fresh one wit
   await client.submitTurn("session_one", { runId: "uncertain_run", input: "Hello" });
   const claim = (await client.claimTurn("worker_one", 1)).claim!;
   await client.markTurnRunning(claim.sessionId, claim.turn.runId, claim.turn.claim!.token);
-  expect(daemon.store.recover()).toEqual({ stopped: ["uncertain_run"] });
+  expect(daemon.store.recovery.recover()).toEqual({ stopped: ["uncertain_run"] });
 
   await expect(client.submitTurn("session_one", { runId: "fresh_run", input: "Hello" })).resolves.toMatchObject({
     replayed: false,
@@ -422,7 +422,7 @@ test("the appearance mailbox round-trips a published look, caches it, and answer
   // A blob the shared parser cannot read comes back as `null` rather than as
   // garbage — but its timestamp still says somebody published something, which
   // is what lets a reader tell "nobody has" from "I cannot read theirs".
-  daemon.store.setAppearance({ version: 2, look: { id: "x" } });
+  daemon.store.appearance.set({ version: 2, look: { id: "x" } });
   const unreadable = await client.appearance();
   expect(unreadable.appearance).toBeNull();
   expect(unreadable.updatedAt).toBeGreaterThan(0);
@@ -455,7 +455,7 @@ test("an oversize appearance is refused before the engine buffers it", async () 
   expect(refused.headers.get("connection")).toBe("close");
   expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("invalid_request");
   // Nothing was written: a refusal is not a publish.
-  expect(daemon.store.getAppearance()).toBeNull();
+  expect(daemon.store.appearance.get()).toBeNull();
 });
 
 test("a structured completion validates its request before spending a harness", async () => {

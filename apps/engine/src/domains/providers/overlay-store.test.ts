@@ -31,7 +31,7 @@ const store = (dir = root()): EngineStore => new EngineStore(dir, () => 100);
 test("an unconfigured login reads as an untouched overlay, not as an error", () => {
   // Every surface behaves exactly as it did before the feature existed when this
   // is what it gets.
-  expect(store().getModelOverlay("claude")).toEqual({
+  expect(store().catalogues.overlay("claude")).toEqual({
     instanceId: "claude",
     favorites: [],
     hidden: [],
@@ -48,53 +48,53 @@ test("a document nobody can parse costs the preference, never the picker", () =>
   for (const contents of ["not json at all {{{", '{"overlays": "a string"}', '{"overlays": [{"nope": 1}]}']) {
     const dir = root();
     fs.writeFileSync(statePaths(dir).modelOverlays, contents);
-    expect(store(dir).getModelOverlay("claude").hidden).toEqual([]);
+    expect(store(dir).catalogues.overlay("claude").hidden).toEqual([]);
   }
 });
 
 test("presence is the patch, and a submitted list replaces its own whole", () => {
   const engine = store();
-  engine.setModelOverlay("claude", { hidden: ["sonnet"], favorites: ["opus[1m]"] });
+  engine.catalogues.setOverlay("claude", { hidden: ["sonnet"], favorites: ["opus[1m]"] });
   // Absent leaves alone...
-  expect(engine.setModelOverlay("claude", { favorites: ["sonnet"] }).hidden).toEqual(["sonnet"]);
+  expect(engine.catalogues.setOverlay("claude", { favorites: ["sonnet"] }).hidden).toEqual(["sonnet"]);
   // ...and an empty array is a real request: "I cleared this."
-  expect(engine.setModelOverlay("claude", { hidden: [] }).hidden).toEqual([]);
-  expect(engine.getModelOverlay("claude").favorites).toEqual(["sonnet"]);
+  expect(engine.catalogues.setOverlay("claude", { hidden: [] }).hidden).toEqual([]);
+  expect(engine.catalogues.overlay("claude").favorites).toEqual(["sonnet"]);
 });
 
 test("two logins of one provider curate independently", () => {
   // The reason the document is keyed by instance: entitlements are per account.
   const engine = store();
-  engine.setModelOverlay("claude", { hidden: ["sonnet"] });
-  engine.setModelOverlay("claude_work", { hidden: ["opus[1m]"] });
-  expect(engine.getModelOverlay("claude").hidden).toEqual(["sonnet"]);
-  expect(engine.getModelOverlay("claude_work").hidden).toEqual(["opus[1m]"]);
+  engine.catalogues.setOverlay("claude", { hidden: ["sonnet"] });
+  engine.catalogues.setOverlay("claude_work", { hidden: ["opus[1m]"] });
+  expect(engine.catalogues.overlay("claude").hidden).toEqual(["sonnet"]);
+  expect(engine.catalogues.overlay("claude_work").hidden).toEqual(["opus[1m]"]);
 });
 
 test("a repeated id is a double-click, not a malformed request", () => {
-  expect(store().setModelOverlay("claude", { favorites: ["a", "a", "b"] }).favorites).toEqual(["a", "b"]);
+  expect(store().catalogues.setOverlay("claude", { favorites: ["a", "a", "b"] }).favorites).toEqual(["a", "b"]);
 });
 
 test("what could not be a model id at all is refused", () => {
   const engine = store();
   for (const bad of ["", "  ", 'has"quote', "has space", "has\nnewline"]) {
-    expect(() => engine.setModelOverlay("claude", { hidden: [bad] })).toThrow(EngineStateError);
+    expect(() => engine.catalogues.setOverlay("claude", { hidden: [bad] })).toThrow(EngineStateError);
   }
   // And what genuinely IS a model id is not — no provider promised a grammar.
   for (const good of ["opus[1m]", "gpt-5.6-sol", "claude-fable-5-1", "us.anthropic.claude-fable-5-1"]) {
-    expect(engine.setModelOverlay("claude", { hidden: [good] }).hidden).toEqual([good]);
+    expect(engine.catalogues.setOverlay("claude", { hidden: [good] }).hidden).toEqual([good]);
   }
 });
 
 test("two labels for one custom id are two answers, so the write is refused", () => {
   const engine = store();
   expect(() =>
-    engine.setModelOverlay("claude", { custom: [{ id: "x", label: "one" }, { id: "x", label: "two" }] }),
+    engine.catalogues.setOverlay("claude", { custom: [{ id: "x", label: "one" }, { id: "x", label: "two" }] }),
   ).toThrow(EngineStateError);
 });
 
 test("a malformed instance id never reaches the file", () => {
-  expect(() => store().getModelOverlay("../escape")).toThrow(EngineStateError);
+  expect(() => store().catalogues.overlay("../escape")).toThrow(EngineStateError);
 });
 
 test("an edit reaches the next catalogue with no refresh and no second CLI spawn", () => {
@@ -121,20 +121,20 @@ test("an edit reaches the next catalogue with no refresh and no second CLI spawn
   const engine = new EngineStore(root(), () => 100, { models: catalogue, manifest: { version: 1 } });
 
   return (async () => {
-    const before = await engine.modelCatalogue("claude");
+    const before = await engine.catalogues.catalogue("claude");
     expect(before.models.map((model) => model.id)).toEqual(["sonnet", "opus[1m]"]);
     expect(before.instanceId).toBe("claude");
 
-    engine.setModelOverlay("claude", { hidden: ["sonnet"], order: ["opus[1m]"], custom: [{ id: "claude-fable-5-1" }] });
+    engine.catalogues.setOverlay("claude", { hidden: ["sonnet"], order: ["opus[1m]"], custom: [{ id: "claude-fable-5-1" }] });
 
-    const after = await engine.modelCatalogue("claude");
+    const after = await engine.catalogues.catalogue("claude");
     expect(spawns).toBe(1);
     expect(after.models.map((model) => model.id)).toEqual(["opus[1m]", "sonnet", "claude-fable-5-1"]);
     expect(after.models.find((model) => model.id === "sonnet")?.hiddenByUser).toBe(true);
     expect(after.models.find((model) => model.id === "claude-fable-5-1")?.source).toBe("user");
 
     // And a second login sees the same provider answer with none of it applied.
-    const other = await engine.modelCatalogue("claude", { instanceId: "claude_work" });
+    const other = await engine.catalogues.catalogue("claude", { instanceId: "claude_work" });
     expect(spawns).toBe(1);
     expect(other.models.map((model) => model.id)).toEqual(["sonnet", "opus[1m]"]);
   })();
@@ -165,9 +165,9 @@ test("a manifest model pre-empts a hand-typed custom row for the same id, or an 
       },
     },
   });
-  engine.setModelOverlay("claude", { hidden: [], order: [], custom: [{ id: "claude-fable-5-1" }, { id: "claude-fable-5.1" }] });
+  engine.catalogues.setOverlay("claude", { hidden: [], order: [], custom: [{ id: "claude-fable-5-1" }, { id: "claude-fable-5.1" }] });
   return (async () => {
-    const { models } = await engine.modelCatalogue("claude");
+    const { models } = await engine.catalogues.catalogue("claude");
     const rows = models.filter((model) => /fable/.test(model.id));
     // Both windows are the manifest's rows; neither custom entry survives.
     expect(rows.map((model) => model.id)).toEqual(["claude-fable-5-1", "claude-fable-5-1[1m]"]);
@@ -177,11 +177,11 @@ test("a manifest model pre-empts a hand-typed custom row for the same id, or an 
 
 test("a chosen default is stored, cleared by null, and refused when it is not a model id", () => {
   const engine = store();
-  expect(engine.setModelOverlay("claude", { default: "claude-opus-5-5[1m]" }).default).toBe("claude-opus-5-5[1m]");
+  expect(engine.catalogues.setOverlay("claude", { default: "claude-opus-5-5[1m]" }).default).toBe("claude-opus-5-5[1m]");
   // Absent leaves it alone; `null` hands the choice back to Telar.
-  expect(engine.setModelOverlay("claude", { hidden: [] }).default).toBe("claude-opus-5-5[1m]");
-  expect(engine.setModelOverlay("claude", { default: null }).default).toBeUndefined();
-  expect(() => engine.setModelOverlay("claude", { default: "has space" })).toThrow(EngineStateError);
+  expect(engine.catalogues.setOverlay("claude", { hidden: [] }).default).toBe("claude-opus-5-5[1m]");
+  expect(engine.catalogues.setOverlay("claude", { default: null }).default).toBeUndefined();
+  expect(() => engine.catalogues.setOverlay("claude", { default: "has space" })).toThrow(EngineStateError);
 });
 
 test("the chosen default reaches the catalogue and the claim of a session that named no model", async () => {
@@ -195,11 +195,11 @@ test("the chosen default reaches the catalogue and the claim of a session that n
     ],
   });
   const engine = new EngineStore(root(), () => 100, { models: catalogue, manifest: { version: 1 } });
-  engine.setModelOverlay("claude", { default: "opus[1m]" });
-  const { models } = await engine.modelCatalogue("claude");
+  engine.catalogues.setOverlay("claude", { default: "opus[1m]" });
+  const { models } = await engine.catalogues.catalogue("claude");
   expect(models.filter((model) => model.isDefault).map((model) => model.id)).toEqual(["opus[1m]"]);
-  engine.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  engine.createSession({ id: "session_one", projectId: "project_one" });
-  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
-  expect(engine.claimNextTurn("worker_one")?.model?.model).toBe("opus[1m]");
+  engine.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  engine.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  expect(engine.claims.claimNextTurn("worker_one")?.model?.model).toBe("opus[1m]");
 });

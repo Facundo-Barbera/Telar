@@ -226,7 +226,7 @@ test("a shutdown landing inside an in-flight claim leaves the turn claimed, neve
   expect(turns[0]?.state).toBe("claimed");
 
   // Boot terminalizes the abandoned claim without replaying its message.
-  daemon.store.recover();
+  daemon.store.recovery.recover();
   const recovered = (await client.session("session_one")).turns[0];
   expect(recovered?.state).toBe("stopped");
   expect(recovered?.held).toBeUndefined();

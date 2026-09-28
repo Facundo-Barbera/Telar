@@ -48,30 +48,30 @@ test("receipts outlive a retry and not a week; opening the store is itself a swe
 
 test("a restart retires the claim on a stopped turn without disturbing the session", () => {
   const { home, store } = setup();
-  store.submitTurn("session_one", { runId: "run_one", input: "hello" });
-  store.claimTurn("session_one", "worker_one");
-  store.stopSession("session_one", "user");
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "hello" });
+  store.claims.claimTurn("session_one", "worker_one");
+  store.turnLifecycle.stopSession("session_one", "user");
   expect(store.turns("session_one")[0]?.claim?.workerId).toBe("worker_one");
-  const before = store.getSession("session_one").updatedAt;
+  const before = store.records.get("session_one").updatedAt;
   store.closeExecutionStore(); stores.splice(stores.indexOf(store), 1);
 
   const reopened = new EngineStore(home, Date.now); stores.push(reopened);
-  reopened.recover(); // what the daemon runs at boot
+  reopened.recovery.recover(); // what the daemon runs at boot
   const turn = reopened.turns("session_one")[0]!;
   expect(turn.claim).toBeUndefined();
   // Only the token went. The turn still says what it was and how it ended,
   // and nothing about the session moved.
   expect(turn).toMatchObject({ runId: "run_one", input: "hello", state: "stopped", stopReason: "user" });
-  expect(reopened.getSession("session_one").updatedAt).toBe(before);
+  expect(reopened.records.get("session_one").updatedAt).toBe(before);
   // And with no claim left, no worker is asked about this session again.
-  expect(reopened.cancellationsForWorker("worker_one")).toEqual([]);
+  expect(reopened.recovery.cancellationsForWorker("worker_one")).toEqual([]);
 });
 
 test("the pre-SQLite backup is kept for its week and then swept, and the sweep says what it took", () => {
   const day = 24 * 60 * 60 * 1000;
   let clock = Date.now();
   const { store: original, home } = setup();
-  original.submitTurn("session_one", { runId: "run_one", input: "keep me" });
+  original.intake.submitTurn("session_one", { runId: "run_one", input: "keep me" });
   toLegacyHome(original, home); stores.splice(stores.indexOf(original), 1);
 
   // The migration itself, which is what writes the backup.

@@ -195,8 +195,8 @@ export async function generateSessionTitle(input: TextGenDriverInput & { message
 type TextGenInstance = { enabled: boolean; binaryPath?: string; env: { name: string; value: string }[] };
 
 type TextGenStore = {
-  getTextGenPolicy(): TextGenPolicy;
-  resolveProviderInstance(instanceId: string, driver: "claude" | "codex"): TextGenInstance;
+  settings: { textGen(): TextGenPolicy };
+  providers: { resolve(instanceId: string, driver: "claude" | "codex"): TextGenInstance };
 };
 
 type StructuredPolicyStore = TextGenStore & { paths?: { root?: string } };
@@ -215,9 +215,9 @@ export async function runStructuredForPolicy(
   let policy: TextGenPolicy;
   let instance: TextGenInstance;
   try {
-    policy = store.getTextGenPolicy();
+    policy = store.settings.textGen();
     if (policy.driver === "opencode") return undefined;
-    instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
+    instance = store.providers.resolve(defaultInstanceIdForDriver(policy.driver), policy.driver);
   } catch {
     return undefined;
   }
@@ -238,9 +238,11 @@ export async function runStructuredForPolicy(
 }
 
 export type RetitleStore = TextGenStore & {
-  getSession(sessionId: string): { title: string; state: string; workspace: SessionWorkspace };
-  updateSession(sessionId: string, patch: { title: string }): unknown;
-  refreshWorktreeBranchFromTitle(sessionId: string): string | undefined | Promise<string | undefined>;
+  records: { get(sessionId: string): { title: string; state: string; workspace: SessionWorkspace } };
+  lifecycle: {
+    updateSession(sessionId: string, patch: { title: string }): unknown;
+    refreshWorktreeBranchFromTitle(sessionId: string): string | undefined | Promise<string | undefined>;
+  };
 };
 
 export async function maybeRetitleSession(
@@ -249,19 +251,19 @@ export async function maybeRetitleSession(
   firstMessage: string,
   generate: typeof generateSessionTitle = generateSessionTitle,
 ): Promise<void> {
-  const policy = effectiveTextGenPolicy(store.getTextGenPolicy());
+  const policy = effectiveTextGenPolicy(store.settings.textGen());
   if (!policy.titles || policy.driver === "opencode") return;
   if (!firstMessage.trim()) return;
-  let session: ReturnType<RetitleStore["getSession"]>;
+  let session: ReturnType<RetitleStore["records"]["get"]>;
   try {
-    session = store.getSession(sessionId);
+    session = store.records.get(sessionId);
   } catch {
     return;
   }
   if (session.state !== "active" || !titleIsSeed(session.title, firstMessage)) return;
   const cwd = workspacePath(session.workspace);
   if (cwd === undefined) return;
-  const instance = store.resolveProviderInstance(defaultInstanceIdForDriver(policy.driver), policy.driver);
+  const instance = store.providers.resolve(defaultInstanceIdForDriver(policy.driver), policy.driver);
   if (!instance.enabled) return;
   const title = await generate({
     driver: policy.driver,
@@ -272,15 +274,15 @@ export async function maybeRetitleSession(
   });
   if (title === undefined) return;
   try {
-    const current = store.getSession(sessionId);
+    const current = store.records.get(sessionId);
     if (current.state !== "active" || !titleIsSeed(current.title, firstMessage) || current.title === title) return;
-    store.updateSession(sessionId, { title });
+    store.lifecycle.updateSession(sessionId, { title });
   } catch {
     return;
   }
   if (policy.renameBranches) {
     try {
-      await store.refreshWorktreeBranchFromTitle(sessionId);
+      await store.lifecycle.refreshWorktreeBranchFromTitle(sessionId);
     } catch {
       // The new title stands even when the branch rename fails.
     }

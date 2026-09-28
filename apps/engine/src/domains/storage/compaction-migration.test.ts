@@ -21,12 +21,12 @@ const plain = (name: string, value: string): ProviderInstanceEnvVar => ({ name, 
 function oldStore(env: ProviderInstanceEnvVar[]): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compaction-"));
   roots.push(root);
-  new EngineStore(root, () => 100).saveProviderInstance({ id: "claude", env });
+  new EngineStore(root, () => 100).providers.save({ id: "claude", env });
   fs.rmSync(path.join(root, MARKER), { force: true });
   return root;
 }
 
-const claude = (store: EngineStore) => store.listProviderInstances().find((instance) => instance.id === "claude")!;
+const claude = (store: EngineStore) => store.providers.list().find((instance) => instance.id === "claude")!;
 
 describe("the one-time move to per-class limits", () => {
   test("150,000 tokens becomes the 200k limit, 1M takes 400,000, and the rows go", () => {
@@ -57,7 +57,7 @@ describe("the one-time move to per-class limits", () => {
     const root = oldStore([plain("CLAUDE_CODE_AUTO_COMPACT_WINDOW", "183000")]);
     expect(new EngineStore(root, () => 200).claudeCompactionMigration).toBe(1);
     const again = new EngineStore(root, () => 300);
-    again.saveProviderInstance({ id: "claude", env: [plain("DISABLE_AUTO_COMPACT", "1")] });
+    again.providers.save({ id: "claude", env: [plain("DISABLE_AUTO_COMPACT", "1")] });
     const reopened = new EngineStore(root, () => 400);
     expect(reopened.claudeCompactionMigration).toBeUndefined();
     expect(claude(reopened).env).toEqual([plain("DISABLE_AUTO_COMPACT", "1")]);
@@ -69,11 +69,11 @@ describe("saving the setting", () => {
   test("set, keep, clear — and a limit out of range is refused", () => {
     const root = oldStore([]);
     const store = new EngineStore(root, () => 200);
-    store.saveProviderInstance({ id: "claude", autoCompact: { mode: "limits", standard: 120_000, long: 500_000 } });
-    store.saveProviderInstance({ id: "claude", displayName: "Work" });
+    store.providers.save({ id: "claude", autoCompact: { mode: "limits", standard: 120_000, long: 500_000 } });
+    store.providers.save({ id: "claude", displayName: "Work" });
     expect(claude(store).autoCompact).toEqual({ mode: "limits", standard: 120_000, long: 500_000 });
-    expect(() => store.saveProviderInstance({ id: "claude", autoCompact: { mode: "limits", standard: 0, long: 1 } })).toThrow("auto-compaction");
-    store.saveProviderInstance({ id: "claude", autoCompact: null });
+    expect(() => store.providers.save({ id: "claude", autoCompact: { mode: "limits", standard: 0, long: 1 } })).toThrow("auto-compaction");
+    store.providers.save({ id: "claude", autoCompact: null });
     expect(claude(store).autoCompact).toBeUndefined();
   });
 });

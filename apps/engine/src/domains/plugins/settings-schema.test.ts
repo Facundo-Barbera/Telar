@@ -53,7 +53,7 @@ test("Data Science's and LaTeX's Mac fields are published for the generated pane
   };
   const host = new PluginHost(
     [
-      latexPlugin({ resolve: never, jobs: { list: () => [], disposeAll: () => {} }, settings: {} as never }),
+      latexPlugin({ resolve: never, jobs: { list: () => [], disposeAll: () => {} }, settings: {} as never, managed: {} as never }),
       dataSciencePlugin({ resolve: never, projectOf: () => undefined, settings: {} as never }),
     ],
     { daemonId: "d", stateDir: tempDir() },

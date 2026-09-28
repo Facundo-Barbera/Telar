@@ -77,19 +77,19 @@ const closed = (id: string, text: string) =>
  * `ingestObservations` CALL PER OBSERVATION — trap 4.
  */
 function seed(store: EngineStore, sessionId = "session_one"): void {
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: sessionId, projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: sessionId, projectId: "project_one" });
   for (let turn = 0; turn < ITEMS / PER_TURN; turn += 1) {
     const runId = `run_${turn}`;
-    store.submitTurn(sessionId, { runId, input: `message ${turn}` });
-    const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
-    store.markRunning(sessionId, runId, token);
+    store.intake.submitTurn(sessionId, { runId, input: `message ${turn}` });
+    const token = store.claims.claimTurn(sessionId, "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning(sessionId, runId, token);
     for (let step = 0; step < PER_TURN; step += 1) {
       const id = `${runId}_item_${step}`;
-      store.ingestObservations(sessionId, runId, token, [opened(id)]);
-      store.ingestObservations(sessionId, runId, token, [closed(id, `${BODY} ${turn}.${step}`)]);
+      store.ingest.ingestObservations(sessionId, runId, token, [opened(id)]);
+      store.ingest.ingestObservations(sessionId, runId, token, [closed(id, `${BODY} ${turn}.${step}`)]);
     }
-    store.completeTurn(sessionId, runId, token, { text: `answer ${turn}` });
+    store.turnLifecycle.completeTurn(sessionId, runId, token, { text: `answer ${turn}` });
   }
 }
 
@@ -165,13 +165,13 @@ test("the item a batch did not touch is not rewritten", () => {
   seed(store);
 
   const runId = "run_last";
-  store.submitTurn("session_one", { runId, input: "one more" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", runId, token);
+  store.intake.submitTurn("session_one", { runId, input: "one more" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", runId, token);
 
   const bytes = countItemBytes(store);
-  store.ingestObservations("session_one", runId, token, [opened("last_item")]);
-  store.ingestObservations("session_one", runId, token, [closed("last_item", BODY)]);
+  store.ingest.ingestObservations("session_one", runId, token, [opened("last_item")]);
+  store.ingest.ingestObservations("session_one", runId, token, [closed("last_item", BODY)]);
 
   const stored = store.items("session_one").find((item) => item.id === "last_item")!;
   const one = Buffer.byteLength(JSON.stringify(stored), "utf8");
@@ -204,7 +204,7 @@ test("a window carries its own turns' items and no others", () => {
   // A store of its own, so the answer comes from storage rather than from a
   // cache the seeding left warm — which is the path the run index is for.
   const cold = open(directory);
-  const window = cold.snapshotWindow("session_one", { limit: 4 });
+  const window = cold.queries.snapshotWindow("session_one", { limit: 4 });
   const chosen = new Set(window.turns.map((turn) => turn.runId));
   expect(chosen.size).toBe(4);
   expect(window.items).toEqual(every.filter((item) => chosen.has(item.runId)));
@@ -298,7 +298,7 @@ test("deleting a session takes its rows and the marker that points at them", () 
   expect(store.items("session_one")).toHaveLength(ITEMS);
   expect(inner(store).itemsAreRows("session_one")).toBe(true);
 
-  expect(store.deleteSession("session_one")).toBe(true);
+  expect(store.lifecycle.deleteSession("session_one")).toBe(true);
   expect(inner(store).itemsAreRows("session_one")).toBe(false);
 
   /**
@@ -306,7 +306,7 @@ test("deleting a session takes its rows and the marker that points at them", () 
    * the sweep exists to prevent, which a marker left behind turns into a
    * conversation that reads as empty rather than into an error.
    */
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.items("session_one")).toEqual([]);
 });
 
@@ -314,12 +314,12 @@ test("the cached item projection is per session and never outlives a write", () 
   // The cache is what makes the read above cheap; a stale one would serve a
   // closed item as still open, or one session's rows to another.
   const { store } = readyStore();
-  store.createSession({ id: "session_two", projectId: "project_one" });
+  store.lifecycle.createSession({ id: "session_two", projectId: "project_one" });
   const open = (sessionId: string, runId: string, itemId: string): string => {
-    store.submitTurn(sessionId, { runId, input: "Hello" });
-    const token = store.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
-    store.markRunning(sessionId, runId, token);
-    store.ingestObservations(sessionId, runId, token, [
+    store.intake.submitTurn(sessionId, { runId, input: "Hello" });
+    const token = store.claims.claimTurn(sessionId, `worker_${sessionId}`)!.claim!.token;
+    store.turnLifecycle.markRunning(sessionId, runId, token);
+    store.ingest.ingestObservations(sessionId, runId, token, [
       { kind: "item.started", item: { id: itemId, detail: { type: "assistant_message", text: "" } } },
     ]);
     return token;
@@ -328,9 +328,9 @@ test("the cached item projection is per session and never outlives a write", () 
   const twoToken = open("session_two", "run_two", "i_two");
 
   // Interleaved, so a cache keyed by anything but the session would cross them.
-  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "content.delta", itemId: "i_one", stream: "assistant_text", text: "a" }]);
-  store.ingestObservations("session_two", "run_two", twoToken, [{ kind: "content.delta", itemId: "i_two", stream: "assistant_text", text: "b" }]);
-  store.ingestObservations("session_one", "run_one", oneToken, [{ kind: "item.completed", itemId: "i_one", status: "completed", detail: { type: "assistant_message", text: "a" } }]);
+  store.ingest.ingestObservations("session_one", "run_one", oneToken, [{ kind: "content.delta", itemId: "i_one", stream: "assistant_text", text: "a" }]);
+  store.ingest.ingestObservations("session_two", "run_two", twoToken, [{ kind: "content.delta", itemId: "i_two", stream: "assistant_text", text: "b" }]);
+  store.ingest.ingestObservations("session_one", "run_one", oneToken, [{ kind: "item.completed", itemId: "i_one", status: "completed", detail: { type: "assistant_message", text: "a" } }]);
 
   expect(store.items("session_one").map((item) => [item.id, item.status])).toEqual([["i_one", "completed"]]);
   expect(store.items("session_two").map((item) => [item.id, item.status])).toEqual([["i_two", "inProgress"]]);

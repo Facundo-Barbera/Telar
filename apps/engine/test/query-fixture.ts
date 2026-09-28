@@ -93,17 +93,17 @@ export const PROJECT = "project_query_fixture";
 /** One completed turn through the public path. A hand-written queue would price
  *  a store no engine ever wrote — `turn-summary.test.ts` makes the same call. */
 function conversation(store: EngineStore, sessionId: string, runId: string, input: string, answer: string, items: number): void {
-  store.submitTurn(sessionId, { runId, input });
-  const token = store.claimTurn(sessionId, "worker_fixture")!.claim!.token;
-  store.markRunning(sessionId, runId, token);
+  store.intake.submitTurn(sessionId, { runId, input });
+  const token = store.claims.claimTurn(sessionId, "worker_fixture")!.claim!.token;
+  store.turnLifecycle.markRunning(sessionId, runId, token);
   for (let step = 0; step < items; step += 1) {
     const id = `${runId}_item_${step}`;
-    store.ingestObservations(sessionId, runId, token, [
+    store.ingest.ingestObservations(sessionId, runId, token, [
       { kind: "item.started", item: { id, title: `Read apps/engine/src/some/path/number-${step}.ts`, detail: { type: "assistant_message", text: "" } } },
       { kind: "item.completed", itemId: id, status: "completed", detail: { type: "assistant_message", text: `Paragraph ${step}. ${"Words a real item carries. ".repeat(10)}` } },
     ]);
   }
-  store.completeTurn(sessionId, runId, token, { text: answer });
+  store.turnLifecycle.completeTurn(sessionId, runId, token, { text: answer });
 }
 
 /**
@@ -115,22 +115,22 @@ function conversation(store: EngineStore, sessionId: string, runId: string, inpu
  * the write path instead.
  */
 function journal(store: EngineStore, sessionId: string, runId: string, events: number): void {
-  store.submitTurn(sessionId, { runId, input: "the long one, streamed" });
-  const token = store.claimTurn(sessionId, "worker_fixture")!.claim!.token;
-  store.markRunning(sessionId, runId, token);
-  store.ingestObservations(sessionId, runId, token, [
+  store.intake.submitTurn(sessionId, { runId, input: "the long one, streamed" });
+  const token = store.claims.claimTurn(sessionId, "worker_fixture")!.claim!.token;
+  store.turnLifecycle.markRunning(sessionId, runId, token);
+  store.ingest.ingestObservations(sessionId, runId, token, [
     { kind: "item.started", item: { id: `${runId}_item`, title: "The streamed reply", detail: { type: "assistant_message", text: "" } } },
   ]);
   const batch = 1_000;
   for (let sent = 0; sent < events; sent += batch) {
-    store.ingestObservations(sessionId, runId, token, Array.from({ length: Math.min(batch, events - sent) }, () => ({
+    store.ingest.ingestObservations(sessionId, runId, token, Array.from({ length: Math.min(batch, events - sent) }, () => ({
       kind: "content.delta" as const, itemId: `${runId}_item`, stream: "assistant_text" as const, text: "tok ",
     })));
   }
-  store.ingestObservations(sessionId, runId, token, [
+  store.ingest.ingestObservations(sessionId, runId, token, [
     { kind: "item.completed", itemId: `${runId}_item`, status: "completed", detail: { type: "assistant_message", text: "the streamed reply, settled" } },
   ]);
-  store.completeTurn(sessionId, runId, token, { text: answerOf("the streamed answer.") });
+  store.turnLifecycle.completeTurn(sessionId, runId, token, { text: answerOf("the streamed answer.") });
 }
 
 /** An answer of EXACTLY `ANSWER_CHARS`, so `/answer`'s `totalChars` is a number
@@ -148,11 +148,11 @@ function answerOf(opening: string): string {
  * control beside it at 6,000.
  */
 export function seedQueryFixture(store: EngineStore): void {
-  store.registerProject({ id: PROJECT, name: "Query fixture", root: "/tmp" });
+  store.projectRegistry.register({ id: PROJECT, name: "Query fixture", root: "/tmp" });
   for (let index = 0; index < SESSIONS; index += 1) {
-    store.createSession({ id: `session_${index}`, projectId: PROJECT });
+    store.lifecycle.createSession({ id: `session_${index}`, projectId: PROJECT });
   }
-  store.createSession({ id: CONTROL_SESSION, projectId: PROJECT });
+  store.lifecycle.createSession({ id: CONTROL_SESSION, projectId: PROJECT });
 
   // Every session gets one ordinary turn, so `find` scans a real corpus rather
   // than one session's worth of text wearing 300 ids.

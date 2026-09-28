@@ -88,20 +88,20 @@ async function anchored(store: EngineStore, sessionId: string, runId: string, si
 
 /** Drive one turn to `running`, hand back its claim token. */
 function startTurn(store: EngineStore, sessionId: string, runId: string): string {
-  store.submitTurn(sessionId, { runId, input: "go" });
-  const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
-  store.markRunning(sessionId, runId, token);
+  store.intake.submitTurn(sessionId, { runId, input: "go" });
+  const token = store.claims.claimTurn(sessionId, "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning(sessionId, runId, token);
   return token;
 }
 
 test("a turn that commits is anchored to a range git can be asked about (#741)", async () => {
   const { root } = repo();
   const store = new EngineStore(engineHome("telar-741-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root });
-  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+  store.lifecycle.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_cut");
 
-  const workspace = store.getSession("session_cut").workspace;
+  const workspace = store.records.get("session_cut").workspace;
   if (workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   const checkout = workspace.path;
 
@@ -114,9 +114,9 @@ test("a turn that commits is anchored to a range git can be asked about (#741)",
   // The turn commits, which is what makes `before..after` a range rather than
   // a pair of equal shas.
   fs.writeFileSync(path.join(checkout, "written.ts"), "export const a = 1;\n");
-  await store.commitSessionWork("session_cut", "the turn's own commit");
+  await store.sessionGit.commit("session_cut", "the turn's own commit");
 
-  store.completeTurn("session_cut", "run_1", token, { text: "done" });
+  store.turnLifecycle.completeTurn("session_cut", "run_1", token, { text: "done" });
   const ended = await anchored(store, "session_cut", "run_1", "after");
   const after = ended.anchor?.after;
   expect(after, "the turn is anchored where it ended").toMatch(/^[0-9a-f]{40}$/);
@@ -143,17 +143,17 @@ test("a turn that commits nothing is anchored to the same sha twice, which is no
    */
   const { root } = repo();
   const store = new EngineStore(engineHome("telar-741-engine-flat-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root });
-  store.createSession({ id: "session_flat", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+  store.lifecycle.createSession({ id: "session_flat", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_flat");
 
-  const workspace = store.getSession("session_flat").workspace;
+  const workspace = store.records.get("session_flat").workspace;
   if (workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   fs.writeFileSync(path.join(workspace.path, "dirty.ts"), "export const b = 2;\n");
 
   const token = startTurn(store, "session_flat", "run_1");
   const before = (await anchored(store, "session_flat", "run_1", "before")).anchor?.before;
-  store.completeTurn("session_flat", "run_1", token, { text: "done" });
+  store.turnLifecycle.completeTurn("session_flat", "run_1", token, { text: "done" });
   const after = (await anchored(store, "session_flat", "run_1", "after")).anchor?.after;
 
   expect(before).toMatch(/^[0-9a-f]{40}$/);
@@ -165,13 +165,13 @@ test("a stopped turn is anchored too, because that is when the question is asked
   // account of itself, so it is the one the anchor is worth most for.
   const { root } = repo();
   const store = new EngineStore(engineHome("telar-741-engine-stop-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root });
-  store.createSession({ id: "session_stop", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+  store.lifecycle.createSession({ id: "session_stop", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_stop");
 
   startTurn(store, "session_stop", "run_1");
   await anchored(store, "session_stop", "run_1", "before");
-  store.stopTurn("session_stop", "run_1");
+  store.turnLifecycle.stopTurn("session_stop", "run_1");
   const ended = await anchored(store, "session_stop", "run_1", "after");
   expect(ended.state).toBe("stopped");
   expect(ended.anchor?.after).toMatch(/^[0-9a-f]{40}$/);
@@ -190,11 +190,11 @@ test("a repository with no commits yet leaves the anchor ABSENT, not failed (#74
    */
   const { root } = repo(false);
   const store = new EngineStore(engineHome("telar-741-engine-empty-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root });
-  store.createSession({ id: "session_empty", projectId: "project_one", envMode: "local" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+  store.lifecycle.createSession({ id: "session_empty", projectId: "project_one", envMode: "local" });
 
   const token = startTurn(store, "session_empty", "run_1");
-  store.completeTurn("session_empty", "run_1", token, { text: "done" });
+  store.turnLifecycle.completeTurn("session_empty", "run_1", token, { text: "done" });
   // Nothing to wait for, so wait for the probe to have had its chance and
   // assert the absence rather than racing it.
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -212,11 +212,11 @@ test("a session with no repository at all is not anchored, and does not fail the
   // completes; the anchor simply says nothing.
   const plain = tmp("telar-741-plain-");
   const store = new EngineStore(engineHome("telar-741-engine-plain-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: plain });
-  store.createSession({ id: "session_plain", projectId: "project_one", envMode: "local" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: plain });
+  store.lifecycle.createSession({ id: "session_plain", projectId: "project_one", envMode: "local" });
 
   const token = startTurn(store, "session_plain", "run_1");
-  const completed = store.completeTurn("session_plain", "run_1", token, { text: "done" });
+  const completed = store.turnLifecycle.completeTurn("session_plain", "run_1", token, { text: "done" });
   expect(completed.state).toBe("completed");
   // WAITED FOR RATHER THAN SLEPT ON: this asserts a `read` that has to ARRIVE,
   // so a fixed sleep that was too short would pass by finding nothing yet —

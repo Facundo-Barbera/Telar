@@ -50,16 +50,16 @@ afterEach(async () => {
 function streaming(deltas: number, home = root()) {
   const store = new EngineStore(home, Date.now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  store.submitTurn("session_one", { runId: "run_one", input: "stream" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.ingestObservations("session_one", "run_one", token, [
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "stream" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.ingest.ingestObservations("session_one", "run_one", token, [
     { kind: "item.started", item: { id: "item_one", detail: { type: "assistant_message", text: "" } } },
   ]);
   for (let index = 0; index < deltas; index += 1) {
-    store.ingestObservations("session_one", "run_one", token, [
+    store.ingest.ingestObservations("session_one", "run_one", token, [
       { kind: "content.delta", itemId: "item_one", stream: "assistant_text", text: `chunk-${index} ` },
     ]);
   }

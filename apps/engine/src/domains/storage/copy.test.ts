@@ -49,12 +49,12 @@ function scene(): { home: string; store: EngineStore } {
   homes.push(home);
   const store = new EngineStore(home, () => START);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "one", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  store.submitTurn("session_one", { runId: "run_one", input: "what is in there" });
-  const token = store.claimTurn("session_one", "worker_one")!.claim!.token;
-  store.markRunning("session_one", "run_one", token);
-  store.completeTurn("session_one", "run_one", token, { text: "this, and it can be read" });
+  store.projectRegistry.register({ id: "project_one", name: "one", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "what is in there" });
+  const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_one", "run_one", token);
+  store.turnLifecycle.completeTurn("session_one", "run_one", token, { text: "this, and it can be read" });
   return { home, store };
 }
 
@@ -75,10 +75,10 @@ test("the copy opens, and holds the conversation the original holds", () => {
    */
   const opened = new EngineStore(destination, () => START);
   stores.push(opened);
-  expect(opened.getSession("session_one").id).toBe("session_one");
+  expect(opened.records.get("session_one").id).toBe("session_one");
   expect(opened.turns("session_one")[0]?.input).toBe("what is in there");
   expect(opened.readEvents("session_one").length).toBe(store.readEvents("session_one").length);
-  expect(opened.listProjects().map((project) => project.id)).toEqual(["project_one"]);
+  expect(opened.projectRegistry.list().map((project) => project.id)).toEqual(["project_one"]);
 });
 
 test("the copy is 0600, and no `-wal` travels beside it", () => {

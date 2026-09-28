@@ -43,7 +43,7 @@ async function ready() {
 
 /** A task handed over with engine-stamped attribution, as `submitAgentTurn` does. */
 function handOver(store: EngineDaemon["store"], runId: string, scope?: string) {
-  return store.submitTurn("session_worker", {
+  return store.intake.submitTurn("session_worker", {
     runId,
     input: "do the thing",
     origin: "session",
@@ -68,7 +68,7 @@ test("a CARRIER OUTSIDE THE PAGE still resolves to its real outcome", async () =
   const { client, store } = await ready();
 
   // The carrier: an old, long-settled turn that a small window will not include.
-  store.submitTurn("session_worker", { runId: "run_carrier", input: "older work" });
+  store.intake.submitTurn("session_worker", { runId: "run_carrier", input: "older work" });
   settle(store, "session_worker", "run_carrier", "completed");
 
   // The task, steered into that carrier, then plenty of newer turns above it.
@@ -83,7 +83,7 @@ test("a CARRIER OUTSIDE THE PAGE still resolves to its real outcome", async () =
   (store as never as { writeQueue(id: string, q: unknown): void }).writeQueue("session_worker", queue);
 
   for (let index = 0; index < 6; index += 1) {
-    store.submitTurn("session_worker", { runId: `run_newer_${index}`, input: `later ${index}` });
+    store.intake.submitTurn("session_worker", { runId: `run_newer_${index}`, input: `later ${index}` });
     settle(store, "session_worker", `run_newer_${index}`, "completed");
   }
 
@@ -120,9 +120,9 @@ test("a TASK OUTSIDE THE PAGE with an ACTIVE carrier still reports outstanding",
   task.completedAt = 1;
   (store as never as { writeQueue(id: string, q: unknown): void }).writeQueue("session_worker", queue);
 
-  store.submitTurn("session_worker", { runId: "run_live", input: "the work" });
+  store.intake.submitTurn("session_worker", { runId: "run_live", input: "the work" });
   for (let index = 0; index < 5; index += 1) {
-    store.submitTurn("session_worker", { runId: `run_pad_${index}`, input: `pad ${index}` });
+    store.intake.submitTurn("session_worker", { runId: `run_pad_${index}`, input: `pad ${index}` });
     settle(store, "session_worker", `run_pad_${index}`, "completed");
   }
 

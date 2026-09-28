@@ -41,7 +41,7 @@ export function pluginRoutes(store: EngineStore, host: PluginHost, folders: Plug
       // Turning a plugin off drains it everywhere: running work finishes, nothing is killed.
       handle({ body }) {
         const entries = validMachineEntries(body, host);
-        const machine = store.toolchains.updateMachine(entries as Parameters<EngineStore["updateMachinePlugins"]>[0]);
+        const machine = store.toolchains.updateMachine(entries as Parameters<EngineStore["toolchains"]["updateMachine"]>[0]);
         for (const [id, value] of Object.entries(entries)) {
           const off = value === null || (value as { enabled?: boolean }).enabled === false;
           for (const project of store.projectRegistry.list()) {

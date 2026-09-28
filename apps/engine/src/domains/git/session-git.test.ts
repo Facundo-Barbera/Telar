@@ -9,10 +9,10 @@ const { root } = useTempStores();
 
 test("a commit needs a message and the message has a ceiling", () => {
   const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
-  store.registerProject({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
-  store.createSession({ id: "session_one", projectId: "project_one" });
-  expect(() => store.commitSessionWork("session_one", "   ")).toThrow(EngineStateError);
-  expect(() => store.commitSessionWork("session_one", "x".repeat(2_001))).toThrow(EngineStateError);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: fs.realpathSync.native(root()) });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
+  expect(() => store.sessionGit.commit("session_one", "   ")).toThrow(EngineStateError);
+  expect(() => store.sessionGit.commit("session_one", "x".repeat(2_001))).toThrow(EngineStateError);
 });
 
 /** Clone and register in one gesture. Git is stubbed: the registration uses the folder the clone created, and a failed clone registers nothing. */
@@ -28,18 +28,18 @@ describe("cloneProject", () => {
     const parent = fs.realpathSync.native(root());
     const calls: string[][] = [];
     const store = new EngineStore(root(), () => 100, { git: cloningGit(calls) });
-    const project = await store.cloneProject({ url: "https://github.com/owner/repo.git", parent });
+    const project = await store.sessionGit.cloneProject({ url: "https://github.com/owner/repo.git", parent });
     expect(project).toMatchObject({ name: "repo", root: path.join(parent, "repo") });
     // And it is in the registry, which is the half a two-call client could miss.
-    expect(store.listProjects().map((entry) => entry.id)).toEqual([project.id]);
+    expect(store.projectRegistry.list().map((entry) => entry.id)).toEqual([project.id]);
     expect(calls[0]).toEqual(["clone", "--", "https://github.com/owner/repo.git", path.join(parent, "repo")]);
   });
 
   test("a name can be given, and a blank one falls back to the folder", async () => {
     const parent = fs.realpathSync.native(root());
     const store = new EngineStore(root(), () => 100, { git: cloningGit() });
-    expect((await store.cloneProject({ url: "https://x.test/a/one.git", parent, name: "Mine" })).name).toBe("Mine");
-    expect((await store.cloneProject({ url: "https://x.test/a/two.git", parent, name: "   " })).name).toBe("two");
+    expect((await store.sessionGit.cloneProject({ url: "https://x.test/a/one.git", parent, name: "Mine" })).name).toBe("Mine");
+    expect((await store.sessionGit.cloneProject({ url: "https://x.test/a/two.git", parent, name: "   " })).name).toBe("two");
   });
 
   test("a clone that failed registers nothing, and says why in git's own words", async () => {
@@ -47,8 +47,8 @@ describe("cloneProject", () => {
     const store = new EngineStore(root(), () => 100, {
       git: () => ({ status: 128, stdout: "", stderr: "fatal: repository not found\n" }),
     });
-    await expect(store.cloneProject({ url: "https://x.test/a/gone.git", parent })).rejects.toThrow(/repository not found/);
-    expect(store.listProjects()).toEqual([]);
+    await expect(store.sessionGit.cloneProject({ url: "https://x.test/a/gone.git", parent })).rejects.toThrow(/repository not found/);
+    expect(store.projectRegistry.list()).toEqual([]);
   });
 
   test("a target that already exists is a conflict rather than a merge into it", async () => {
@@ -56,7 +56,7 @@ describe("cloneProject", () => {
     fs.mkdirSync(path.join(parent, "repo"));
     const calls: string[][] = [];
     const store = new EngineStore(root(), () => 100, { git: cloningGit(calls) });
-    await expect(store.cloneProject({ url: "https://x.test/a/repo.git", parent })).rejects.toThrow(EngineStateError);
+    await expect(store.sessionGit.cloneProject({ url: "https://x.test/a/repo.git", parent })).rejects.toThrow(EngineStateError);
     // Refused before git ran, so nothing was written into somebody's folder.
     expect(calls).toEqual([]);
   });
@@ -68,13 +68,13 @@ test("the gitignore write has an undo, and it is the project's own block only", 
   const projectRoot = fs.realpathSync.native(root());
   fs.writeFileSync(path.join(projectRoot, ".gitignore"), "node_modules/\n");
   const store = new EngineStore(root(), () => 100, { git: () => ({ status: 0, stdout: "", stderr: "" }) });
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
 
-  const added = store.projectGitignore("project_one");
+  const added = store.sessionGit.gitignore("project_one");
   expect(added.added.length).toBeGreaterThan(0);
-  const removal = store.undoProjectGitignore("project_one");
+  const removal = store.sessionGit.undoGitignore("project_one");
   expect(removal.removed).toEqual(added.added);
   expect(fs.readFileSync(path.join(projectRoot, ".gitignore"), "utf8")).toBe("node_modules/\n");
   // Twice is not an error: the toast may arrive after a hand edit.
-  expect(store.undoProjectGitignore("project_one").removed).toEqual([]);
+  expect(store.sessionGit.undoGitignore("project_one").removed).toEqual([]);
 });

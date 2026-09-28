@@ -19,7 +19,7 @@ describe("creating a session", () => {
     const id = created.json!.id as string;
     expect(created.json!.envMode).toBe("worktree");
     expect(created.json!.branch).toBe(`telar/port-the-parser-${id.replace(/^session_/, "").slice(0, 6)}`);
-    const session = store.getSession(id);
+    const session = store.records.get(id);
     expect(session.preparation).toMatchObject({ state: "preparing" });
     await worktreeReady(store, id);
     expect(fs.existsSync(path.join(workspacePath(session.workspace)!, "README.md"))).toBe(true);
@@ -30,20 +30,20 @@ describe("creating a session", () => {
   test("a local session shares the project's checkout, and says so", async () => {
     const { store, projectId, projectRoot } = engine();
     const created = await call(wall(store), "sessions_create", { projectId, envMode: "local" });
-    expect(workspacePath(store.getSession(created.json!.id as string).workspace)).toBe(fs.realpathSync(projectRoot));
+    expect(workspacePath(store.records.get(created.json!.id as string).workspace)).toBe(fs.realpathSync(projectRoot));
     expect(created.json!.branch).toBeUndefined();
   });
 
   test("NOTHING records who created it — no parent, no child, no link", async () => {
     const { store, projectId } = engine();
     const tools = wall(store);
-    const creator = store.createSession({ projectId, title: "the one doing the asking" });
+    const creator = store.lifecycle.createSession({ projectId, title: "the one doing the asking" });
     const created = await call(tools, "sessions_create", { projectId, envMode: "local" });
     const madeId = created.json!.id as string;
 
     const stored = fs.readFileSync(path.join(store.paths.sessions, madeId, "session.json"), "utf8");
     expect(stored).not.toContain(creator.id);
-    expect(store.getSession(madeId).origin).toBe("session");
+    expect(store.records.get(madeId).origin).toBe("session");
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
       "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
     ]);
@@ -73,11 +73,11 @@ describe("there is no cap on creation", () => {
 
   test("a refused create leaves NO worktree behind", async () => {
     const { store, projectId } = engine();
-    const made = store.createSession({ projectId, envMode: "worktree", origin: "session" });
+    const made = store.lifecycle.createSession({ projectId, envMode: "worktree", origin: "session" });
     await worktreeReady(store, made.id);
     const worktrees = path.join(store.paths.root, "worktrees");
     const before = fs.readdirSync(worktrees).length;
-    expect(() => store.createSession({ projectId: "project_nope", envMode: "worktree", origin: "session" })).toThrow();
+    expect(() => store.lifecycle.createSession({ projectId: "project_nope", envMode: "worktree", origin: "session" })).toThrow();
     expect(fs.readdirSync(worktrees).length).toBe(before);
   });
 });
@@ -94,8 +94,8 @@ describe("a session whose checkout failed", () => {
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree", title: "port the parser" })).json!.id as string;
     await worktreeReady(store, id);
-    expect(store.getSession(id).preparation?.state).toBe("failed");
-    store.submitTurn(id, { runId: "run_one", input: "start" });
+    expect(store.records.get(id).preparation?.state).toBe("failed");
+    store.intake.submitTurn(id, { runId: "run_one", input: "start" });
     return { store, tools, id };
   }
 
@@ -137,7 +137,7 @@ describe("a session whose checkout failed", () => {
     const { store, projectId } = engine({ asyncGit: hanging });
     const tools = wall(store);
     const id = (await call(tools, "sessions_create", { projectId, envMode: "worktree" })).json!.id as string;
-    store.submitTurn(id, { runId: "run_one", input: "start" });
+    store.intake.submitTurn(id, { runId: "run_one", input: "start" });
 
     const status = await call(tools, "sessions_status", { sessionId: id });
     expect(status.json!.running).toBe(false);

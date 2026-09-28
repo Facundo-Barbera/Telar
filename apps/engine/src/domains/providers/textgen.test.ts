@@ -73,44 +73,44 @@ test("the prompt carries the message, bounded", () => {
 describe("text generation policy", () => {
   test("defaults, round trip, and a driver change dropping the model", () => {
     const store = new EngineStore(tmp("telar-tg-state-"), () => 100);
-    expect(store.getTextGenPolicy()).toEqual(DEFAULT_TEXT_GEN_POLICY);
-    expect(store.setTextGenPolicy({ titles: false, model: "sonnet" })).toEqual({ ...DEFAULT_TEXT_GEN_POLICY, titles: false, model: "sonnet" });
-    expect(store.setTextGenPolicy({ renameBranches: false }).model).toBe("sonnet");
-    const swapped = store.setTextGenPolicy({ driver: "codex" });
+    expect(store.settings.textGen()).toEqual(DEFAULT_TEXT_GEN_POLICY);
+    expect(store.settings.setTextGen({ titles: false, model: "sonnet" })).toEqual({ ...DEFAULT_TEXT_GEN_POLICY, titles: false, model: "sonnet" });
+    expect(store.settings.setTextGen({ renameBranches: false }).model).toBe("sonnet");
+    const swapped = store.settings.setTextGen({ driver: "codex" });
     expect(swapped.driver).toBe("codex");
     expect(swapped.model).toBeUndefined();
-    expect(store.setTextGenPolicy({ model: null }).model).toBeUndefined();
+    expect(store.settings.setTextGen({ model: null }).model).toBeUndefined();
   });
 
   test("refuses shapes that are not the policy's", () => {
     const store = new EngineStore(tmp("telar-tg-state-"), () => 100);
-    expect(() => store.setTextGenPolicy({ driver: "cursor" })).toThrow(EngineStateError);
-    expect(() => store.setTextGenPolicy({ titles: "yes" })).toThrow(EngineStateError);
-    expect(() => store.setTextGenPolicy({ model: "" })).toThrow(EngineStateError);
+    expect(() => store.settings.setTextGen({ driver: "cursor" })).toThrow(EngineStateError);
+    expect(() => store.settings.setTextGen({ titles: "yes" })).toThrow(EngineStateError);
+    expect(() => store.settings.setTextGen({ model: "" })).toThrow(EngineStateError);
   });
 
   test("a mangled file costs the preference, never a throw", () => {
     const stateRoot = tmp("telar-tg-state-");
     const store = new EngineStore(stateRoot, () => 100);
     fs.writeFileSync(path.join(stateRoot, "text-generation.json"), "not json at all");
-    expect(store.getTextGenPolicy()).toEqual(DEFAULT_TEXT_GEN_POLICY);
+    expect(store.settings.textGen()).toEqual(DEFAULT_TEXT_GEN_POLICY);
   });
 });
 
 describe("refreshWorktreeBranchFromTitle", () => {
   async function worktreeSession(title: string): Promise<{ store: EngineStore; id: string }> {
     const store = new EngineStore(tmp("telar-tg-state-"), () => 100);
-    store.registerProject({ id: "project_one", name: "One", root: repo() });
-    const session = store.createSession({ id: "session_abcdef123456", projectId: "project_one", envMode: "worktree", title });
+    store.projectRegistry.register({ id: "project_one", name: "One", root: repo() });
+    const session = store.lifecycle.createSession({ id: "session_abcdef123456", projectId: "project_one", envMode: "worktree", title });
     await worktreeReady(store, session.id);
     return { store, id: session.id };
   }
 
   test("a generated title renames the engine-cut branch, on disk and on the record", async () => {
     const { store, id } = await worktreeSession("please fix the queue refill race in the work");
-    store.updateSession(id, { title: "Queue refill race" });
-    expect(await store.refreshWorktreeBranchFromTitle(id)).toBe("telar/queue-refill-race-abcdef");
-    const session = store.getSession(id);
+    store.lifecycle.updateSession(id, { title: "Queue refill race" });
+    expect(await store.lifecycle.refreshWorktreeBranchFromTitle(id)).toBe("telar/queue-refill-race-abcdef");
+    const session = store.records.get(id);
     if (session.workspace.mode !== "worktree") throw new Error("expected a worktree session");
     expect(session.workspace.branch).toBe("telar/queue-refill-race-abcdef");
     const head = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: session.workspace.path, encoding: "utf8" }).trim();
@@ -119,7 +119,7 @@ describe("refreshWorktreeBranchFromTitle", () => {
 
   test("declines when nothing would change, and never twice", async () => {
     const { store, id } = await worktreeSession("same title");
-    expect(await store.refreshWorktreeBranchFromTitle(id)).toBeUndefined();
+    expect(await store.lifecycle.refreshWorktreeBranchFromTitle(id)).toBeUndefined();
   });
 });
 
@@ -146,16 +146,18 @@ describe("maybeRetitleSession", () => {
     const calls: { generate: unknown[]; updates: { title: string }[]; renamed: string[] } = { generate: [], updates: [], renamed: [] };
     let title = overrides.title ?? "fix the thing";
     const store: RetitleStore = {
-      getTextGenPolicy: () => overrides.policy ?? { titles: true, renameBranches: true, driver: "claude", model: "haiku" },
-      getSession: () => ({ title, state: "active", workspace: { mode: "local", path: "/tmp" } }),
-      resolveProviderInstance: () => ({ enabled: true, env: [{ name: "A", value: "b" }] }),
-      updateSession: (_id, patch) => {
-        calls.updates.push(patch);
-        title = patch.title;
-      },
-      refreshWorktreeBranchFromTitle: (id) => {
-        calls.renamed.push(id);
-        return "telar/renamed";
+      settings: { textGen: () => overrides.policy ?? { titles: true, renameBranches: true, driver: "claude", model: "haiku" } },
+      records: { get: () => ({ title, state: "active", workspace: { mode: "local", path: "/tmp" } }) },
+      providers: { resolve: () => ({ enabled: true, env: [{ name: "A", value: "b" }] }) },
+      lifecycle: {
+        updateSession: (_id, patch) => {
+          calls.updates.push(patch);
+          title = patch.title;
+        },
+        refreshWorktreeBranchFromTitle: (id) => {
+          calls.renamed.push(id);
+          return "telar/renamed";
+        },
       },
     };
     const generate = (input: unknown) => {

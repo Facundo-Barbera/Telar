@@ -264,7 +264,7 @@ describe("the protocol surface", () => {
 
     // AND NOTHING WAS WRITTEN. The refusal is the whole of it — a row left
     // behind by a refused call is exactly the outliving work this guards.
-    expect(daemon.store.listSchedules()).toEqual([]);
+    expect(daemon.store.schedules.list()).toEqual([]);
   });
 
   test("an argument the wall's schema refuses never reaches a handler", async () => {

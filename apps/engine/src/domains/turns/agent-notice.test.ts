@@ -34,11 +34,11 @@ function setup() {
   homes.push(home);
   const store = new EngineStore(home, Date.now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  for (const id of ["session_host", "session_worker"]) store.createSession({ id, projectId: "project_one" });
-  store.submitTurn("session_worker", { runId: "run_source", input: "work" });
-  const claimToken = store.claimTurn("session_worker", "worker_one")!.claim!.token;
-  store.markRunning("session_worker", "run_source", claimToken);
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  for (const id of ["session_host", "session_worker"]) store.lifecycle.createSession({ id, projectId: "project_one" });
+  store.intake.submitTurn("session_worker", { runId: "run_source", input: "work" });
+  const claimToken = store.claims.claimTurn("session_worker", "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning("session_worker", "run_source", claimToken);
   return { store, home, proof: { sessionId: "session_worker", runId: "run_source", claimToken } };
 }
 
@@ -47,7 +47,7 @@ const REPORT = `Run Configurations now round-trip through the store\n\n${"Every 
 
 test("a report is stored whole and handed to the model as one line naming the fetch", () => {
   const { store, proof } = setup();
-  const { turn } = store.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof);
+  const { turn } = store.intake.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof);
   // THE BODY IS NOT ABRIDGED. This is the half of the trade that makes the
   // other half safe: the notice can be short because nothing was lost.
   expect(turn.input).toBe(REPORT);
@@ -71,7 +71,7 @@ test("a report is stored whole and handed to the model as one line naming the fe
 
 test("a peer's message lands as a notification ITEM, not as the person's bubble", () => {
   const { store, proof } = setup();
-  store.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof);
+  store.intake.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof);
   const items = store.items("session_host").filter((item) => item.runId === "run_report");
   const row = items.find((item) => item.detail.type === "notification")!;
   expect(row).toBeDefined();
@@ -87,7 +87,7 @@ test("a peer's message lands as a notification ITEM, not as the person's bubble"
 
 test("one mint serves all four readers: the model's line and the row's line are the same string", () => {
   const { store, proof } = setup();
-  const { turn } = store.submitAgentTurn("session_host", { runId: "run_task", input: REPORT, intent: "task" }, proof);
+  const { turn } = store.intake.submitAgentTurn("session_host", { runId: "run_task", input: REPORT, intent: "task" }, proof);
   const detail = turn.notification!;
   // The ONE promise this file's header makes — the driver, the desktop
   // transcript, the phone and a later `sessions_read` look at one sentence.
@@ -120,7 +120,7 @@ test("the size is the whole body's, and it is the only thing the body contribute
 test("a task names the assignment and the fetch, and quotes none of it", () => {
   const { store, proof } = setup();
   const body = `Rewrite the parser's error recovery.\nIt currently swallows the column.\n\n${"Background nobody needs up front. ".repeat(100)}`;
-  const { turn } = store.submitAgentTurn(
+  const { turn } = store.intake.submitAgentTurn(
     "session_host",
     { runId: "run_task", input: body, intent: "task", scope: "packages/core/src/parser" },
     proof,
@@ -273,7 +273,7 @@ test("the headline fits a row, at the longest any of it can be", () => {
 test("a blocker reads as a blocker, and an unattributed sender is named as one", () => {
   const { store } = setup();
   // No proof: the outward sessions socket, an agent with no session to be.
-  const { turn } = store.submitAgentTurn("session_host", { runId: "run_block", input: "The build host is out of disk.", intent: "blocker" });
+  const { turn } = store.intake.submitAgentTurn("session_host", { runId: "run_block", input: "The build host is out of disk.", intent: "blocker" });
   expect(turn.agentNotice).toStartWith(
     "[agent message · blocker] an agent outside any session (the sessions socket) reports a BLOCKER needing this session's intervention (run run_block,",
   );
@@ -286,12 +286,12 @@ test("a blocker reads as a blocker, and an unattributed sender is named as one",
 
 test("the notice is what steers a busy recipient, so timing cannot change the cost", () => {
   const { store, proof } = setup();
-  store.submitTurn("session_host", { runId: "run_host", input: "coordinate" });
-  const token = store.claimTurn("session_host", "worker_two")!.claim!.token;
-  store.markRunning("session_host", "run_host", token);
-  const { turn } = store.submitAgentTurn("session_host", { runId: "run_task", input: REPORT, intent: "task" }, proof);
+  store.intake.submitTurn("session_host", { runId: "run_host", input: "coordinate" });
+  const token = store.claims.claimTurn("session_host", "worker_two")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", "run_host", token);
+  const { turn } = store.intake.submitAgentTurn("session_host", { runId: "run_task", input: REPORT, intent: "task" }, proof);
   expect(turn.state).toBe("steering");
-  const [delivery] = store.steerForWorker("worker_two");
+  const [delivery] = store.worker.steerForWorker("worker_two");
   // The BODY still rides `text` — the transcript row expands to it — while the
   // notice is what the driver composes the provider's words from.
   expect(delivery!.text).toBe(REPORT);
@@ -306,8 +306,8 @@ test("the notice is what steers a busy recipient, so timing cannot change the co
 
 test("a wake arrives as a notification: the engine's prose leaves the person's slot", () => {
   const { store, proof } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_worker", once: true });
-  store.completeTurn("session_worker", "run_source", proof.claimToken, { text: "done" });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_worker", once: true });
+  store.turnLifecycle.completeTurn("session_worker", "run_source", proof.claimToken, { text: "done" });
   const wake = store.turns("session_host")[0]!;
   expect(wake.agentNotice).toBeUndefined();
   // `input` IS A MACHINE LABEL NOW, not engine prose in the slot a person's
@@ -329,7 +329,7 @@ test("a wake arrives as a notification: the engine's prose leaves the person's s
 
 test("a human's message carries no notice and reaches the model as typed", () => {
   const { store } = setup();
-  store.submitTurn("session_host", { runId: "run_human", input: "please fix the editor" });
+  store.intake.submitTurn("session_host", { runId: "run_human", input: "please fix the editor" });
   const turn = store.turns("session_host").find((candidate) => candidate.runId === "run_human")!;
   expect(turn.agentNotice).toBeUndefined();
   expect(turn.origin).toBeUndefined();
@@ -347,7 +347,7 @@ test("an agent turn stored before notices existed still frames as a peer's own w
 
 test("the notice survives a restart, because it is stored rather than derived", () => {
   const { store, home, proof } = setup();
-  const minted = store.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof).turn.agentNotice;
+  const minted = store.intake.submitAgentTurn("session_host", { runId: "run_report", input: REPORT }, proof).turn.agentNotice;
   store.closeExecutionStore();
   const reopened = new EngineStore(home);
   stores.push(reopened);

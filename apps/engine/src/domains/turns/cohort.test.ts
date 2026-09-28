@@ -28,13 +28,13 @@ function setup() {
   const clock = { advance: (ms: number) => (now += ms) };
   const store = new EngineStore(home, () => now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  for (const id of ["session_host", "session_a", "session_b", "session_c"]) store.createSession({ id, projectId: "project_one", title: id.replace("session_", "worker ") });
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  for (const id of ["session_host", "session_a", "session_b", "session_c"]) store.lifecycle.createSession({ id, projectId: "project_one", title: id.replace("session_", "worker ") });
   /** Telar restarting: the same home, a new engine, and its boot sweep. */
   const restart = () => {
     const next = new EngineStore(home, () => now);
     stores.push(next);
-    next.recover();
+    next.recovery.recover();
     return next;
   };
   return { store, clock, restart, home, now: () => now };
@@ -42,15 +42,15 @@ function setup() {
 
 /** Start a run on a member, as if the host's task had just been claimed. */
 function start(store: EngineStore, sessionId: string, runId: string) {
-  store.submitTurn(sessionId, { runId, input: "work" });
-  const token = store.claimTurn(sessionId, "worker_child")!.claim!.token;
-  store.markRunning(sessionId, runId, token);
+  store.intake.submitTurn(sessionId, { runId, input: "work" });
+  const token = store.claims.claimTurn(sessionId, "worker_child")!.claim!.token;
+  store.turnLifecycle.markRunning(sessionId, runId, token);
   const proof = { sessionId, runId, claimToken: token };
   return {
     send: (intent: "result" | "blocker" | "report", text: string) =>
-      store.submitAgentTurn("session_host", { runId: `run_msg_${runId}_${intent}`, input: text, intent }, proof),
-    complete: (text = "done") => store.completeTurn(sessionId, runId, token, { text }),
-    fail: () => store.failTurn(sessionId, runId, token, { code: "driver_failed", message: "the CLI died" }),
+      store.intake.submitAgentTurn("session_host", { runId: `run_msg_${runId}_${intent}`, input: text, intent }, proof),
+    complete: (text = "done") => store.turnLifecycle.completeTurn(sessionId, runId, token, { text }),
+    fail: () => store.turnLifecycle.failTurn(sessionId, runId, token, { code: "driver_failed", message: "the CLI died" }),
     token,
   };
 }
@@ -63,7 +63,7 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   const a = start(store, "session_a", "run_a");
   const b = start(store, "session_b", "run_b");
   const c = start(store, "session_c", "run_c");
-  const cohort = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_c"] });
+  const cohort = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_c"] });
   expect(cohort.members.every((member) => !member.outcome)).toBe(true);
 
   a.send("result", "Merged #12; CI green.\nDetails follow.");
@@ -72,7 +72,7 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   // Two of three done, and nothing has woken the host: the result is held.
   expect(woken(store)).toHaveLength(0);
   expect(store.turns("session_host").find((turn) => turn.runId === "run_msg_run_a_result")!.agentDelivery).toBe("passive");
-  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
 
   c.complete("Refactored the parser.");
   const delivered = woken(store);
@@ -90,14 +90,14 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   // The last to finish leads.
   expect(delivered[0]!.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_c", runId: "run_c" });
   // Delivered means gone.
-  expect(store.cohortsFor("session_host")).toHaveLength(0);
+  expect(store.subscriptions.cohortsFor("session_host")).toHaveLength(0);
 });
 
 test("a blocker passes through at once, and its member stays pending until answered", () => {
   const { store } = setup();
   const a = start(store, "session_a", "run_a");
   const b = start(store, "session_b", "run_b");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
 
   a.send("blocker", "Which database?");
   // IMMEDIATELY: a wake of its own, not held for the cohort.
@@ -106,18 +106,18 @@ test("a blocker passes through at once, and its member stays pending until answe
   a.complete("waiting on the host");
   b.complete();
   expect(woken(store)).toHaveLength(1);
-  expect(store.cohortsFor("session_host")[0]!.members.find((member) => member.sessionId === "session_a")).toMatchObject({ blocked: true });
+  expect(store.subscriptions.cohortsFor("session_host")[0]!.members.find((member) => member.sessionId === "session_a")).toMatchObject({ blocked: true });
 
   // The host answers. Now on the host's errand, the member's turn ending is
   // not its end — its result is.
-  const host = store.claimTurn("session_host", "worker_host")!;
-  store.markRunning("session_host", host.runId, host.claim!.token);
-  store.submitAgentTurn("session_a", { runId: "run_answer", input: "postgres", intent: "task" }, { sessionId: "session_host", runId: host.runId, claimToken: host.claim!.token });
-  store.completeTurn("session_host", host.runId, host.claim!.token, { text: "answered" });
-  const next = store.claimTurn("session_a", "worker_child")!;
-  store.markRunning("session_a", next.runId, next.claim!.token);
-  store.submitAgentTurn("session_host", { runId: "run_msg_answer_result", input: "Used postgres.", intent: "result" }, { sessionId: "session_a", runId: next.runId, claimToken: next.claim!.token });
-  store.completeTurn("session_a", next.runId, next.claim!.token, { text: "Result sent." });
+  const host = store.claims.claimTurn("session_host", "worker_host")!;
+  store.turnLifecycle.markRunning("session_host", host.runId, host.claim!.token);
+  store.intake.submitAgentTurn("session_a", { runId: "run_answer", input: "postgres", intent: "task" }, { sessionId: "session_host", runId: host.runId, claimToken: host.claim!.token });
+  store.turnLifecycle.completeTurn("session_host", host.runId, host.claim!.token, { text: "answered" });
+  const next = store.claims.claimTurn("session_a", "worker_child")!;
+  store.turnLifecycle.markRunning("session_a", next.runId, next.claim!.token);
+  store.intake.submitAgentTurn("session_host", { runId: "run_msg_answer_result", input: "Used postgres.", intent: "result" }, { sessionId: "session_a", runId: next.runId, claimToken: next.claim!.token });
+  store.turnLifecycle.completeTurn("session_a", next.runId, next.claim!.token, { text: "Result sent." });
 
   const cohortTurns = woken(store).filter((turn) => turn.notification?.cohortId);
   expect(cohortTurns).toHaveLength(1);
@@ -126,12 +126,12 @@ test("a blocker passes through at once, and its member stays pending until answe
 
 test("a parked request passes through at once", () => {
   const { store } = setup();
-  store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
-  store.submitTurn("session_a", { runId: "run_a", input: "work" });
-  const token = store.claimTurn("session_a", "worker_child")!.claim!.token;
-  store.markRunning("session_a", "run_a", token);
-  store.updateSession("session_a", { runtimeMode: "approval-required" });
-  store.openRequest("session_a", "run_a", token, {
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  store.intake.submitTurn("session_a", { runId: "run_a", input: "work" });
+  const token = store.claims.claimTurn("session_a", "worker_child")!.claim!.token;
+  store.turnLifecycle.markRunning("session_a", "run_a", token);
+  store.lifecycle.updateSession("session_a", { runtimeMode: "approval-required" });
+  store.requestGate.open("session_a", "run_a", token, {
     requestId: "req_a",
     kind: "user_input",
     detail: { kind: "user_input", prompt: "Which?", fields: [{ key: "k", label: "K", kind: "choice", choices: ["x"] }] },
@@ -139,39 +139,39 @@ test("a parked request passes through at once", () => {
   const wakes = woken(store);
   expect(wakes).toHaveLength(1);
   expect(wakes[0]!.wakeReason).toMatchObject({ kind: "request_opened", sessionId: "session_a", requestId: "req_a" });
-  expect(store.cohortsFor("session_host")).toHaveLength(1);
+  expect(store.subscriptions.cohortsFor("session_host")).toHaveLength(1);
 });
 
 test("expiry delivers what arrived and names who is still pending", () => {
   const { store, clock } = setup();
   const a = start(store, "session_a", "run_a");
   start(store, "session_b", "run_b");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"], timeoutMinutes: 30 });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"], timeoutMinutes: 30 });
   a.send("result", "Done with A.");
 
   clock.advance(29 * 60_000);
-  expect(store.sweepCohorts()).toEqual([]);
+  expect(store.subscriptions.sweepCohorts()).toEqual([]);
   expect(woken(store)).toHaveLength(0);
 
   clock.advance(60_000);
-  expect(store.sweepCohorts()).toHaveLength(1);
+  expect(store.subscriptions.sweepCohorts()).toHaveLength(1);
   const [turn] = woken(store);
   expect(turn!.notification!.body.startsWith("[cohort expired · 1 of 2 sessions finished in 30 min]")).toBe(true);
   expect(turn!.notification!.body).toContain('session_b "worker b" — STILL PENDING (no result sent)');
   expect(turn!.notification!.body).toContain("subscribe again with the pending ones");
-  expect(store.cohortsFor("session_host")).toHaveLength(0);
+  expect(store.subscriptions.cohortsFor("session_host")).toHaveLength(0);
 });
 
 test("a member settled or deleted before it reported ends its wait", () => {
   const { store } = setup();
   const a = start(store, "session_a", "run_a");
   start(store, "session_b", "run_b");
-  store.createSession({ id: "session_d", projectId: "project_one", title: "worker d" });
-  store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_d"] });
+  store.lifecycle.createSession({ id: "session_d", projectId: "project_one", title: "worker d" });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_d"] });
   a.complete("A finished.");
-  store.updateSession("session_b", { settledOverride: "settled" });
+  store.lifecycle.updateSession("session_b", { settledOverride: "settled" });
   expect(woken(store)).toHaveLength(0);
-  store.deleteSession("session_d");
+  store.lifecycle.deleteSession("session_d");
 
   const [turn] = woken(store);
   expect(turn!.notification!.body).toContain('session_b "worker b" — settled before it reported');
@@ -181,34 +181,34 @@ test("a member settled or deleted before it reported ends its wait", () => {
 test("a cohort closing while the host is busy waits for it to settle, as its own turn", () => {
   const { store } = setup();
   const a = start(store, "session_a", "run_a");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
-  store.submitTurn("session_host", { runId: "run_host", input: "a long think" });
-  const host = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", "run_host", host);
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  store.intake.submitTurn("session_host", { runId: "run_host", input: "a long think" });
+  const host = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", "run_host", host);
 
   a.complete("A finished.");
   expect(store.turns("session_host").some((turn) => turn.notification?.cohortId)).toBe(false);
-  expect(store.cohortsFor("session_host")[0]!.ready).toBe("all");
+  expect(store.subscriptions.cohortsFor("session_host")[0]!.ready).toBe("all");
 
-  store.completeTurn("session_host", "run_host", host, { text: "thought" });
+  store.turnLifecycle.completeTurn("session_host", "run_host", host, { text: "thought" });
   expect(woken(store).filter((turn) => turn.notification?.cohortId)).toHaveLength(1);
-  expect(store.cohortsFor("session_host")).toHaveLength(0);
+  expect(store.subscriptions.cohortsFor("session_host")).toHaveLength(0);
 });
 
 /** The host hands `sessionId` an errand; returns the member's claimed run on it. */
 function errand(store: EngineStore, sessionId: string) {
-  const host = store.submitTurn("session_host", { runId: `run_host_${sessionId}`, input: "fan out" });
-  const claim = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", host.turn.runId, claim);
-  store.submitAgentTurn(sessionId, { runId: `run_task_${sessionId}`, input: "do it", intent: "task" }, { sessionId: "session_host", runId: host.turn.runId, claimToken: claim });
-  store.completeTurn("session_host", host.turn.runId, claim, { text: "dispatched" });
-  const child = store.claimTurn(sessionId, "worker_child")!;
-  store.markRunning(sessionId, child.runId, child.claim!.token);
+  const host = store.intake.submitTurn("session_host", { runId: `run_host_${sessionId}`, input: "fan out" });
+  const claim = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", host.turn.runId, claim);
+  store.intake.submitAgentTurn(sessionId, { runId: `run_task_${sessionId}`, input: "do it", intent: "task" }, { sessionId: "session_host", runId: host.turn.runId, claimToken: claim });
+  store.turnLifecycle.completeTurn("session_host", host.turn.runId, claim, { text: "dispatched" });
+  const child = store.claims.claimTurn(sessionId, "worker_child")!;
+  store.turnLifecycle.markRunning(sessionId, child.runId, child.claim!.token);
   const proof = { sessionId, runId: child.runId, claimToken: child.claim!.token };
   return {
-    result: (text: string) => store.submitAgentTurn("session_host", { runId: `run_result_${sessionId}`, input: text, intent: "result" }, proof),
-    complete: (text: string) => store.completeTurn(sessionId, child.runId, child.claim!.token, { text }),
-    fail: () => store.failTurn(sessionId, child.runId, child.claim!.token, { code: "driver_failed", message: "the CLI died" }),
+    result: (text: string) => store.intake.submitAgentTurn("session_host", { runId: `run_result_${sessionId}`, input: text, intent: "result" }, proof),
+    complete: (text: string) => store.turnLifecycle.completeTurn(sessionId, child.runId, child.claim!.token, { text }),
+    fail: () => store.turnLifecycle.failTurn(sessionId, child.runId, child.claim!.token, { code: "driver_failed", message: "the CLI died" }),
   };
 }
 
@@ -216,7 +216,7 @@ test("a member that only ENDED A TURN on the host's errand is not done at subscr
   const { store } = setup();
   // Mid-errand: the worker ended its turn waiting on CI, and sent no result.
   errand(store, "session_a").complete("Waiting on CI.");
-  const cohort = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  const cohort = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
   expect(cohort.members.find((member) => member.sessionId === "session_a")!.outcome).toBeUndefined();
   expect(woken(store).filter((turn) => turn.notification?.cohortId)).toHaveLength(0);
 });
@@ -226,7 +226,7 @@ test("a member whose result is already in is done at once", () => {
   const a = errand(store, "session_a");
   a.result("A was quick.");
   a.complete("Result sent.");
-  const cohort = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  const cohort = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
   expect(cohort.members.find((member) => member.sessionId === "session_a")).toMatchObject({ outcome: "result", firstLine: "A was quick." });
   // session_b was never given anything by the host: pending.
   expect(cohort.members.find((member) => member.sessionId === "session_b")!.outcome).toBeUndefined();
@@ -236,18 +236,18 @@ test("on an errand, done is a result, a failure or a stop — never a turn that 
   const { store } = setup();
   const a = errand(store, "session_a");
   const b = errand(store, "session_b");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
 
   a.complete("Pushed; waiting on CI.");
-  expect(store.cohortsFor("session_host")[0]!.members.every((member) => !member.outcome)).toBe(true);
+  expect(store.subscriptions.cohortsFor("session_host")[0]!.members.every((member) => !member.outcome)).toBe(true);
   b.fail();
-  expect(store.cohortsFor("session_host")[0]!.members.find((member) => member.sessionId === "session_b")!.outcome).toBe("failed");
+  expect(store.subscriptions.cohortsFor("session_host")[0]!.members.find((member) => member.sessionId === "session_b")!.outcome).toBe("failed");
 
   // A's CI finishes in a later turn, and its result is what ends the wait.
-  store.submitTurn("session_a", { runId: "run_a_ci", input: "CI is green" });
-  const later = store.claimTurn("session_a", "worker_child")!;
-  store.markRunning("session_a", later.runId, later.claim!.token);
-  store.submitAgentTurn("session_host", { runId: "run_a_final", input: "PR green.", intent: "result" }, { sessionId: "session_a", runId: later.runId, claimToken: later.claim!.token });
+  store.intake.submitTurn("session_a", { runId: "run_a_ci", input: "CI is green" });
+  const later = store.claims.claimTurn("session_a", "worker_child")!;
+  store.turnLifecycle.markRunning("session_a", later.runId, later.claim!.token);
+  store.intake.submitAgentTurn("session_host", { runId: "run_a_final", input: "PR green.", intent: "result" }, { sessionId: "session_a", runId: later.runId, claimToken: later.claim!.token });
   const [turn] = woken(store).filter((each) => each.notification?.cohortId);
   expect(turn!.notification!.body).toContain('session_a "worker a" — result: PR green.');
   expect(turn!.notification!.body).toContain('session_b "worker b" — FAILED');
@@ -256,7 +256,7 @@ test("on an errand, done is a result, a failure or a stop — never a turn that 
 test("a failed turn ends even a blocked member's wait", () => {
   const { store } = setup();
   const a = start(store, "session_a", "run_a");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   a.send("blocker", "Which database?");
   a.fail();
   const [turn] = woken(store).filter((each) => each.notification?.cohortId);
@@ -265,19 +265,19 @@ test("a failed turn ends even a blocked member's wait", () => {
 
 test("unsubscribing takes a cohort id; a session cannot be in its own cohort", () => {
   const { store } = setup();
-  const cohort = store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
-  expect(store.unsubscribe(cohort.id, "session_a")).toBe(false);
-  expect(store.unsubscribe(cohort.id, "session_host")).toBe(true);
-  expect(store.cohortsFor("session_host")).toHaveLength(0);
-  expect(() => store.subscribeCohort("session_host", { sessionIds: ["session_host"] })).toThrow("its own cohort");
-  expect(() => store.subscribeCohort("session_host", { sessionIds: ["session_a"], timeoutMinutes: 0 })).toThrow("timeoutMinutes");
+  const cohort = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  expect(store.subscriptions.unsubscribe(cohort.id, "session_a")).toBe(false);
+  expect(store.subscriptions.unsubscribe(cohort.id, "session_host")).toBe(true);
+  expect(store.subscriptions.cohortsFor("session_host")).toHaveLength(0);
+  expect(() => store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_host"] })).toThrow("its own cohort");
+  expect(() => store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"], timeoutMinutes: 0 })).toThrow("timeoutMinutes");
 });
 
 test("the host reads as waiting while a cohort member is working", () => {
   const { store } = setup();
   start(store, "session_a", "run_a");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
-  expect(store.getSession("session_host").activity).toBe("waiting");
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  expect(store.records.get("session_host").activity).toBe("waiting");
 });
 
 test("a cohort's close merged under a later wake still names its cohort and when it opened", () => {
@@ -300,7 +300,7 @@ test("a cohort's close merged under a later wake still names its cohort and when
 test("a cohort of ONE quotes what its member said, like the single wake it replaces", () => {
   const { store } = setup();
   const a = start(store, "session_a", "run_a");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   const long = `PR #7 is green.\n${"detail ".repeat(400)}`;
   a.send("result", long);
   a.complete();
@@ -313,7 +313,7 @@ test("a cohort of ONE quotes what its member said, like the single wake it repla
   const two = setup();
   const x = start(two.store, "session_a", "run_x");
   const y = start(two.store, "session_b", "run_y");
-  two.store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  two.store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
   x.send("result", long);
   y.send("result", "Done.");
   x.complete();
@@ -323,31 +323,31 @@ test("a cohort of ONE quotes what its member said, like the single wake it repla
 
 /** The host tasks `sessionId` (run ids suffixed by `tag`); returns the member's claimed run. */
 function task(store: EngineStore, sessionId: string, tag: string) {
-  const host = store.submitTurn("session_host", { runId: `run_host_${tag}`, input: "fan out" });
-  const claim = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", host.turn.runId, claim);
-  store.submitAgentTurn(sessionId, { runId: `run_task_${tag}`, input: "do it", intent: "task" }, { sessionId: "session_host", runId: host.turn.runId, claimToken: claim });
-  store.completeTurn("session_host", host.turn.runId, claim, { text: "dispatched" });
-  const child = store.claimTurn(sessionId, "worker_child")!;
-  store.markRunning(sessionId, child.runId, child.claim!.token);
+  const host = store.intake.submitTurn("session_host", { runId: `run_host_${tag}`, input: "fan out" });
+  const claim = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", host.turn.runId, claim);
+  store.intake.submitAgentTurn(sessionId, { runId: `run_task_${tag}`, input: "do it", intent: "task" }, { sessionId: "session_host", runId: host.turn.runId, claimToken: claim });
+  store.turnLifecycle.completeTurn("session_host", host.turn.runId, claim, { text: "dispatched" });
+  const child = store.claims.claimTurn(sessionId, "worker_child")!;
+  store.turnLifecycle.markRunning(sessionId, child.runId, child.claim!.token);
   return { sessionId, runId: child.runId, claimToken: child.claim!.token };
 }
 
 test("re-subscribing after a restart does not deliver the member's one result twice", () => {
   const { store, restart } = setup();
   task(store, "session_a", "one");
-  const first = store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  const first = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   // Telar restarts: the member's turn is stopped by the boot, not by anyone.
   const after = restart();
   expect(after.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
   // The coordinator re-tasks it and subscribes again.
   const proof = task(after, "session_a", "two");
-  const second = after.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  const second = after.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   expect(second).toMatchObject({ id: first.id, expiresAt: first.expiresAt, alreadySubscribed: true });
-  expect(after.cohortsFor("session_host")).toHaveLength(1);
+  expect(after.subscriptions.cohortsFor("session_host")).toHaveLength(1);
 
-  after.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
-  after.completeTurn("session_a", proof.runId, proof.claimToken, { text: "Result sent." });
+  after.intake.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
+  after.turnLifecycle.completeTurn("session_a", proof.runId, proof.claimToken, { text: "Result sent." });
   const notices = woken(after).filter((turn) => turn.notification?.cohortId);
   expect(notices).toHaveLength(1);
   expect(notices[0]!.notification!.cohortId).toBe(first.id);
@@ -355,39 +355,39 @@ test("re-subscribing after a restart does not deliver the member's one result tw
 
 test("an overlapping cohort takes its members over; the older one keeps the rest", () => {
   const { store } = setup();
-  const older = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
-  const newer = store.subscribeCohort("session_host", { sessionIds: ["session_b", "session_c"] });
+  const older = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  const newer = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_b", "session_c"] });
   expect(newer.alreadySubscribed).toBeUndefined();
   expect(newer.movedFrom).toEqual([older.id]);
-  const open = store.cohortsFor("session_host");
+  const open = store.subscriptions.cohortsFor("session_host");
   expect(open.find((each) => each.id === older.id)!.members.map((member) => member.sessionId)).toEqual(["session_a"]);
   expect(open.find((each) => each.id === newer.id)!.members.map((member) => member.sessionId)).toEqual(["session_b", "session_c"]);
 
   // A superset empties the older cohort, and it goes.
-  const all = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_c"] });
+  const all = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b", "session_c"] });
   expect(new Set(all.movedFrom)).toEqual(new Set([older.id, newer.id]));
-  expect(store.cohortsFor("session_host").map((each) => each.id)).toEqual([all.id]);
+  expect(store.subscriptions.cohortsFor("session_host").map((each) => each.id)).toEqual([all.id]);
 });
 
 test("the same set in another order is the same cohort", () => {
   const { store } = setup();
-  const first = store.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
-  expect(store.subscribeCohort("session_host", { sessionIds: ["session_b", "session_a", "session_b"] })).toMatchObject({ id: first.id, alreadySubscribed: true });
+  const first = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a", "session_b"] });
+  expect(store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_b", "session_a", "session_b"] })).toMatchObject({ id: first.id, alreadySubscribed: true });
 });
 
 test("a restart is not a stop: the cohort survives it, pending, with its original expiry", () => {
   const { store, clock, restart } = setup();
   task(store, "session_a", "one");
-  const cohort = store.subscribeCohort("session_host", { sessionIds: ["session_a"], timeoutMinutes: 60 });
+  const cohort = store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"], timeoutMinutes: 60 });
   clock.advance(10 * 60_000);
   const after = restart();
   expect(after.turns("session_a").at(-1)).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
-  expect(after.cohortsFor("session_host")).toEqual([cohort]);
+  expect(after.subscriptions.cohortsFor("session_host")).toEqual([cohort]);
   clock.advance(49 * 60_000);
-  expect(after.sweepCohorts()).toEqual([]);
+  expect(after.subscriptions.sweepCohorts()).toEqual([]);
 
   const proof = task(after, "session_a", "two");
-  after.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
+  after.intake.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
   const notices = woken(after).filter((turn) => turn.notification?.cohortId);
   expect(notices).toHaveLength(1);
   expect(notices[0]!.notification!.body).toContain('session_a "worker a" — result: Done.');
@@ -397,7 +397,7 @@ test("a member cut off by a restart is pending when subscribed to, not stopped",
   const { store, restart } = setup();
   task(store, "session_a", "one");
   const after = restart();
-  const cohort = after.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  const cohort = after.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   expect(cohort.members[0]!.outcome).toBeUndefined();
   expect(woken(after).filter((turn) => turn.notification?.cohortId)).toHaveLength(0);
 });
@@ -405,9 +405,9 @@ test("a member cut off by a restart is pending when subscribed to, not stopped",
 test("a turn failed as interrupted by a worker shutting down does not end the member's wait", () => {
   const { store } = setup();
   const proof = task(store, "session_a", "one");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
-  store.failTurn("session_a", proof.runId, proof.claimToken, { code: "interrupted", message: "Telar quit while this turn was running." });
-  expect(store.cohortsFor("session_host")[0]!.members[0]!.outcome).toBeUndefined();
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  store.turnLifecycle.failTurn("session_a", proof.runId, proof.claimToken, { code: "interrupted", message: "Telar quit while this turn was running." });
+  expect(store.subscriptions.cohortsFor("session_host")[0]!.members[0]!.outcome).toBeUndefined();
   expect(woken(store).filter((turn) => turn.notification?.cohortId)).toHaveLength(0);
 });
 
@@ -433,29 +433,29 @@ function storeOverlapping(home: string, cohorts: Array<{ id: string; members: st
 test("two cohorts on one member after a restart deliver its one result once", () => {
   const { store, restart, home, now } = setup();
   task(store, "session_a", "one");
-  store.subscribeCohort("session_host", { sessionIds: ["session_a"] });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_a"] });
   storeOverlapping(home, [{ id: "coh_second", members: ["session_a"] }], now());
   const after = restart();
-  expect(after.cohortsFor("session_host")).toHaveLength(2);
+  expect(after.subscriptions.cohortsFor("session_host")).toHaveLength(2);
   const proof = task(after, "session_a", "two");
 
-  after.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
-  after.completeTurn("session_a", proof.runId, proof.claimToken, { text: "Result sent." });
+  after.intake.submitAgentTurn("session_host", { runId: "run_the_result", input: "Done.", intent: "result" }, proof);
+  after.turnLifecycle.completeTurn("session_a", proof.runId, proof.claimToken, { text: "Result sent." });
   expect(woken(after).filter((turn) => turn.notification?.cohortId)).toHaveLength(1);
-  expect(after.cohortsFor("session_host")).toHaveLength(0);
+  expect(after.subscriptions.cohortsFor("session_host")).toHaveLength(0);
 });
 
 test("a later cohort's notice leaves out a member an earlier one already reported", () => {
   const { store, restart, home, now } = setup();
-  store.subscribeCohort("session_host", { sessionIds: ["session_c"] });
+  store.subscriptions.subscribeCohort("session_host", { sessionIds: ["session_c"] });
   storeOverlapping(home, [{ id: "coh_first", members: ["session_a"] }, { id: "coh_both", members: ["session_a", "session_b"] }], now());
   const after = restart();
   const a = task(after, "session_a", "a");
   const b = task(after, "session_b", "b");
 
-  after.submitAgentTurn("session_host", { runId: "run_result_a", input: "A done.", intent: "result" }, a);
+  after.intake.submitAgentTurn("session_host", { runId: "run_result_a", input: "A done.", intent: "result" }, a);
   expect(woken(after).filter((turn) => turn.notification?.cohortId)).toHaveLength(1);
-  after.submitAgentTurn("session_host", { runId: "run_result_b", input: "B done.", intent: "result" }, b);
+  after.intake.submitAgentTurn("session_host", { runId: "run_result_b", input: "B done.", intent: "result" }, b);
   const notices = woken(after).filter((turn) => turn.notification?.cohortId);
   expect(notices).toHaveLength(2);
   expect(notices[1]!.notification!.body).toContain("B done.");

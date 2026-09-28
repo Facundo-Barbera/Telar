@@ -48,8 +48,8 @@ function setup() {
   const clock = { now: START };
   const store = new EngineStore(home, () => clock.now);
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "test", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "test", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   return { store, home, clock };
 }
 
@@ -67,11 +67,11 @@ const wakes = (store: EngineStore, sessionId = "session_one") =>
 test("a snooze that has run out wakes once, stamped at the DEADLINE and not at the tick", () => {
   const { store, clock } = setup();
   const until = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: until });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: until });
 
   // Nothing is owed while it is still sleeping. Without this the test below
   // would pass just as well against a sweep that woke every row it was handed.
-  expect(store.sweepSnoozeWakes()).toEqual([]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual([]);
   expect(wakes(store)).toHaveLength(0);
 
   // THE TICK IS DELIBERATELY LATE. A sweep runs on a cadence, so it always
@@ -79,7 +79,7 @@ test("a snooze that has run out wakes once, stamped at the DEADLINE and not at t
   // ended, or every engine would report when it happened to look.
   const noticedAt = until + 5 * MINUTE;
   clock.now = noticedAt;
-  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
 
   const woke = wakes(store);
   expect(woke).toHaveLength(1);
@@ -89,21 +89,21 @@ test("a snooze that has run out wakes once, stamped at the DEADLINE and not at t
   // both exist would pass against an implementation that stamped `now` twice.
   expect(woke[0]!.at).toBe(noticedAt);
   expect(woke[0]!.at - woke[0]!.wokeAt).toBe(5 * MINUTE);
-  expect(store.getSession("session_one").wokeAt).toBe(until);
+  expect(store.records.get("session_one").wokeAt).toBe(until);
 });
 
 test("sweeping again adds nothing — exactly one signal, however often it runs", () => {
   const { store, clock } = setup();
   const until = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: until });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: until });
   clock.now = until + MINUTE;
-  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
 
   // Four more passes, spread over a day. A row whose wake is recorded is not a
   // candidate any more, so the sweep has nothing to say about it.
   for (const hours of [1, 6, 12, 24]) {
     clock.now = until + hours * HOUR;
-    expect(store.sweepSnoozeWakes()).toEqual([]);
+    expect(store.settler.sweepSnoozeWakes()).toEqual([]);
   }
   expect(wakes(store)).toHaveLength(1);
 });
@@ -111,9 +111,9 @@ test("sweeping again adds nothing — exactly one signal, however often it runs"
 test("a second reader, hours later and on its own clock, is handed the same moment", () => {
   const { store, home, clock } = setup();
   const until = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: until });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: until });
   clock.now = until + MINUTE;
-  store.sweepSnoozeWakes();
+  store.settler.sweepSnoozeWakes();
   store.closeExecutionStore();
   stores.splice(stores.indexOf(store), 1);
 
@@ -123,8 +123,8 @@ test("a second reader, hours later and on its own clock, is handed the same mome
   // would disagree. The number is the engine's, so there is only one of it.
   const later = until + 6 * HOUR;
   const second = reopen(home, later);
-  expect(second.getSession("session_one").wokeAt).toBe(until);
-  expect(second.getSession("session_one").wokeAt).not.toBe(later);
+  expect(second.records.get("session_one").wokeAt).toBe(until);
+  expect(second.records.get("session_one").wokeAt).not.toBe(later);
   // And it is on the wire the rail already reads, not only in the document.
   const row = second.liveSessionRows({ all: true }).sessions.find((session) => session.id === "session_one");
   expect(row?.wokeAt).toBe(until);
@@ -133,36 +133,36 @@ test("a second reader, hours later and on its own clock, is handed the same mome
 test("waking does not touch updatedAt, so a woken row does not jump the list", () => {
   const { store, clock } = setup();
   const until = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: until });
-  const before = store.getSession("session_one").updatedAt;
+  store.lifecycle.updateSession("session_one", { snoozedUntil: until });
+  const before = store.records.get("session_one").updatedAt;
 
   clock.now = until + MINUTE;
-  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
 
   // `idleSince` already counts the wake as the start of the inactivity window,
   // and the list's sort is deliberately static (`settling.ts`) — so stamping
   // here would both read as fresh work and reorder a list somebody is reading.
-  expect(store.getSession("session_one").updatedAt).toBe(before);
+  expect(store.records.get("session_one").updatedAt).toBe(before);
 });
 
 test("a new snooze clears the recorded wake, so the NEXT one can still be announced", () => {
   const { store, clock } = setup();
   const first = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: first });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: first });
   clock.now = first + MINUTE;
-  store.sweepSnoozeWakes();
+  store.settler.sweepSnoozeWakes();
   expect(wakes(store)).toHaveLength(1);
 
   // Snoozed again. A stale stamp left on the record would take this session out
   // of the candidate query for good, and the second wake would be the silent
   // one — the original defect, reintroduced one snooze later.
   const second = clock.now + 3 * HOUR;
-  store.updateSession("session_one", { snoozedUntil: second });
-  expect(store.getSession("session_one").wokeAt).toBeUndefined();
-  expect(store.sweepSnoozeWakes()).toEqual([]);
+  store.lifecycle.updateSession("session_one", { snoozedUntil: second });
+  expect(store.records.get("session_one").wokeAt).toBeUndefined();
+  expect(store.settler.sweepSnoozeWakes()).toEqual([]);
 
   clock.now = second + MINUTE;
-  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
   const woke = wakes(store);
   expect(woke).toHaveLength(2);
   expect(woke.map((event) => event.wokeAt)).toEqual([first, second]);
@@ -171,11 +171,11 @@ test("a new snooze clears the recorded wake, so the NEXT one can still be announ
 test("the wake moves the revision the rail's conditional read is keyed on", () => {
   const { store, clock } = setup();
   const until = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: until });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: until });
   const before = store.liveSessionRows().revision;
 
   clock.now = until + MINUTE;
-  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
 
   // WITHOUT THIS THE SWEEP WOULD BE INVISIBLE. A rail polls conditionally and a
   // quiet tick is a 304 with no body (#459); a wake written without moving the
@@ -208,11 +208,11 @@ test("the event and the row the rail draws carry the SAME instant, from the one 
    */
   const { store, clock } = setup();
   const until = START + HOUR;
-  store.updateSession("session_one", { snoozedUntil: until });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: until });
 
   const noticedAt = until + 7 * MINUTE;
   clock.now = noticedAt;
-  expect(store.sweepSnoozeWakes()).toEqual(["session_one"]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual(["session_one"]);
 
   const woke = wakes(store);
   expect(woke).toHaveLength(1);
@@ -223,20 +223,20 @@ test("the event and the row the rail draws carry the SAME instant, from the one 
 
 test("work landing on a sleeping conversation wakes it there and then, not at the deadline", () => {
   const { store, clock } = setup();
-  store.updateSession("session_one", { snoozedUntil: START + 8 * HOUR });
+  store.lifecycle.updateSession("session_one", { snoozedUntil: START + 8 * HOUR });
 
   // The sweep cannot reach this case: submitting work deletes the snooze, so a
   // pass arriving afterwards sees a session that never slept. Nothing expired
   // here either — the work is what woke it, hours early.
   clock.now = START + 10 * MINUTE;
-  store.submitTurn("session_one", { runId: "run_one", input: "are you there" });
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "are you there" });
 
   const woke = wakes(store);
   expect(woke).toHaveLength(1);
   expect(woke[0]!.wokeAt).toBe(START + 10 * MINUTE);
-  expect(store.getSession("session_one").snoozedUntil).toBeUndefined();
+  expect(store.records.get("session_one").snoozedUntil).toBeUndefined();
   // And the sweep still has nothing to add afterwards.
   clock.now = START + 9 * HOUR;
-  expect(store.sweepSnoozeWakes()).toEqual([]);
+  expect(store.settler.sweepSnoozeWakes()).toEqual([]);
   expect(wakes(store)).toHaveLength(1);
 });

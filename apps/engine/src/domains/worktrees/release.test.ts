@@ -47,8 +47,8 @@ async function worktreeSession() {
   const home = tmp("telar-release-home-");
   fs.writeFileSync(path.join(home, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   const store = new EngineStore(home, () => Date.now());
-  store.registerProject({ id: "project_one", name: "One", root });
-  const session = store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+  const session = store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   await worktreeReady(store, "session_one");
   if (session.workspace.mode !== "worktree") throw new Error("expected a worktree");
   const checkout = session.workspace.path;
@@ -64,18 +64,18 @@ test("release deletes the checkout and keeps the branch; the next message brings
   git(checkout, "commit", "-qm", "work");
   git(checkout, "push", "-q", "origin", branch);
 
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toEqual({ ok: true });
+  expect(await store.worktrees.release("session_one", "manual")).toEqual({ ok: true });
   expect(fs.existsSync(checkout)).toBe(false);
-  const released = store.getSession("session_one");
+  const released = store.records.get("session_one");
   expect(released.workspace.mode === "worktree" && released.workspace.released?.reason).toBe("manual");
   expect(git(root, "branch", "--list", branch)).toContain(branch);
 
-  store.submitTurn("session_one", { runId: "run_back", input: "carry on" });
+  store.intake.submitTurn("session_one", { runId: "run_back", input: "carry on" });
   // Waiting on the checkout, never on a missing directory.
-  expect(store.getSession("session_one").preparation?.state).toBe("preparing");
+  expect(store.records.get("session_one").preparation?.state).toBe("preparing");
   await worktreeReady(store, "session_one");
 
-  const back = store.getSession("session_one");
+  const back = store.records.get("session_one");
   expect(back.preparation).toBeUndefined();
   expect(back.workspace.mode === "worktree" && back.workspace.released).toBeUndefined();
   expect(fs.readFileSync(path.join(checkout, "work.txt"), "utf8")).toBe("done\n");
@@ -85,7 +85,7 @@ test("release deletes the checkout and keeps the branch; the next message brings
 test("uncommitted changes refuse the release and nothing is touched", async () => {
   const { store, checkout } = await worktreeSession();
   fs.writeFileSync(path.join(checkout, "README.md"), "edited\n");
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toMatchObject({ ok: false, refusal: "dirty" });
+  expect(await store.worktrees.release("session_one", "manual")).toMatchObject({ ok: false, refusal: "dirty" });
   expect(fs.readFileSync(path.join(checkout, "README.md"), "utf8")).toBe("edited\n");
 });
 
@@ -94,14 +94,14 @@ test("commits on no remote refuse the release", async () => {
   fs.writeFileSync(path.join(checkout, "local.txt"), "only here\n");
   git(checkout, "add", "-A");
   git(checkout, "commit", "-qm", "local only");
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toMatchObject({ ok: false, refusal: "unpushed" });
+  expect(await store.worktrees.release("session_one", "manual")).toMatchObject({ ok: false, refusal: "unpushed" });
   expect(fs.existsSync(checkout)).toBe(true);
 });
 
 test("a turn in flight refuses the release", async () => {
   const { store, checkout } = await worktreeSession();
-  store.submitTurn("session_one", { runId: "run_busy", input: "working" });
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toMatchObject({ ok: false, refusal: "in-use" });
+  store.intake.submitTurn("session_one", { runId: "run_busy", input: "working" });
+  expect(await store.worktrees.release("session_one", "manual")).toMatchObject({ ok: false, refusal: "in-use" });
   expect(fs.existsSync(checkout)).toBe(true);
 });
 
@@ -113,7 +113,7 @@ test.if(process.platform !== "win32")("a live process in the checkout refuses th
   // No lsof on this machine: the manual press cannot see it, and says nothing.
   if (listed === undefined) return;
   await until("the process is visible", async () => (await checkoutsWithProcesses([checkout]))?.has(checkout) === true);
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toMatchObject({ ok: false, refusal: "process" });
+  expect(await store.worktrees.release("session_one", "manual")).toMatchObject({ ok: false, refusal: "process" });
   expect(fs.existsSync(checkout)).toBe(true);
 });
 
@@ -121,12 +121,12 @@ test("an open terminal in the session refuses the release and says how many (#88
   const { store, checkout, branch } = await worktreeSession();
   git(checkout, "push", "-q", "origin", branch);
   let open = 2;
-  store.attachTerminals({ openCount: (sessionId) => (sessionId === "session_one" ? open : 0), openSessions: () => ["session_one"], closeSession: async () => 0 });
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toEqual({ ok: false, refusal: "process", detail: "2 terminals are open in this session" });
+  store.sessionTerminals.attach({ openCount: (sessionId) => (sessionId === "session_one" ? open : 0), openSessions: () => ["session_one"], closeSession: async () => 0 });
+  expect(await store.worktrees.release("session_one", "manual")).toEqual({ ok: false, refusal: "process", detail: "2 terminals are open in this session" });
   expect(fs.existsSync(checkout)).toBe(true);
   // Closed — by the person, or by settling — and the same press goes through.
   open = 0;
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toEqual({ ok: true });
+  expect(await store.worktrees.release("session_one", "manual")).toEqual({ ok: true });
 });
 
 test("the automatic caller stands down when the platform cannot say what runs where", async () => {
@@ -141,9 +141,9 @@ test("a restored checkout runs the project's setup in the background", async () 
   const { store, checkout, branch } = await worktreeSession();
   git(checkout, "push", "-q", "origin", branch);
   store.workspace.setOverrides("project_one", { setup: { command: "echo prepared > .setup-marker" } });
-  expect(await store.releaseSessionWorktree("session_one", "manual")).toEqual({ ok: true });
+  expect(await store.worktrees.release("session_one", "manual")).toEqual({ ok: true });
 
-  store.restoreSessionWorktree("session_one");
+  store.worktrees.restore("session_one");
   await worktreeReady(store, "session_one");
   await until("setup ran", async () => store.setups.status("session_one")?.state === "succeeded");
   expect(fs.readFileSync(path.join(checkout, ".setup-marker"), "utf8").trim()).toBe("prepared");
@@ -154,10 +154,10 @@ test("reclaim releases a settled session's checkout by default and archives only
   const { store, checkout, branch } = await worktreeSession();
   git(checkout, "push", "-q", "origin", branch);
   // Settled: pinned onto the shelf.
-  store.updateSession("session_one", { settledOverride: "settled" });
-  const [released] = await store.reclaimWorktrees([{ path: checkout }]);
+  store.lifecycle.updateSession("session_one", { settledOverride: "settled" });
+  const [released] = await store.worktrees.reclaim([{ path: checkout }]);
   expect(released).toMatchObject({ ok: true, action: "released", sessionId: "session_one" });
-  const session = store.getSession("session_one");
+  const session = store.records.get("session_one");
   expect(session.state).not.toBe("archived");
   expect(session.workspace.mode === "worktree" && session.workspace.released?.reason).toBe("manual");
 });

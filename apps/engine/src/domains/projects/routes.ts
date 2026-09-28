@@ -5,7 +5,7 @@ import { ok, type Route } from "../../platform/http/route";
 import type { PluginHost } from "../plugins";
 import type { EngineStore } from "../../state";
 
-type ProjectPatch = Parameters<EngineStore["updateProject"]>[1];
+type ProjectPatch = Parameters<EngineStore["projectRegistry"]["update"]>[1];
 type ProjectPlugins = Pick<PluginHost, "ready" | "cancelDrain" | "drainProject">;
 
 const nullableObject = (value: unknown) => value === null || (typeof value === "object" && !Array.isArray(value));

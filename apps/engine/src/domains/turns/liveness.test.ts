@@ -105,8 +105,8 @@ function worktreeSession(git: AsyncGitRunner, now: () => number) {
   const projectRoot = repo();
   const store = new EngineStore(tmp("telar-liveness-state-"), now, { asyncGit: git });
   stores.push(store);
-  const project = store.registerProject({ name: "aurora", root: projectRoot });
-  const session = store.createSession({ projectId: project.id, envMode: "worktree", title: "port the parser" });
+  const project = store.projectRegistry.register({ name: "aurora", root: projectRoot });
+  const session = store.lifecycle.createSession({ projectId: project.id, envMode: "worktree", title: "port the parser" });
   return { store, sessionId: session.id };
 }
 
@@ -115,16 +115,16 @@ test("a session whose checkout failed fails its queued turn instead of parking i
   const { store, sessionId } = worktreeSession(refusingCut, time.now);
   await worktreeReady(store, sessionId);
   // The premise, stated rather than assumed: the row carries the failure.
-  expect(store.getSession(sessionId).preparation?.state).toBe("failed");
+  expect(store.records.get(sessionId).preparation?.state).toBe("failed");
 
-  store.submitTurn(sessionId, { runId: "run_one", input: "start" });
+  store.intake.submitTurn(sessionId, { runId: "run_one", input: "start" });
   expect(store.turns(sessionId).map((turn) => turn.state)).toEqual(["queued"]);
 
   // TEN SCAN TICKS, not one. The defect was a turn that waited FOREVER, so a
   // single tick would not tell a fix from a delay — and a scan that failed the
   // turn more than once would show up here as a second turn or a second
   // failure rather than passing quietly.
-  for (let tick = 0; tick < 10; tick += 1) expect(store.claimNextTurn("worker_one")).toBeUndefined();
+  for (let tick = 0; tick < 10; tick += 1) expect(store.claims.claimNextTurn("worker_one")).toBeUndefined();
 
   const turns = store.turns(sessionId);
   expect(turns).toHaveLength(1);
@@ -141,10 +141,10 @@ test("a session whose checkout is still being cut keeps its turn queued across t
   const time = clock();
   const { store, sessionId } = worktreeSession(hangingCut, time.now);
   // NOT awaited: this cut never finishes, which is the state under test.
-  expect(store.getSession(sessionId).preparation?.state).toBe("preparing");
+  expect(store.records.get(sessionId).preparation?.state).toBe("preparing");
 
-  store.submitTurn(sessionId, { runId: "run_one", input: "start" });
-  for (let tick = 0; tick < 10; tick += 1) expect(store.claimNextTurn("worker_one")).toBeUndefined();
+  store.intake.submitTurn(sessionId, { runId: "run_one", input: "start" });
+  for (let tick = 0; tick < 10; tick += 1) expect(store.claims.claimNextTurn("worker_one")).toBeUndefined();
 
   const turns = store.turns(sessionId);
   expect(turns).toHaveLength(1);
@@ -161,12 +161,12 @@ test("and a session with a checkout is unaffected: its turn is claimed like any 
   // `preparation` is cleared rather than failed.
   const { store, sessionId } = worktreeSession(async () => ({ status: 0, stdout: "", stderr: "" }), time.now);
   await worktreeReady(store, sessionId);
-  store.submitTurn(sessionId, { runId: "run_one", input: "start" });
+  store.intake.submitTurn(sessionId, { runId: "run_one", input: "start" });
   // Non-vacuity for the two tests above: the same fixture, the same ticks, and
   // a turn that actually runs — so neither of them is passing because nothing
   // in this file can ever be claimed.
-  expect(store.getSession(sessionId).preparation).toBeUndefined();
-  expect(store.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
+  expect(store.records.get(sessionId).preparation).toBeUndefined();
+  expect(store.claims.claimNextTurn("worker_one")?.turn.runId).toBe("run_one");
 });
 
 // ── step 5: the liveness signal ─────────────────────────────────────────────
@@ -176,12 +176,12 @@ test("and a session with a checkout is unaffected: its turn is claimed like any 
 function runningTurn(now: () => number) {
   const store = new EngineStore(tmp("telar-stall-state-"), now);
   stores.push(store);
-  const project = store.registerProject({ name: "aurora", root: tmp("telar-stall-project-") });
-  const session = store.createSession({ projectId: project.id, envMode: "local" });
-  store.submitTurn(session.id, { runId: "run_one", input: "do the long thing" });
-  const claim = store.claimNextTurn("worker_one");
+  const project = store.projectRegistry.register({ name: "aurora", root: tmp("telar-stall-project-") });
+  const session = store.lifecycle.createSession({ projectId: project.id, envMode: "local" });
+  store.intake.submitTurn(session.id, { runId: "run_one", input: "do the long thing" });
+  const claim = store.claims.claimNextTurn("worker_one");
   if (!claim) throw new Error("the fixture's turn was not claimable");
-  const turn = store.markRunning(session.id, claim.turn.runId, claim.turn.claim!.token);
+  const turn = store.turnLifecycle.markRunning(session.id, claim.turn.runId, claim.turn.claim!.token);
   return { store, sessionId: session.id, runId: turn.runId, claimToken: claim.turn.claim!.token };
 }
 
@@ -205,7 +205,7 @@ test("a running turn that journals nothing for longer than the threshold is repo
   expect(turnOf(store, sessionId, runId).stalled).toBeUndefined();
 
   time.advance(STALLED_AFTER_MS + 60_000);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
 
   const turn = turnOf(store, sessionId, runId);
   expect(turn.state).toBe("running");
@@ -233,18 +233,18 @@ test("the same elapsed time is NOT stalled when one observation arrived in the m
   const { store, sessionId, runId, claimToken } = runningTurn(time.now);
 
   time.advance(STALLED_AFTER_MS - 60_000);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
   expect(turnOf(store, sessionId, runId).stalled).toBeUndefined();
 
   // One piece of evidence, through the real reporting path — the same call a
   // driver makes when a long command finally prints something.
-  store.ingestObservations(sessionId, runId, claimToken, [
+  store.ingest.ingestObservations(sessionId, runId, claimToken, [
     { kind: "item.started", item: { id: "item_one", status: "inProgress", detail: { type: "assistant_message", text: "still here" } } },
   ]);
   const reportedAt = time.at();
 
   time.advance(STALLED_AFTER_MS - 60_000);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
 
   const turn = turnOf(store, sessionId, runId);
   // Total elapsed is now well past the threshold and this turn is fine, because
@@ -278,14 +278,14 @@ test("a worker whose heartbeat keeps arriving on schedule does not keep its wedg
   let beats = 0;
   for (let minute = 0; minute < 30; minute += 1) {
     time.advance(60_000);
-    store.cancellationsForWorker("worker_one");
-    store.resolutionsForWorker("worker_one");
-    store.steerForWorker("worker_one");
-    store.taskStopsForWorker("worker_one");
+    store.recovery.cancellationsForWorker("worker_one");
+    store.requestGate.resolutionsForWorker("worker_one");
+    store.worker.steerForWorker("worker_one");
+    store.sessionTasks.stopsForWorker("worker_one");
     beats += 1;
   }
   expect(beats).toBe(30);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
 
   const turn = turnOf(store, sessionId, runId);
   expect(turn.state).toBe("running");
@@ -301,13 +301,13 @@ test("the advisory is withdrawn the moment evidence arrives again, and the turn 
   const { store, sessionId, runId, claimToken } = runningTurn(time.now);
 
   time.advance(STALLED_AFTER_MS + 60_000);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
   expect(turnOf(store, sessionId, runId).stalled).toBeDefined();
 
-  store.ingestObservations(sessionId, runId, claimToken, [
+  store.ingest.ingestObservations(sessionId, runId, claimToken, [
     { kind: "item.started", item: { id: "item_late", status: "inProgress", detail: { type: "assistant_message", text: "the install finished" } } },
   ]);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
 
   const turn = turnOf(store, sessionId, runId);
   expect(turn.stalled).toBeUndefined();
@@ -322,22 +322,22 @@ test("a queued turn is never stalled, however long it waits", () => {
   const time = clock();
   const store = new EngineStore(tmp("telar-stall-queued-"), time.now);
   stores.push(store);
-  const project = store.registerProject({ name: "aurora", root: tmp("telar-stall-queued-project-") });
-  const session = store.createSession({ projectId: project.id, envMode: "local" });
+  const project = store.projectRegistry.register({ name: "aurora", root: tmp("telar-stall-queued-project-") });
+  const session = store.lifecycle.createSession({ projectId: project.id, envMode: "local" });
   /**
    * BOTH MESSAGES BEFORE THE CLAIM, and the order is load-bearing: a message
    * submitted while a turn is already RUNNING is steered into it
    * (`steerIfRunning`) rather than queued, which would make this a test about
    * a `steering` turn instead of a waiting one.
    */
-  store.submitTurn(session.id, { runId: "run_one", input: "first" });
-  store.submitTurn(session.id, { runId: "run_two", input: "second" });
-  const claim = store.claimNextTurn("worker_one")!;
+  store.intake.submitTurn(session.id, { runId: "run_one", input: "first" });
+  store.intake.submitTurn(session.id, { runId: "run_two", input: "second" });
+  const claim = store.claims.claimNextTurn("worker_one")!;
   expect(claim.turn.runId).toBe("run_one");
-  store.markRunning(session.id, "run_one", claim.turn.claim!.token);
+  store.turnLifecycle.markRunning(session.id, "run_one", claim.turn.claim!.token);
 
   time.advance(STALLED_AFTER_MS * 3);
-  store.claimNextTurn("worker_one");
+  store.claims.claimNextTurn("worker_one");
 
   // The flag is about a turn producing no evidence while it RUNS. A queued turn
   // produces none by definition and is not wedged, it is waiting its turn.

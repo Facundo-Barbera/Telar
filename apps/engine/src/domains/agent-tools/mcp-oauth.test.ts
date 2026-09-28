@@ -235,18 +235,18 @@ test("a refresh window wide enough to outlive a turn", () => {
 test("a grant is keyed by scope, so a project's server is not the machine's", () => {
   const engine = store();
   const base = { resource: "https://mcp.example.com/mcp", as: AS, client: { strategy: "dcr" as const, id: "c" }, updatedAt: 0 };
-  engine.putMcpOAuthRecord({ ...base, serverId: "linear", tokens: { accessToken: "machine-token" } });
-  engine.putMcpOAuthRecord({ ...base, serverId: "linear", projectId: "app", tokens: { accessToken: "project-token" } });
+  engine.mcpOAuth.put({ ...base, serverId: "linear", tokens: { accessToken: "machine-token" } });
+  engine.mcpOAuth.put({ ...base, serverId: "linear", projectId: "app", tokens: { accessToken: "project-token" } });
 
-  expect(engine.getMcpOAuthRecord("linear")?.tokens.accessToken).toBe("machine-token");
-  expect(engine.getMcpOAuthRecord("linear", "app")?.tokens.accessToken).toBe("project-token");
-  expect(engine.deleteMcpOAuthRecord("linear", "app")).toBe(true);
-  expect(engine.getMcpOAuthRecord("linear")?.tokens.accessToken).toBe("machine-token");
+  expect(engine.mcpOAuth.get("linear")?.tokens.accessToken).toBe("machine-token");
+  expect(engine.mcpOAuth.get("linear", "app")?.tokens.accessToken).toBe("project-token");
+  expect(engine.mcpOAuth.delete("linear", "app")).toBe(true);
+  expect(engine.mcpOAuth.get("linear")?.tokens.accessToken).toBe("machine-token");
 });
 
 test("the grant file is 0600, because it holds tokens", () => {
   const engine = store();
-  engine.putMcpOAuthRecord({
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://mcp.example.com/mcp",
     as: AS,
@@ -269,19 +269,19 @@ test("a pending flow is single use, and expires", () => {
     authorizationUrl: "https://auth.example.com/authorize?x=1",
     redirectUri: "http://localhost:3000/api/mcp/oauth/callback",
   };
-  engine.putPendingMcpOAuth({ serverId: "linear", ctx, createdAt: clock });
-  expect(engine.takePendingMcpOAuth("state-1")?.ctx.codeVerifier).toBe("verifier-1");
-  expect(engine.takePendingMcpOAuth("state-1")).toBeUndefined();
+  engine.mcpOAuth.putPending({ serverId: "linear", ctx, createdAt: clock });
+  expect(engine.mcpOAuth.takePending("state-1")?.ctx.codeVerifier).toBe("verifier-1");
+  expect(engine.mcpOAuth.takePending("state-1")).toBeUndefined();
 
-  engine.putPendingMcpOAuth({ serverId: "linear", ctx: { ...ctx, state: "state-2" }, createdAt: clock });
+  engine.mcpOAuth.putPending({ serverId: "linear", ctx: { ...ctx, state: "state-2" }, createdAt: clock });
   clock += 11 * 60_000;
-  expect(engine.takePendingMcpOAuth("state-2")).toBeUndefined();
+  expect(engine.mcpOAuth.takePending("state-2")).toBeUndefined();
 });
 
 test("a DCR registration is reused across servers on the same issuer", () => {
   const engine = store();
   const redirectUri = "http://localhost:3000/api/mcp/oauth/callback";
-  engine.putMcpOAuthRecord({
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://linear.example.com/mcp",
     as: AS,
@@ -289,14 +289,14 @@ test("a DCR registration is reused across servers on the same issuer", () => {
     tokens: { accessToken: "yes" },
     updatedAt: 0,
   });
-  const clients = engine.mcpOAuthClientStore();
+  const clients = engine.mcpOAuth.clientStore();
   expect(clients.findProvenDcrClient(AS.issuer, "sentry")?.id).toBe("proven-client");
   expect(clients.findProvenDcrClient("https://other.example.com", "sentry")).toBeUndefined();
 });
 
 test("a registration left by an aborted connect is not treated as proven", () => {
   const engine = store();
-  engine.putMcpOAuthRecord({
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://linear.example.com/mcp",
     as: AS,
@@ -304,15 +304,15 @@ test("a registration left by an aborted connect is not treated as proven", () =>
     tokens: { accessToken: "" },
     updatedAt: 0,
   });
-  const clients = engine.mcpOAuthClientStore();
+  const clients = engine.mcpOAuth.clientStore();
   expect(clients.findProvenDcrClient(AS.issuer, "sentry")).toBeUndefined();
   expect(clients.findPendingDcrClient("linear")?.id).toBe("unproven");
 });
 
 test("removing a server takes its grant with it", () => {
   const engine = store();
-  engine.saveMcpServer({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
-  engine.putMcpOAuthRecord({
+  engine.mcpServers.save({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://mcp.example.com/mcp",
     as: AS,
@@ -320,21 +320,21 @@ test("removing a server takes its grant with it", () => {
     tokens: { accessToken: "token" },
     updatedAt: 0,
   });
-  expect(engine.removeMcpServer("linear")).toBe(true);
-  expect(engine.getMcpOAuthRecord("linear")).toBeUndefined();
+  expect(engine.mcpServers.remove("linear")).toBe(true);
+  expect(engine.mcpOAuth.get("linear")).toBeUndefined();
 });
 
 function claimable(now = () => 1_000): EngineStore {
   const engine = new EngineStore(root(), now);
-  engine.registerProject({ id: "project_one", name: "One", root: os.tmpdir() });
-  engine.createSession({ id: "session_one", projectId: "project_one" });
+  engine.projectRegistry.register({ id: "project_one", name: "One", root: os.tmpdir() });
+  engine.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   return engine;
 }
 
 test("a signed-in server rides the claim with its bearer, and the list never shows it", async () => {
   const engine = claimable();
-  engine.saveMcpServer({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
-  engine.putMcpOAuthRecord({
+  engine.mcpServers.save({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://mcp.example.com/mcp",
     as: AS,
@@ -342,22 +342,22 @@ test("a signed-in server rides the claim with its bearer, and the list never sho
     tokens: { accessToken: "the-access-token" },
     updatedAt: 0,
   });
-  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
-  const claim = await engine.authorizeClaimedMcpServers(engine.claimNextTurn("worker_one")!);
+  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!);
   const spec = claim.mcpServers![0]!.spec as { headers?: Record<string, string> };
   expect(spec.headers?.Authorization).toBe("Bearer the-access-token");
 
-  expect(JSON.stringify(engine.listMcpServers())).not.toContain("the-access-token");
+  expect(JSON.stringify(engine.mcpServers.list())).not.toContain("the-access-token");
 });
 
 test("a header somebody typed wins over the managed token", async () => {
   const engine = claimable();
-  engine.saveMcpServer({
+  engine.mcpServers.save({
     id: "linear",
     spec: { transport: "http", url: "https://mcp.example.com/mcp", headers: { authorization: "Bearer mine" } },
   });
-  engine.putMcpOAuthRecord({
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://mcp.example.com/mcp",
     as: AS,
@@ -365,22 +365,22 @@ test("a header somebody typed wins over the managed token", async () => {
     tokens: { accessToken: "managed" },
     updatedAt: 0,
   });
-  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
-  const claim = await engine.authorizeClaimedMcpServers(engine.claimNextTurn("worker_one")!);
+  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!);
   expect((claim.mcpServers![0]!.spec as { headers: Record<string, string> }).headers).toEqual({ authorization: "Bearer mine" });
 });
 
 test("a server nobody signed in to is handed over untouched", async () => {
   const engine = claimable();
-  engine.saveMcpServer({
+  engine.mcpServers.save({
     id: "linear",
     spec: { transport: "http", url: "https://mcp.example.com/mcp", oauth: { clientId: "declared-but-unused" } },
   });
-  engine.saveMcpServer({ id: "local", spec: { transport: "stdio", command: "node" } });
-  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  engine.mcpServers.save({ id: "local", spec: { transport: "stdio", command: "node" } });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
-  const claim = await engine.authorizeClaimedMcpServers(engine.claimNextTurn("worker_one")!);
+  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!);
   expect(claim.mcpServers!.map((server) => server.spec)).toEqual([
     { transport: "http", url: "https://mcp.example.com/mcp", oauth: { clientId: "declared-but-unused" } },
     { transport: "stdio", command: "node" },
@@ -390,8 +390,8 @@ test("a server nobody signed in to is handed over untouched", async () => {
 test("an expiring token is refreshed before the turn, and a failed refresh still runs", async () => {
   const clock = 10_000_000;
   const engine = claimable(() => clock);
-  engine.saveMcpServer({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
-  engine.putMcpOAuthRecord({
+  engine.mcpServers.save({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://mcp.example.com/mcp",
     as: AS,
@@ -399,24 +399,24 @@ test("an expiring token is refreshed before the turn, and a failed refresh still
     tokens: { accessToken: "stale", refreshToken: "r1", expiresAt: clock + 30_000 },
     updatedAt: 0,
   });
-  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
   const rotated = (async () =>
     new Response(JSON.stringify({ access_token: "fresh", refresh_token: "r2", expires_in: 3600 }), {
       status: 200,
       headers: { "content-type": "application/json" },
     })) as unknown as typeof fetch;
-  const claim = await engine.authorizeClaimedMcpServers(engine.claimNextTurn("worker_one")!, rotated);
+  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!, rotated);
   expect((claim.mcpServers![0]!.spec as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer fresh");
-  expect(engine.getMcpOAuthRecord("linear")?.tokens.refreshToken).toBe("r2");
+  expect(engine.mcpOAuth.get("linear")?.tokens.refreshToken).toBe("r2");
 
 });
 
 test("a refresh that fails still lets the turn run", async () => {
   const clock = 10_000_000;
   const engine = claimable(() => clock);
-  engine.saveMcpServer({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
-  engine.putMcpOAuthRecord({
+  engine.mcpServers.save({ id: "linear", spec: { transport: "http", url: "https://mcp.example.com/mcp" } });
+  engine.mcpOAuth.put({
     serverId: "linear",
     resource: "https://mcp.example.com/mcp",
     as: AS,
@@ -424,11 +424,11 @@ test("a refresh that fails still lets the turn run", async () => {
     tokens: { accessToken: "stale", refreshToken: "revoked", expiresAt: clock + 30_000 },
     updatedAt: 0,
   });
-  engine.submitTurn("session_one", { runId: "run_one", input: "Hi" });
+  engine.intake.submitTurn("session_one", { runId: "run_one", input: "Hi" });
 
   const offline = (async () => {
     throw new Error("ECONNREFUSED");
   }) as unknown as typeof fetch;
-  const claim = await engine.authorizeClaimedMcpServers(engine.claimNextTurn("worker_one")!, offline);
+  const claim = await engine.authorizeClaimedMcpServers(engine.claims.claimNextTurn("worker_one")!, offline);
   expect((claim.mcpServers![0]!.spec as { headers: Record<string, string> }).headers.Authorization).toBe("Bearer stale");
 });

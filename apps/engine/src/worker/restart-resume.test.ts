@@ -31,15 +31,15 @@ function home(): { store: EngineStore; root: string } {
   // A Claude default this home already knows, so a claim is not withheld.
   fs.writeFileSync(path.join(root, "claude-default-model.json"), JSON.stringify({ model: "claude-opus-5[1m]", at: 1 }));
   const store = new EngineStore(root, () => NOW);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
   return { store, root };
 }
 
 function runningTurn(store: EngineStore, sessionId: string, runId: string): void {
-  store.createSession({ id: sessionId, projectId: "project_one" });
-  store.submitTurn(sessionId, { runId, input: "Refactor the parser" });
-  const claimed = store.claimTurn(sessionId, "worker_one")!;
-  store.markRunning(sessionId, runId, claimed.claim!.token);
+  store.lifecycle.createSession({ id: sessionId, projectId: "project_one" });
+  store.intake.submitTurn(sessionId, { runId, input: "Refactor the parser" });
+  const claimed = store.claims.claimTurn(sessionId, "worker_one")!;
+  store.turnLifecycle.markRunning(sessionId, runId, claimed.claim!.token);
 }
 
 function writeMarker(store: EngineStore, marker: unknown): void {
@@ -50,14 +50,14 @@ const continuations = (store: EngineStore, sessionId: string) => store.turns(ses
 
 test("a planned update restart with the setting on continues each interrupted session exactly once", () => {
   const { store } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
   runningTurn(store, "session_two", "run_two");
   // A second turn cut off in the same session still earns only one continuation.
-  store.submitTurn("session_one", { runId: "run_one_queued", input: "and then the lexer" });
+  store.intake.submitTurn("session_one", { runId: "run_one_queued", input: "and then the lexer" });
   writeMarker(store, { version: 1, reason: "update", at: NOW - 60_000 });
 
-  expect(store.recover().stopped.sort()).toEqual(["run_one", "run_one_queued", "run_two"]);
+  expect(store.recovery.recover().stopped.sort()).toEqual(["run_one", "run_one_queued", "run_two"]);
 
   for (const [sessionId, interrupted] of [["session_one", "run_one"], ["session_two", "run_two"]] as const) {
     const resumed = continuations(store, sessionId);
@@ -77,32 +77,32 @@ test("a planned update restart with the setting on continues each interrupted se
   expect(store.turns("session_one").filter((turn) => turn.state === "queued").map((turn) => turn.origin)).toEqual(["restart"]);
   expect(fs.existsSync(store.paths.plannedRestart)).toBe(false);
   // And it is claimable like any other turn.
-  expect(store.claimTurn("session_one", "worker_two")?.origin).toBe("restart");
+  expect(store.claims.claimTurn("session_one", "worker_two")?.origin).toBe("restart");
 });
 
 test("a turn the worker settled as interrupted on the way out is continued too", () => {
   const { store } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
   const token = store.turns("session_one")[0]!.claim!.token;
-  store.failTurn("session_one", "run_one", token, { code: "interrupted", message: "Telar shut down while this turn was running." });
+  store.turnLifecycle.failTurn("session_one", "run_one", token, { code: "interrupted", message: "Telar shut down while this turn was running." });
   writeMarker(store, { version: 1, reason: "update", at: NOW - 1_000 });
 
-  expect(store.recover()).toEqual({ stopped: [] });
+  expect(store.recovery.recover()).toEqual({ stopped: [] });
   expect(continuations(store, "session_one")).toHaveLength(1);
   expect(continuations(store, "session_one")[0]!.restartOrigin?.interruptedRunId).toBe("run_one");
 });
 
 test("a turn stopped because its worker was retired on the way out is continued too", () => {
   const { store } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
   // A clean quit retires the embedded registration before the worker can say `interrupted`.
-  store.retireWorkerRegistration("worker_one");
+  store.recovery.retireWorkerRegistration("worker_one");
   expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "worker_unavailable" });
   writeMarker(store, { version: 1, reason: "update", at: NOW - 1_000 });
 
-  expect(store.recover()).toEqual({ stopped: [] });
+  expect(store.recovery.recover()).toEqual({ stopped: [] });
   expect(continuations(store, "session_one")).toHaveLength(1);
   expect(continuations(store, "session_one")[0]!.restartOrigin?.interruptedRunId).toBe("run_one");
 });
@@ -140,16 +140,16 @@ test("with the setting off nothing is continued, and the marker is still consume
   const { store } = home();
   runningTurn(store, "session_one", "run_one");
   writeMarker(store, { version: 1, reason: "update", at: NOW - 60_000 });
-  store.recover();
+  store.recovery.recover();
   expect(continuations(store, "session_one")).toHaveLength(0);
   expect(fs.existsSync(store.paths.plannedRestart)).toBe(false);
 });
 
 test("a crash leaves no marker, so nothing is continued", () => {
   const { store } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
-  store.recover();
+  store.recovery.recover();
   expect(continuations(store, "session_one")).toHaveLength(0);
   expect(store.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
 });
@@ -163,67 +163,67 @@ test("a stale or malformed marker continues nothing and is deleted", () => {
     "not an object",
   ]) {
     const { store } = home();
-    store.setSessionDefaults({ resumeAfterRestart: true });
+    store.settings.setSessionDefaults({ resumeAfterRestart: true });
     runningTurn(store, "session_one", "run_one");
     writeMarker(store, marker);
-    store.recover();
+    store.recovery.recover();
     expect(continuations(store, "session_one")).toHaveLength(0);
     expect(fs.existsSync(store.paths.plannedRestart)).toBe(false);
   }
   // Not JSON at all.
   const { store } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
   fs.writeFileSync(store.paths.plannedRestart, "{");
-  expect(() => store.recover()).not.toThrow();
+  expect(() => store.recovery.recover()).not.toThrow();
   expect(continuations(store, "session_one")).toHaveLength(0);
   expect(fs.existsSync(store.paths.plannedRestart)).toBe(false);
 });
 
 test("a turn the person stopped, and a settled or archived session, are not continued", () => {
   const { store } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_stopped", "run_stopped");
-  store.stopSession("session_stopped");
+  store.turnLifecycle.stopSession("session_stopped");
   runningTurn(store, "session_settled", "run_settled");
-  store.updateSession("session_settled", { settledOverride: "settled" });
+  store.lifecycle.updateSession("session_settled", { settledOverride: "settled" });
   runningTurn(store, "session_live", "run_live");
   writeMarker(store, { version: 1, reason: "update", at: NOW - 60_000 });
 
-  store.recover();
+  store.recovery.recover();
   expect(store.turns("session_stopped")[0]).toMatchObject({ state: "stopped", stopReason: "user" });
   expect(continuations(store, "session_stopped")).toHaveLength(0);
   expect(continuations(store, "session_settled")).toHaveLength(0);
-  expect(store.getSession("session_settled").settledOverride).toBe("settled");
+  expect(store.records.get("session_settled").settledOverride).toBe("settled");
   // One bad session does not cost the others theirs.
   expect(continuations(store, "session_live")).toHaveLength(1);
 });
 
 test("a boot that runs twice on the same marker opens no second continuation", () => {
   const { store, root } = home();
-  store.setSessionDefaults({ resumeAfterRestart: true });
+  store.settings.setSessionDefaults({ resumeAfterRestart: true });
   runningTurn(store, "session_one", "run_one");
   const marker = { version: 1, reason: "update", at: NOW - 60_000 };
   writeMarker(store, marker);
-  store.recover();
+  store.recovery.recover();
   // The first boot died before the delete could land: same marker, next boot.
   writeMarker(store, marker);
-  new EngineStore(root, () => NOW).recover();
+  new EngineStore(root, () => NOW).recovery.recover();
   expect(continuations(store, "session_one")).toHaveLength(1);
 });
 
 test("resumeAfterRestart round-trips beside envMode without clobbering it", () => {
   const { store } = home();
-  expect(store.getSessionDefaults()).toEqual({ envMode: "local" });
-  expect(store.setSessionDefaults({ envMode: "worktree" })).toEqual({ envMode: "worktree" });
-  expect(store.setSessionDefaults({ resumeAfterRestart: true })).toEqual({ envMode: "worktree", resumeAfterRestart: true });
-  expect(store.setSessionDefaults({ envMode: "local" })).toEqual({ envMode: "local", resumeAfterRestart: true });
-  expect(store.setSessionDefaults({ resumeAfterRestart: false })).toEqual({ envMode: "local", resumeAfterRestart: false });
-  expect(store.getSessionDefaults()).toEqual({ envMode: "local", resumeAfterRestart: false });
+  expect(store.settings.sessionDefaults()).toEqual({ envMode: "local" });
+  expect(store.settings.setSessionDefaults({ envMode: "worktree" })).toEqual({ envMode: "worktree" });
+  expect(store.settings.setSessionDefaults({ resumeAfterRestart: true })).toEqual({ envMode: "worktree", resumeAfterRestart: true });
+  expect(store.settings.setSessionDefaults({ envMode: "local" })).toEqual({ envMode: "local", resumeAfterRestart: true });
+  expect(store.settings.setSessionDefaults({ resumeAfterRestart: false })).toEqual({ envMode: "local", resumeAfterRestart: false });
+  expect(store.settings.sessionDefaults()).toEqual({ envMode: "local", resumeAfterRestart: false });
   for (const bad of ["yes", 1, null]) {
-    expect(() => store.setSessionDefaults({ resumeAfterRestart: bad })).toThrow(EngineStateError);
+    expect(() => store.settings.setSessionDefaults({ resumeAfterRestart: bad })).toThrow(EngineStateError);
   }
-  expect(store.getSessionDefaults()).toEqual({ envMode: "local", resumeAfterRestart: false });
+  expect(store.settings.sessionDefaults()).toEqual({ envMode: "local", resumeAfterRestart: false });
 });
 
 test("the daemon route and client carry resumeAfterRestart without touching envMode", async () => {

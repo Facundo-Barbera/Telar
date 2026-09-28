@@ -43,16 +43,16 @@ test("sidebar and direct project lookup stay responsive while metadata Git is st
     git: () => { throw new Error("synchronous Git must not run on project reads"); },
     asyncGit: async (_cwd, args) => { asked.push(args.join(" ")); return waiting; },
   });
-  store.registerProject({ id: "project_one", name: "One", root: root() });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
   // Every read answers while the Git it started is still pending: nothing here waits on it.
   for (let i = 0; i < 20; i++) {
-    expect(store.listProjects()[0]?.id).toBe("project_one");
-    expect(store.getProject("project_one").name).toBe("One");
+    expect(store.projectRegistry.list()[0]?.id).toBe("project_one");
+    expect(store.projectRegistry.get("project_one").name).toBe("One");
   }
   expect(asked).toEqual(["rev-parse --abbrev-ref HEAD", "config --get remote.origin.url"]);
   finish({ status: 0, stdout: "main\n", stderr: "" });
-  for (let i = 0; i < 100 && store.listProjects()[0]?.branch !== "main"; i++) await macrotask();
-  expect(store.listProjects()[0]?.branch).toBe("main");
+  for (let i = 0; i < 100 && store.projectRegistry.list()[0]?.branch !== "main"; i++) await macrotask();
+  expect(store.projectRegistry.list()[0]?.branch).toBe("main");
   expect(asked).toHaveLength(2);
 });
 
@@ -64,24 +64,24 @@ test("concurrent review polls share one pending Git read and expire their short 
   const store = new EngineStore(root(), () => now, {
     asyncGit: async () => { calls++; return waiting; },
   });
-  store.registerProject({ id: "project_one", name: "One", root: root() });
-  const first = store.projectGitAsync("project_one");
-  const second = store.projectGitAsync("project_one");
+  store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
+  const first = store.workspaceReads.projectOverview("project_one");
+  const second = store.workspaceReads.projectOverview("project_one");
   await Promise.resolve();
   expect(calls).toBe(1);
   finish({ status: 128, stdout: "", stderr: "not a repository" });
   expect(await first).toEqual(await second);
-  await store.projectGitAsync("project_one");
+  await store.workspaceReads.projectOverview("project_one");
   expect(calls).toBe(1);
   now += 2_001;
-  await store.projectGitAsync("project_one");
+  await store.workspaceReads.projectOverview("project_one");
   expect(calls).toBe(2);
 });
 
 test("async patch reads retain the project path fence", () => {
   const store = new EngineStore(root());
-  store.registerProject({ id: "project_one", name: "One", root: root() });
-  expect(() => store.projectFilePatchAsync("project_one", "../../etc/passwd")).toThrow("outside the workspace");
+  store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
+  expect(() => store.workspaceReads.projectFilePatch("project_one", "../../etc/passwd")).toThrow("outside the workspace");
 });
 
 
@@ -92,7 +92,7 @@ test("HTTP health and sidebar requests respond while review Git remains pending"
   const daemon = await startEngine({ models: stubModels, engineRoot: root(), asyncGit: async () => stalled });
   const base = `http://127.0.0.1:${daemon.discovery.port}`;
   const headers = { authorization: `Bearer ${daemon.discovery.token}` };
-  daemon.store.registerProject({ id: "project_one", name: "One", root: root() });
+  daemon.store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
   const review = fetch(`${base}/v2/projects/project_one/git`, { headers });
   try {
     // The review's Git never answers until `finally`, so every response here arrived while it was pending.
@@ -129,7 +129,7 @@ test("a stalled worktree add delays neither its own route nor an unrelated one",
   });
   const base = `http://127.0.0.1:${daemon.discovery.port}`;
   const headers = { authorization: `Bearer ${daemon.discovery.token}`, "content-type": "application/json" };
-  daemon.store.registerProject({ id: "project_one", name: "One", root: projectRoot });
+  daemon.store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
   try {
     const created = await fetch(`${base}/v2/sessions`, {
       method: "POST",
@@ -152,7 +152,7 @@ test("a stalled worktree add delays neither its own route nor an unrelated one",
     }
     // The stall was real: the cut was actually attempted and is still pending.
     expect(adds).toBe(1);
-    expect(daemon.store.getSession("session_one").preparation?.state).toBe("preparing");
+    expect(daemon.store.records.get("session_one").preparation?.state).toBe("preparing");
   } finally {
     released({ status: 0, stdout: "", stderr: "" });
     await daemon.close();
@@ -193,7 +193,7 @@ test("a pending session create, draft promotion, diff and overview leave the eve
     git: () => { throw new Error("synchronous git must not run on the request path"); },
     asyncGit: git.runner,
   });
-  store.registerProject({ id: "project_one", name: "One", root: root() });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
   // Made while the gate is open: the session whose stream the test appends to.
   await store.createSessionAsync({ id: "session_live", projectId: "project_one", envMode: "local" });
   await store.createSessionAsync({ id: "session_draft", projectId: "project_one", envMode: "worktree", draft: true });
@@ -204,8 +204,8 @@ test("a pending session create, draft promotion, diff and overview leave the eve
     store.createSessionAsync({ id: "session_new", projectId: "project_one", envMode: "local" }),
     store.createSessionAsync({ id: "session_cut", projectId: "project_one", envMode: "worktree" }),
     store.submitTurnAsync("session_draft", { runId: "run_draft", input: "promote me" }),
-    store.sessionDiffAsync("session_live"),
-    store.projectGitAsync("project_one"),
+    store.workspaceReads.sessionDiff("session_live"),
+    store.workspaceReads.projectOverview("project_one"),
   ]);
   let done = false;
   void pending.then(() => { done = true; });
@@ -219,18 +219,18 @@ test("a pending session create, draft promotion, diff and overview leave the eve
   // Every one of them is genuinely waiting on git, not finished early.
   expect(git.calls.length).toBeGreaterThan(before);
   expect(git.calls.slice(before)).toContain("rev-parse --is-inside-work-tree");
-  expect(() => store.getSession("session_new")).toThrow();
-  expect(store.getSession("session_draft").draft).toBeDefined();
+  expect(() => store.records.get("session_new")).toThrow();
+  expect(store.records.get("session_draft").draft).toBeDefined();
 
   // …and a streaming session's event still lands while they wait.
-  store.submitTurn("session_live", { runId: "run_live", input: "still here" });
+  store.intake.submitTurn("session_live", { runId: "run_live", input: "still here" });
   expect(store.turns("session_live").map((turn) => turn.runId)).toContain("run_live");
 
   git.open();
   const [created, cut] = await pending;
   expect(created.workspace).toMatchObject({ mode: "local", baseRef: git.SHA });
   expect(cut.workspace).toMatchObject({ mode: "worktree", baseRef: git.SHA });
-  const promoted = store.getSession("session_draft");
+  const promoted = store.records.get("session_draft");
   expect(promoted.draft).toBeUndefined();
   expect(promoted.workspace).toMatchObject({ mode: "worktree", baseRef: git.SHA });
 });
@@ -238,22 +238,22 @@ test("a pending session create, draft promotion, diff and overview leave the eve
 test("two concurrent identical status reads spawn one git, and the engine's own commit invalidates", async () => {
   const git = gatedGit();
   const store = new EngineStore(root(), () => 1, { asyncGit: git.runner });
-  store.registerProject({ id: "project_one", name: "One", root: root() });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
   await store.createSessionAsync({ id: "session_one", projectId: "project_one", envMode: "local" });
   const statuses = () => git.calls.filter((call) => call.startsWith("status ")).length;
 
   const start = git.calls.length;
-  await Promise.all([store.sessionDiffAsync("session_one"), store.sessionDiffAsync("session_one")]);
+  await Promise.all([store.workspaceReads.sessionDiff("session_one"), store.workspaceReads.sessionDiff("session_one")]);
   const oneRead = git.calls.length - start;
   expect(statuses()).toBe(1);
   // Inside the TTL (the clock does not move): served from the cache.
-  await store.sessionDiffAsync("session_one");
+  await store.workspaceReads.sessionDiff("session_one");
   expect(git.calls.length - start).toBe(oneRead);
 
   // A write the engine made drops the entry, whatever the clock says.
-  await store.commitSessionWork("session_one", "the engine's own write");
+  await store.sessionGit.commit("session_one", "the engine's own write");
   const afterCommit = git.calls.length;
-  await store.sessionDiffAsync("session_one");
+  await store.workspaceReads.sessionDiff("session_one");
   expect(git.calls.length - afterCommit).toBe(oneRead);
   expect(statuses()).toBe(2);
 });
@@ -263,11 +263,11 @@ test("browsing many patches releases older cached results", async () => {
   const store = new EngineStore(root(), () => 100, {
     asyncGit: async () => { calls++; return { status: 0, stdout: "", stderr: "" }; },
   });
-  store.registerProject({ id: "project_one", name: "One", root: root() });
-  for (let i = 0; i < 70; i++) await store.projectFilePatchAsync("project_one", `file-${i}.txt`);
+  store.projectRegistry.register({ id: "project_one", name: "One", root: root() });
+  for (let i = 0; i < 70; i++) await store.workspaceReads.projectFilePatch("project_one", `file-${i}.txt`);
   const before = calls;
-  await store.projectFilePatchAsync("project_one", "file-69.txt");
+  await store.workspaceReads.projectFilePatch("project_one", "file-69.txt");
   expect(calls).toBe(before);
-  await store.projectFilePatchAsync("project_one", "file-0.txt");
+  await store.workspaceReads.projectFilePatch("project_one", "file-0.txt");
   expect(calls).toBeGreaterThan(before);
 });

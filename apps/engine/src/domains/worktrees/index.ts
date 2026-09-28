@@ -19,7 +19,5 @@ export {
   type WorktreeQueue,
 } from "./session-worktree";
 export { defaultWorktreesRoot, readWorktreesRoot, rootOf, writeWorktreesRoot } from "./location";
-export { type ReleaseRefusal } from "./release";
 export { SETUP_STOP_GRACE_MS, WorktreeSetups } from "./setup";
-export { type MoveOutcome } from "./move";
 export { WorktreeMaintenance } from "./maintenance";

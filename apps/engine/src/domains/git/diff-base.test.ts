@@ -68,30 +68,30 @@ const settled = worktreeReady;
 test("a diff can be asked for a base other than the session's own, or for none at all (#694)", async () => {
   const projectRoot = repo();
   const store = new EngineStore(engineHome("telar-diff-base-engine-"), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: projectRoot });
-  store.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  store.lifecycle.createSession({ id: "session_cut", projectId: "project_one", envMode: "worktree" });
   await settled(store, "session_cut");
 
-  const workspace = store.getSession("session_cut").workspace;
+  const workspace = store.records.get("session_cut").workspace;
   if (workspace.mode !== "worktree") throw new Error("expected a worktree workspace");
   const checkout = workspace.path;
 
   // A commit the session made, so `base…worktree` and `HEAD…worktree` differ:
   // the first contains this file and the second does not.
   fs.writeFileSync(path.join(checkout, "committed.ts"), "export const a = 1;\n");
-  await store.commitSessionWork("session_cut", "add a file");
+  await store.sessionGit.commit("session_cut", "add a file");
   // ...and something uncommitted, which both comparisons must see.
   fs.writeFileSync(path.join(checkout, "dirty.ts"), "export const b = 2;\n");
 
   // ABSENT keeps the recorded base — what every caller meant before this
   // existed, and still gets without asking.
-  const own = await store.sessionDiffAsync("session_cut");
+  const own = await store.workspaceReads.sessionDiff("session_cut");
   expect(own.files.map((entry) => entry.path).sort()).toEqual(["committed.ts", "dirty.ts"]);
   expect(own.base).toBeDefined();
 
   // `null` DROPS IT: the working tree only. The new default, and the question
   // whose honest answer is the same in a shared checkout.
-  const tree = await store.sessionDiffAsync("session_cut", { base: null });
+  const tree = await store.workspaceReads.sessionDiff("session_cut", { base: null });
   expect(tree.files.map((entry) => entry.path)).toEqual(["dirty.ts"]);
   expect(tree.base).toBeUndefined();
 
@@ -99,10 +99,10 @@ test("a diff can be asked for a base other than the session's own, or for none a
   // same comparison as dropping it — which is exactly why `null` is not
   // spelled "HEAD" on the wire: a reader who chooses HEAD deliberately must
   // still be distinguishable from one who chose no base at all.
-  expect((await store.sessionDiffAsync("session_cut", { base: "HEAD" })).files.map((entry) => entry.path)).toEqual(["dirty.ts"]);
+  expect((await store.workspaceReads.sessionDiff("session_cut", { base: "HEAD" })).files.map((entry) => entry.path)).toEqual(["dirty.ts"]);
 
   // THE ROW'S PATCH FOLLOWS THE SAME BASE, so a file cannot show hunks from a
   // comparison the list above it did not make.
-  expect((await store.sessionFilePatchAsync("session_cut", "committed.ts")).patch).toContain("export const a = 1;");
-  expect((await store.sessionFilePatchAsync("session_cut", "committed.ts", { base: null })).patch).toBe("");
+  expect((await store.workspaceReads.sessionFilePatch("session_cut", "committed.ts")).patch).toContain("export const a = 1;");
+  expect((await store.workspaceReads.sessionFilePatch("session_cut", "committed.ts", { base: null })).patch).toBe("");
 });

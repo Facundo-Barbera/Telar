@@ -6,7 +6,7 @@ afterEach(closeStores);
 
 test("a result and its completion from one run reach the subscriber as ONE notification with both entries", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a" });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a" });
   const worker = reports(store);
   // The result is waiting in the host's queue, unread.
   expect(notifications(store)).toHaveLength(1);
@@ -36,7 +36,7 @@ test("a result and its completion from one run reach the subscriber as ONE notif
 
 test("a result and a completion from DIFFERENT runs stay two facts", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", once: false });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", once: false });
   const reporting = reports(store, { runId: "run_one" });
   reporting.end();
   expect(notifications(store)).toHaveLength(1);
@@ -59,7 +59,7 @@ test("a result and a completion from DIFFERENT runs stay two facts", () => {
 
 test("a completion with no preceding result is untouched", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a" });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a" });
   runTurn(store, "session_a", "run_a");
   const delivered = notifications(store);
   expect(delivered).toHaveLength(1);
@@ -69,17 +69,17 @@ test("a completion with no preceding result is untouched", () => {
 
 test("a result the host has CLAIMED is not rewritten, and its completion is recorded rather than delivered", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", once: true });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", once: true });
   const worker = reports(store);
   // Once claimed, the result is in front of a model and is never edited.
   const sent = notifications(store)[0]!;
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", sent.runId, token);
+  const token = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", sent.runId, token);
 
   worker.end();
 
   expect(store.turns("session_host").find((turn) => turn.runId === sent.runId)!.notification!.entries).toBeUndefined();
-  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
   // Recorded as a passive turn, completed on arrival, with a transcript row.
   const record = recordOf(store, worker.runId)!;
   expect(record).toMatchObject({
@@ -92,29 +92,29 @@ test("a result the host has CLAIMED is not rewritten, and its completion is reco
   expect(record.notification!.body).toContain("[wake: completed]");
   expect(store.items("session_host").some((item) => item.runId === record.runId && item.detail.type === "notification")).toBe(true);
   // The ending is what spends the one-shot, exactly as on the delivered path.
-  expect(store.subscriptionsFor("session_host")).toHaveLength(0);
+  expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(0);
 
   // And no second turn when the host settles.
-  store.completeTurn("session_host", sent.runId, token, { text: "read it" });
+  store.turnLifecycle.completeTurn("session_host", sent.runId, token, { text: "read it" });
   expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
-  expect(store.claimTurn("session_host", "worker_host")).toBeUndefined();
+  expect(store.claims.claimTurn("session_host", "worker_host")).toBeUndefined();
 });
 
 // An awaited result is queued, so the ending that follows folds into it.
 test("an awaited result to a BUSY host is queued, not steered, and its completion folds into it", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", once: true });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", once: true });
   const host = busy(store);
   const worker = reports(store);
   expect(worker.sent).toMatchObject({ state: "queued", agentDelivery: "wake" });
-  expect(store.steerForWorker("worker_host")).toHaveLength(0);
+  expect(store.worker.steerForWorker("worker_host")).toHaveLength(0);
 
   worker.end();
 
-  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
   expect(recordOf(store, worker.runId)).toBeUndefined();
-  expect(store.subscriptionsFor("session_host")).toHaveLength(0);
-  store.completeTurn("session_host", host.runId, host.token, { text: "done thinking" });
+  expect(store.subscriptions.subscriptionsFor("session_host")).toHaveLength(0);
+  store.turnLifecycle.completeTurn("session_host", host.runId, host.token, { text: "done thinking" });
   const queued = store.turns("session_host").filter((turn) => turn.state === "queued");
   expect(queued).toHaveLength(1);
   expect(queued[0]!.runId).toBe(worker.sent.runId);
@@ -123,17 +123,17 @@ test("an awaited result to a BUSY host is queued, not steered, and its completio
 
 test("a run that FAILS after sending its result still wakes the host — that is actionable", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a" });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a" });
   const worker = reports(store);
   const sent = notifications(store)[0]!;
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", sent.runId, token);
+  const token = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", sent.runId, token);
 
-  store.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
+  store.turnLifecycle.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
 
-  expect(store.pendingNotifications("session_host").map((each) => each.wakeKind)).toEqual(["turn_failed"]);
+  expect(store.wakes.pendingNotifications("session_host").map((each) => each.wakeKind)).toEqual(["turn_failed"]);
   expect(recordOf(store, worker.runId)).toBeUndefined();
-  store.completeTurn("session_host", sent.runId, token, { text: "read it" });
+  store.turnLifecycle.completeTurn("session_host", sent.runId, token, { text: "read it" });
   const woken = store.turns("session_host").filter((turn) => turn.state === "queued");
   expect(woken).toHaveLength(1);
   expect(woken[0]!.notification!.wakeKind).toBe("turn_failed");
@@ -141,13 +141,13 @@ test("a run that FAILS after sending its result still wakes the host — that is
 
 test("a completion from a run that sent NO result wakes exactly as before, even beside a read result", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", once: false });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", once: false });
   const first = reports(store, { runId: "run_one" });
   const sent = notifications(store)[0]!;
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", sent.runId, token);
+  const token = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", sent.runId, token);
   first.end();
-  store.completeTurn("session_host", sent.runId, token, { text: "read it" });
+  store.turnLifecycle.completeTurn("session_host", sent.runId, token, { text: "read it" });
   expect(recordOf(store, "run_one")).toBeDefined();
 
   // No result for this run, so the host is woken about it.
@@ -160,11 +160,11 @@ test("a completion from a run that sent NO result wakes exactly as before, even 
 
 test("a completion after a sent result never interrupts, even under completionWake: always", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", completionWake: "always" });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", completionWake: "always" });
   const worker = reports(store);
   const sent = notifications(store)[0]!;
-  const token = store.claimTurn("session_host", "worker_host")!.claim!.token;
-  store.markRunning("session_host", sent.runId, token);
+  const token = store.claims.claimTurn("session_host", "worker_host")!.claim!.token;
+  store.turnLifecycle.markRunning("session_host", sent.runId, token);
 
   worker.end();
 
@@ -178,21 +178,21 @@ test("a result nobody was awaiting stays held for the next turn — the completi
   const host = busy(store);
   const worker = reports(store);
   expect(worker.sent.agentDelivery).toBe("passive");
-  store.subscribe("session_host", { targetSessionId: "session_a" });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a" });
 
   worker.end();
 
   // Peer mail never opens a turn of its own; it rides the next one.
   expect(recordOf(store, worker.runId)).toBeDefined();
-  expect(store.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
-  store.completeTurn("session_host", host.runId, host.token, { text: "done" });
+  expect(store.wakes.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
+  store.turnLifecycle.completeTurn("session_host", host.runId, host.token, { text: "done" });
   expect(store.turns("session_host").filter((turn) => turn.state === "queued")).toHaveLength(0);
-  expect(store.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
+  expect(store.wakes.pendingNotifications("session_host").map((each) => each.kind)).toEqual(["peer_message"]);
 });
 
 test("the merge spends a delivery; a fresh errand joining the queued turn does not", () => {
   const { store } = setup();
-  store.subscribe("session_host", { targetSessionId: "session_a", once: false, events: ["turn_completed", "turn_failed", "request_opened"] });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", once: false, events: ["turn_completed", "turn_failed", "request_opened"] });
   const worker = reports(store);
   worker.end();
   const merged = notifications(store)[0]!;
@@ -206,30 +206,30 @@ test("the merge spends a delivery; a fresh errand joining the queued turn does n
   expect(rows[0]!.notification!.deliveries).toBe(MAX_DELIVERIES);
   // Result, completion, second result; the second ending is only recorded.
   expect(rows[0]!.notification!.entries).toHaveLength(3);
-  expect(store.pendingNotifications("session_host")).toHaveLength(0);
+  expect(store.wakes.pendingNotifications("session_host")).toHaveLength(0);
 });
 
 test("an `always` subscriber that is BUSY still gets its interruption rather than a merge", () => {
   const { store } = setup();
   // A driver without live steering queues a peer's message, so the host can be
   // busy and have an unread result waiting.
-  store.createSession({ id: "session_slow", projectId: "project_one", title: "slow", driver: "opencode" });
-  store.subscribe("session_slow", { targetSessionId: "session_a", completionWake: "always" });
-  store.submitTurn("session_slow", { runId: "run_slow", input: "a long think" });
-  const token = store.claimTurn("session_slow", "worker_slow")!.claim!.token;
-  store.markRunning("session_slow", "run_slow", token);
+  store.lifecycle.createSession({ id: "session_slow", projectId: "project_one", title: "slow", driver: "opencode" });
+  store.subscriptions.subscribe("session_slow", { targetSessionId: "session_a", completionWake: "always" });
+  store.intake.submitTurn("session_slow", { runId: "run_slow", input: "a long think" });
+  const token = store.claims.claimTurn("session_slow", "worker_slow")!.claim!.token;
+  store.turnLifecycle.markRunning("session_slow", "run_slow", token);
 
-  store.submitTurn("session_a", { runId: "run_src", input: "work" });
-  const child = store.claimTurn("session_a", "worker_child")!.claim!.token;
-  store.markRunning("session_a", "run_src", child);
-  const sent = store.submitAgentTurn(
+  store.intake.submitTurn("session_a", { runId: "run_src", input: "work" });
+  const child = store.claims.claimTurn("session_a", "worker_child")!.claim!.token;
+  store.turnLifecycle.markRunning("session_a", "run_src", child);
+  const sent = store.intake.submitAgentTurn(
     "session_slow",
     { runId: "run_sent", input: "the analysis", intent: "result" },
     { sessionId: "session_a", runId: "run_src", claimToken: child },
   );
   expect(sent.turn.state).toBe("queued");
 
-  store.completeTurn("session_a", "run_src", child, { text: "done" });
+  store.turnLifecycle.completeTurn("session_a", "run_src", child, { text: "done" });
 
   // The ending queued on its own rather than riding the unread result.
   const rows = store.turns("session_slow").filter((each) => each.notification !== undefined);
@@ -242,12 +242,12 @@ test("a passive report is never merged into — nothing was queued to merge", ()
   const { store } = setup();
   // The send is passive, so nothing is queued for the failure to fold into.
   const host = busy(store);
-  store.subscribe("session_host", { targetSessionId: "session_a", events: ["turn_failed"] });
+  store.subscriptions.subscribe("session_host", { targetSessionId: "session_a", events: ["turn_failed"] });
   const worker = reports(store);
   expect(worker.sent.state).toBe("completed");
-  store.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
+  store.turnLifecycle.failTurn("session_a", worker.runId, worker.token, { code: "driver_failed", message: "the CLI died" });
   // The host settling delivers both from the mailbox.
-  store.completeTurn("session_host", host.runId, host.token, { text: "done" });
+  store.turnLifecycle.completeTurn("session_host", host.runId, host.token, { text: "done" });
   const delivered = notifications(store).filter((turn) => turn.notification!.entries !== undefined);
   expect(delivered).toHaveLength(1);
   const kinds = delivered[0]!.notification!.entries!.map((entry) => entry.kind);

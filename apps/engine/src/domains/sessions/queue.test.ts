@@ -59,14 +59,14 @@ function open(directory: string, now?: () => number): EngineStore {
 }
 
 function seeded(store: EngineStore, turns: number, sessionId = "session_one"): EngineStore {
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: sessionId, projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: sessionId, projectId: "project_one" });
   for (let n = 0; n < turns; n += 1) {
     const runId = `run_seed_${n}`;
-    store.submitTurn(sessionId, { runId, input: `message ${n}` });
-    const token = store.claimTurn(sessionId, "worker_one")!.claim!.token;
-    store.markRunning(sessionId, runId, token);
-    store.completeTurn(sessionId, runId, token, { text: `answer ${n}` });
+    store.intake.submitTurn(sessionId, { runId, input: `message ${n}` });
+    const token = store.claims.claimTurn(sessionId, "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning(sessionId, runId, token);
+    store.turnLifecycle.completeTurn(sessionId, runId, token, { text: `answer ${n}` });
   }
   return store;
 }
@@ -138,17 +138,17 @@ test("a queue-writing command parses the queue a fixed number of times", () => {
    */
   const store = seeded(open(root()), 5);
 
-  expect(queueParses(store, () => store.submitTurn("session_one", { runId: "run_x", input: "hello" }))).toBe(5);
+  expect(queueParses(store, () => store.intake.submitTurn("session_one", { runId: "run_x", input: "hello" }))).toBe(5);
 
   let token = "";
-  expect(queueParses(store, () => { token = store.claimTurn("session_one", "worker_one")!.claim!.token; })).toBe(4);
-  expect(queueParses(store, () => store.markRunning("session_one", "run_x", token))).toBe(2);
-  expect(queueParses(store, () => store.completeTurn("session_one", "run_x", token, { text: "done" }))).toBe(4);
+  expect(queueParses(store, () => { token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token; })).toBe(4);
+  expect(queueParses(store, () => store.turnLifecycle.markRunning("session_one", "run_x", token))).toBe(2);
+  expect(queueParses(store, () => store.turnLifecycle.completeTurn("session_one", "run_x", token, { text: "done" }))).toBe(4);
 
   // AND A WRITE THAT CANNOT HAVE MOVED THE QUEUE still reads it once and not
   // twice — `indexedSessionOf`'s carve-out means the row carries the folded
   // fields over rather than folding them again.
-  expect(queueParses(store, () => store.updateSession("session_one", { title: "Renamed" }))).toBe(1);
+  expect(queueParses(store, () => store.lifecycle.updateSession("session_one", { title: "Renamed" }))).toBe(1);
 });
 
 test("the carried queue is the one the command wrote, at every transition", () => {
@@ -181,12 +181,12 @@ test("the carried queue is the one the command wrote, at every transition", () =
   };
 
   let token = "";
-  step(() => store.submitTurn("session_one", { runId: "run_x", input: "hello" }), busy("queued", 1_010));
-  step(() => { token = store.claimTurn("session_one", "worker_one")!.claim!.token; }, busy("queued", 1_010));
-  step(() => store.markRunning("session_one", "run_x", token), busy("working", 1_030));
-  step(() => store.completeTurn("session_one", "run_x", token, { text: "done" }), idle(1_040, 4));
+  step(() => store.intake.submitTurn("session_one", { runId: "run_x", input: "hello" }), busy("queued", 1_010));
+  step(() => { token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token; }, busy("queued", 1_010));
+  step(() => store.turnLifecycle.markRunning("session_one", "run_x", token), busy("working", 1_030));
+  step(() => store.turnLifecycle.completeTurn("session_one", "run_x", token, { text: "done" }), idle(1_040, 4));
   // A metadata-only write must not disturb what the queue write folded.
-  step(() => store.updateSession("session_one", { title: "Renamed" }), idle(1_040, 4));
+  step(() => store.lifecycle.updateSession("session_one", { title: "Renamed" }), idle(1_040, 4));
 });
 
 // ── step 3: validate on write, trust on read, refuse either way ──────────────
@@ -244,7 +244,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
   expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
 
   // WRITE: refused, with the turn still on file rather than half-replaced.
-  expect(() => store.submitTurn("session_one", { runId: "run_next", input: "hello" })).toThrow(/invalid session queue/);
+  expect(() => store.intake.submitTurn("session_one", { runId: "run_next", input: "hello" })).toThrow(/invalid session queue/);
   expect(store.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_bad"]);
 
   // …and a well-formed turn in the same position is accepted, so this is a
@@ -254,7 +254,7 @@ test("a malformed turn in the store is refused at the write, not let through", (
   stores.splice(stores.indexOf(store), 1);
   injectQueue(directory, "session_one", clean);
   const healthy = open(directory);
-  healthy.submitTurn("session_one", { runId: "run_next", input: "hello" });
+  healthy.intake.submitTurn("session_one", { runId: "run_next", input: "hello" });
   expect(healthy.turns("session_one").map((turn) => turn.runId)).toEqual(["run_seed_0", "run_seed_1", "run_next"]);
 });
 

@@ -58,17 +58,17 @@ function readyStore(runtimeMode: "approval-required" | "auto" | "full-access" | 
       return true;
     },
   });
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one" });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   // One mode per case rather than the default ladder.
-  store.updateSession("session_one", { runtimeMode });
+  store.lifecycle.updateSession("session_one", { runtimeMode });
   return { store, parked };
 }
 
 function runningTurn(store: EngineStore): string {
-  store.submitTurn("session_one", { runId: "run_one", input: "Hello" });
-  const claimed = store.claimTurn("session_one", "worker_one")!;
-  store.markRunning("session_one", "run_one", claimed.claim!.token);
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hello" });
+  const claimed = store.claims.claimTurn("session_one", "worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_one", claimed.claim!.token);
   return claimed.claim!.token;
 }
 
@@ -77,7 +77,7 @@ const bashDetail = { kind: "command_execution" as const, command: { command: "rm
 test("full-access resolves by policy with no human and nobody notified", () => {
   const { store, parked } = readyStore("full-access");
   const token = runningTurn(store);
-  const opened = store.openRequest("session_one", "run_one", token, {
+  const opened = store.requestGate.open("session_one", "run_one", token, {
     requestId: "req_1",
     kind: "command_execution",
     detail: bashDetail,
@@ -92,7 +92,7 @@ test("full-access resolves by policy with no human and nobody notified", () => {
 test("approval-required parks a command, records that someone was told, and blocks the queue", () => {
   const { store, parked } = readyStore("approval-required");
   const token = runningTurn(store);
-  const opened = store.openRequest("session_one", "run_one", token, {
+  const opened = store.requestGate.open("session_one", "run_one", token, {
     requestId: "req_1",
     kind: "command_execution",
     detail: bashDetail,
@@ -100,17 +100,17 @@ test("approval-required parks a command, records that someone was told, and bloc
   // The notifier runs after the commit, so the stored row is what records it.
   expect(opened).toMatchObject({ state: "open" });
   expect(parked).toEqual(["req_1"]);
-  expect(store.requests("session_one")[0]).toMatchObject({ state: "open", notified: true });
+  expect(store.requestGate.list("session_one")[0]).toMatchObject({ state: "open", notified: true });
 });
 
 test("with NO notifier a parked request records notified:false rather than implying someone was told", () => {
   // "Stuck and nobody was told" has to be a detectable state, not an inference
   // from absence. This is the assertion that keeps `notified` honest.
   const store = new EngineStore(root(), () => 100);
-  store.registerProject({ id: "project_one", name: "One", root: "/tmp" });
-  store.createSession({ id: "session_one", projectId: "project_one", detached: false });
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", detached: false });
   const token = runningTurn(store);
-  const opened = store.openRequest("session_one", "run_one", token, {
+  const opened = store.requestGate.open("session_one", "run_one", token, {
     requestId: "req_1",
     kind: "command_execution",
     detail: bashDetail,
@@ -122,14 +122,14 @@ test("auto-accept-edits passes a file change and still parks a command", () => {
   const { store } = readyStore("auto-accept-edits");
   const token = runningTurn(store);
   expect(
-    store.openRequest("session_one", "run_one", token, {
+    store.requestGate.open("session_one", "run_one", token, {
       requestId: "req_edit",
       kind: "file_change",
       detail: { kind: "file_change", change: { path: "src/a.ts", kind: "edit" } },
     }),
   ).toMatchObject({ state: "resolved", decision: "accept" });
   expect(
-    store.openRequest("session_one", "run_one", token, {
+    store.requestGate.open("session_one", "run_one", token, {
       requestId: "req_cmd",
       kind: "command_execution",
       detail: bashDetail,
@@ -140,13 +140,13 @@ test("auto-accept-edits passes a file change and still parks a command", () => {
 test("a human answer resolves the request once and only once", () => {
   const { store } = readyStore("approval-required");
   const token = runningTurn(store);
-  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
 
-  const resolved = store.resolveRequest("session_one", "req_1", { decision: "decline", reason: "too broad" });
+  const resolved = store.requestGate.resolve("session_one", "req_1", { decision: "decline", reason: "too broad" });
   expect(resolved).toMatchObject({ state: "resolved", decision: "decline", resolvedBy: "human", reason: "too broad" });
   // A second answer is a conflict, not a silent overwrite: the provider has
   // already been told, and changing the record would make the journal lie.
-  expect(() => store.resolveRequest("session_one", "req_1", { decision: "accept" })).toThrow(EngineStateError);
+  expect(() => store.requestGate.resolve("session_one", "req_1", { decision: "accept" })).toThrow(EngineStateError);
 });
 
 test("opening the same requestId twice returns the SAME answer instead of a second request", () => {
@@ -154,14 +154,14 @@ test("opening the same requestId twice returns the SAME answer instead of a seco
   // request — the provider is blocked on the first one.
   const { store } = readyStore("approval-required");
   const token = runningTurn(store);
-  const first = store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  const second = store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  const first = store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  const second = store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
   const reopened = { ...first, notified: true };
   expect(second).toEqual(reopened);
-  expect(store.requests("session_one")).toHaveLength(1);
+  expect(store.requestGate.list("session_one")).toHaveLength(1);
 
-  store.resolveRequest("session_one", "req_1", { decision: "accept" });
-  expect(store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail })).toMatchObject({
+  store.requestGate.resolve("session_one", "req_1", { decision: "accept" });
+  expect(store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail })).toMatchObject({
     state: "resolved",
     decision: "accept",
   });
@@ -170,14 +170,14 @@ test("opening the same requestId twice returns the SAME answer instead of a seco
 test("a resolution is offered to the worker that holds the running claim, and not to others", () => {
   const { store } = readyStore("approval-required");
   const token = runningTurn(store);
-  store.openRequest("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
-  expect(store.resolutionsForWorker("worker_one")).toEqual([]);
+  store.requestGate.open("session_one", "run_one", token, { requestId: "req_1", kind: "command_execution", detail: bashDetail });
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toEqual([]);
 
-  store.resolveRequest("session_one", "req_1", { decision: "accept" });
-  expect(store.resolutionsForWorker("worker_one")).toEqual([
+  store.requestGate.resolve("session_one", "req_1", { decision: "accept" });
+  expect(store.requestGate.resolutionsForWorker("worker_one")).toEqual([
     { requestId: "req_1", sessionId: "session_one", runId: "run_one", decision: "accept" },
   ]);
-  expect(store.resolutionsForWorker("worker_two")).toEqual([]);
+  expect(store.requestGate.resolutionsForWorker("worker_two")).toEqual([]);
 });
 
 test("a driver blocked on a human is unblocked by the heartbeat, end to end", async () => {
@@ -269,31 +269,31 @@ const secretDetail = {
 test("secret_access PARKS in full-access — the one kind besides user_input that policy may never answer", () => {
   const { store, parked } = readyStore("full-access");
   const token = runningTurn(store);
-  const opened = store.openRequest("session_one", "run_one", token, {
+  const opened = store.requestGate.open("session_one", "run_one", token, {
     requestId: "req_secret",
     kind: "secret_access",
     detail: secretDetail,
   });
   expect(opened).toMatchObject({ state: "open" });
   expect(parked).toEqual(["req_secret"]);
-  expect(store.requests("session_one")[0]).toMatchObject({ state: "open", notified: true });
+  expect(store.requestGate.list("session_one")[0]).toMatchObject({ state: "open", notified: true });
 });
 
 test("resolving a secret_access carries the item pick in answers, and the journal never holds a value", () => {
   const { store } = readyStore("full-access");
   const token = runningTurn(store);
-  store.openRequest("session_one", "run_one", token, {
+  store.requestGate.open("session_one", "run_one", token, {
     requestId: "req_secret",
     kind: "secret_access",
     detail: secretDetail,
   });
-  const resolved = store.resolveRequest("session_one", "req_secret", {
+  const resolved = store.requestGate.resolve("session_one", "req_secret", {
     decision: "accept",
     answers: { item: "item_gh" },
   });
   expect(resolved.answers).toEqual({ item: "item_gh" });
   // Worker pickup: the heartbeat query carries the answers through.
-  const forWorker = store.resolutionsForWorker("worker_one");
+  const forWorker = store.requestGate.resolutionsForWorker("worker_one");
   expect(forWorker).toEqual([
     expect.objectContaining({ requestId: "req_secret", decision: "accept", answers: { item: "item_gh" } }),
   ]);

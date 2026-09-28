@@ -238,9 +238,9 @@ test("a source falls back to the hub's host for its label", () => {
 
 test("a saved hub reads back with its key withheld and marked redacted", () => {
   const engine = store();
-  const saved = engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317/", managementKey: "sk-hub-secret", label: "Home hub" });
+  const saved = engine.usageSources.save({ id: "home", url: "http://localhost:8317/", managementKey: "sk-hub-secret", label: "Home hub" });
   expect(saved).toMatchObject({ id: "home", kind: "cliproxy", label: "Home hub", enabled: true, managementKey: "", keyRedacted: true });
-  const [listed] = engine.listUsageLimitSources();
+  const [listed] = engine.usageSources.list();
   expect(listed!.managementKey).toBe("");
   expect(listed!.keyRedacted).toBe(true);
   expect(fs.readFileSync(engine.paths.usageLimitSources, "utf8")).not.toContain("sk-hub-secret");
@@ -250,47 +250,47 @@ test("a saved hub reads back with its key withheld and marked redacted", () => {
 
 test("saving the redacted shape back keeps the stored key", () => {
   const engine = store();
-  engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
-  const redacted = engine.listUsageLimitSources()[0]!;
-  engine.saveUsageLimitSource({ id: redacted.id, url: redacted.url, managementKey: redacted.managementKey, label: "Renamed" });
-  const [resolved] = engine.resolveUsageLimitSources();
+  engine.usageSources.save({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
+  const redacted = engine.usageSources.list()[0]!;
+  engine.usageSources.save({ id: redacted.id, url: redacted.url, managementKey: redacted.managementKey, label: "Renamed" });
+  const [resolved] = engine.usageSources.resolve();
   expect(resolved!.managementKey).toBe("sk-hub-secret");
-  expect(engine.listUsageLimitSources()[0]!.label).toBe("Renamed");
+  expect(engine.usageSources.list()[0]!.label).toBe("Renamed");
 });
 
 test("only enabled hubs resolve, and resolving is the one read that carries keys", () => {
   const engine = store();
-  engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-home" });
-  engine.saveUsageLimitSource({ id: "work", url: "http://localhost:8318", managementKey: "sk-work", enabled: false });
-  expect(engine.listUsageLimitSources()).toHaveLength(2);
-  const resolved = engine.resolveUsageLimitSources();
+  engine.usageSources.save({ id: "home", url: "http://localhost:8317", managementKey: "sk-home" });
+  engine.usageSources.save({ id: "work", url: "http://localhost:8318", managementKey: "sk-work", enabled: false });
+  expect(engine.usageSources.list()).toHaveLength(2);
+  const resolved = engine.usageSources.resolve();
   expect(resolved.map((source) => source.id)).toEqual(["home"]);
   expect(resolved[0]!.managementKey).toBe("sk-home");
 });
 
 test("removing a hub forgets its key with it", () => {
   const engine = store();
-  engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
-  expect(engine.removeUsageLimitSource("home")).toBe(true);
-  expect(engine.listUsageLimitSources()).toEqual([]);
+  engine.usageSources.save({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
+  expect(engine.usageSources.remove("home")).toBe(true);
+  expect(engine.usageSources.list()).toEqual([]);
   expect(fs.readFileSync(engine.paths.usageLimitSecrets, "utf8")).not.toContain("sk-hub-secret");
-  expect(engine.removeUsageLimitSource("home")).toBe(false);
+  expect(engine.usageSources.remove("home")).toBe(false);
 });
 
 test("a hub needs a valid http URL and a well-formed id", () => {
   const engine = store();
-  expect(() => engine.saveUsageLimitSource({ id: "home", url: "not a url" })).toThrow(EngineStateError);
-  expect(() => engine.saveUsageLimitSource({ id: "home", url: "file:///etc/passwd" })).toThrow("http or https");
-  expect(() => engine.saveUsageLimitSource({ id: "9bad", url: "http://localhost:8317" })).toThrow(EngineStateError);
-  expect(() => engine.saveUsageLimitSource({ id: "home" })).toThrow("needs a hub URL");
+  expect(() => engine.usageSources.save({ id: "home", url: "not a url" })).toThrow(EngineStateError);
+  expect(() => engine.usageSources.save({ id: "home", url: "file:///etc/passwd" })).toThrow("http or https");
+  expect(() => engine.usageSources.save({ id: "9bad", url: "http://localhost:8317" })).toThrow(EngineStateError);
+  expect(() => engine.usageSources.save({ id: "home" })).toThrow("needs a hub URL");
 });
 
 test("a hand-mangled registry costs the list, never the engine's settings read", () => {
   const engine = store();
-  engine.saveUsageLimitSource({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
+  engine.usageSources.save({ id: "home", url: "http://localhost:8317", managementKey: "sk-hub-secret" });
   fs.writeFileSync(engine.paths.usageLimitSources, "{ not json");
-  expect(engine.listUsageLimitSources()).toEqual([]);
-  expect(engine.resolveUsageLimitSources()).toEqual([]);
+  expect(engine.usageSources.list()).toEqual([]);
+  expect(engine.usageSources.resolve()).toEqual([]);
 });
 
 const realFetch = globalThis.fetch;

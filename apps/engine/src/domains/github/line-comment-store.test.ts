@@ -69,9 +69,9 @@ async function withSession(pullHead: (cwd: string) => string) {
     },
   });
   stores.push(store);
-  store.registerProject({ id: "project_one", name: "One", root: repo() });
-  store.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
-  const workspace = () => store.getSession("session_one").workspace;
+  store.projectRegistry.register({ id: "project_one", name: "One", root: repo() });
+  store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
+  const workspace = () => store.records.get("session_one").workspace;
   expect(await until(() => workspace().mode === "worktree" && fs.existsSync((workspace() as { path: string }).path))).toBe(true);
   cwd = (workspace() as { path: string }).path;
   fs.appendFileSync(path.join(cwd, "a.ts"), "two\n");
@@ -83,7 +83,7 @@ const headOf = (cwd: string) => run(cwd, "rev-parse", "HEAD").trim();
 
 test("the anchor carries the branch's pull request, the checkout's HEAD and GitHub's hunks", async () => {
   const { store, head } = await withSession(headOf);
-  const anchor = await store.sessionPullAnchor("session_one");
+  const anchor = await store.sessionPulls.anchor("session_one");
   expect(anchor).toEqual({
     pull: { number: 7, url: "https://github.com/o/r/pull/7", headRefOid: head, baseRefName: "main" },
     head,
@@ -94,7 +94,7 @@ test("the anchor carries the branch's pull request, the checkout's HEAD and GitH
 
 test("a comment goes to the branch's own pull request, pinned to the head", async () => {
   const { store, calls, head } = await withSession(headOf);
-  const result = await store.sessionPullLineComment("session_one", { commitId: head, path: "a.ts", line: 2, side: "RIGHT", body: "Why?" });
+  const result = await store.sessionPulls.lineComment("session_one", { commitId: head, path: "a.ts", line: 2, side: "RIGHT", body: "Why?" });
   expect(result).toEqual({ commented: true, url: "https://github.com/o/r/pull/7#discussion_r1" });
   const post = calls.find((args) => args[1] === "-X")!;
   expect(post).toContain("repos/{owner}/{repo}/pulls/7/comments");
@@ -103,7 +103,7 @@ test("a comment goes to the branch's own pull request, pinned to the head", asyn
 
 test("a pull request whose head is not the checkout's is `stale`, and nothing is posted", async () => {
   const { store, calls, head } = await withSession(() => "b".repeat(40));
-  const result = await store.sessionPullLineComment("session_one", { commitId: head, path: "a.ts", line: 2, side: "RIGHT", body: "Why?" });
+  const result = await store.sessionPulls.lineComment("session_one", { commitId: head, path: "a.ts", line: 2, side: "RIGHT", body: "Why?" });
   expect(result).toMatchObject({ commented: false, refusal: "stale" });
   expect(calls.some((args) => args[1] === "-X")).toBe(false);
 });
@@ -111,8 +111,8 @@ test("a pull request whose head is not the checkout's is `stale`, and nothing is
 test("a file with uncommitted changes is `stale`, and nothing is posted", async () => {
   const { store, calls, cwd, head } = await withSession(headOf);
   fs.appendFileSync(path.join(cwd, "a.ts"), "three\n");
-  expect((await store.sessionPullAnchor("session_one")).dirty).toEqual(["a.ts"]);
-  const result = await store.sessionPullLineComment("session_one", { commitId: head, path: "a.ts", line: 2, side: "RIGHT", body: "Why?" });
+  expect((await store.sessionPulls.anchor("session_one")).dirty).toEqual(["a.ts"]);
+  const result = await store.sessionPulls.lineComment("session_one", { commitId: head, path: "a.ts", line: 2, side: "RIGHT", body: "Why?" });
   expect(result).toMatchObject({ commented: false, refusal: "stale" });
   expect(calls.some((args) => args[1] === "-X")).toBe(false);
 });
