@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The web's `prompt-stash.test.ts` rules, on the phone's port: newest
-/// first, popped on use, an oversized entry refused before it can evict, and
-/// a restore that never eats what is in the box.
 @Suite struct PromptStashTests {
     private func entry(_ id: String, _ prompt: String, images: [StashedImage] = [], at: Timestamp = 1) -> StashEntry {
         StashEntry(id: id, at: at, prompt: prompt, images: images)

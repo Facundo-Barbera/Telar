@@ -2,10 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// THE PHONE'S MENU AGAINST THE MAC'S, in the one form the two can be compared
-/// in: a list of ids and labels. `apps/web/src/features/sessions/session-action-menu.ts` is the
-/// list this is checked against — see #326 for the four verbs the phone was
-/// missing and the three the two surfaces are allowed to differ on.
 @Suite struct SessionRowMenuTests {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
     private var stamp: Timestamp { Timestamp(now.timeIntervalSince1970 * 1000) }
@@ -50,7 +46,6 @@ import Testing
         #expect(menu.map(\.label) == [
             "New session in Telar", "Pin to the list", "Settle", "Snooze", "Rename", "Copy", "Delete session",
         ])
-        // Only the last row is destructive, so the eye lands on it last.
         #expect(menu.filter(\.destructive).map(\.id) == ["delete"])
         #expect(menu.allSatisfy { $0.disabled == nil })
     }
@@ -61,15 +56,11 @@ import Testing
         #expect(item.label == "New session on telar/ios-menus")
         #expect(item.verb == .newSession(projectId: "p1", baseRef: "telar/ios-menus"))
 
-        // A local session runs on the project's own checkout, so it has no
-        // branch of its own to attribute the sibling to.
         let local = try #require(items(try session()).first { $0.id == "new-session" })
         #expect(local.verb == .newSession(projectId: "p1", baseRef: nil))
     }
 
     @Test func aSessionWithNoProjectCannotSpawnASibling() throws {
-        // The rail has no name for a session that belongs to no project, and
-        // "this project" is the Mac's own fallback for exactly that.
         let item = try #require(items(try session(project: nil), projectName: nil).first { $0.id == "new-session" })
         #expect(item.label == "New session in this project")
         #expect(item.disabled == SessionRowMenu.noProject)
@@ -91,8 +82,6 @@ import Testing
     @Test func branchIsOnlyAWorktreeSessionsAndTheLinkNeedsAnAddress() throws {
         let local = try #require(items(try session()).first { $0.id == "copy" })
         #expect(local.children?.map(\.label) == ["Link", "Path", "Session ID"])
-        // No cockpit address for that Mac: a relative link is not a link, so
-        // the row is absent rather than copying a path under the wrong name.
         let unreachable = try #require(items(try session(), link: false).first { $0.id == "copy" })
         #expect(unreachable.children?.map(\.label) == ["Path", "Session ID"])
     }
@@ -105,8 +94,6 @@ import Testing
         let settled = items(try session(), settled: true)
         #expect(settled.first { $0.id == "settle" }?.label == "Un-settle")
         #expect(settled.first { $0.id == "settle" }?.verb == .settle(false))
-        // Coming back from settled is never refused — the gate is about
-        // shelving a session somebody still needs.
         #expect(items(try session(activity: "working"), settled: true).first { $0.id == "settle" }?.disabled == nil)
     }
 
@@ -133,8 +120,6 @@ import Testing
         #expect(blocked.first { $0.id == "snooze" }?.disabled == SessionRowMenu.waiting)
         #expect(blocked.first { $0.id == "delete" }?.disabled == SessionRowMenu.waitingDelete)
 
-        // A RUNNING SESSION IS SNOOZABLE and a blocked one is not — snoozing
-        // only changes what you are shown, and hiding a question defeats it.
         let working = items(try session(activity: "working"))
         #expect(working.first { $0.id == "settle" }?.disabled == SessionRowMenu.running)
         #expect(working.first { $0.id == "snooze" }?.disabled == nil)

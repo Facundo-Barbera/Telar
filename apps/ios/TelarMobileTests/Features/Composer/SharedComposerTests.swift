@@ -3,11 +3,6 @@ import SwiftUI
 import Testing
 @testable import TelarMobile
 
-/// THE COMPOSER READS A HOST, NOT A STORE (#539).
-///
-/// `ComposerHost` names the handful of facts the composer reads. These tests
-/// hold the seam: the session's answers are the STORE'S, field for field, so
-/// nothing about the session composer changed when it was lifted.
 @Suite @MainActor struct SharedComposerTests {
     private func store() -> SessionStore {
         SessionStore(api: RecordingEngineAPI(eventPages: [], snapshots: []), sessionId: "s")

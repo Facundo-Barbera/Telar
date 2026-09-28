@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// THE LIST OF PROMPTS YOU SET ASIDE — the web's `ComposerStashMenu`, as a
-/// sheet. Each row is the entry's first line; a tap restores it into the box
-/// that opened the sheet, a swipe drops it.
 struct StashSheet: View {
     let onPick: (StashEntry) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -12,9 +9,6 @@ struct StashSheet: View {
         NavigationStack {
             Group {
                 if stash.entries.isEmpty {
-                    // THE ONLY PLACE THE GESTURE IS WRITTEN DOWN: the badge is
-                    // hidden while the stash is empty, so this line is the
-                    // whole of the feature's discoverability.
                     ContentUnavailableView(
                         "Nothing stashed",
                         systemImage: "tray",
@@ -62,7 +56,6 @@ struct StashSheet: View {
     }
 }
 
-/// The web's `fmtAgo`: coarse, and "just now" under a minute.
 func stashAgo(_ at: Timestamp, now: Date = Date()) -> String {
     let seconds = Int(now.timeIntervalSince1970) - at / 1000
     if seconds < 60 { return "just now" }
@@ -75,10 +68,6 @@ func stashAgo(_ at: Timestamp, now: Date = Date()) -> String {
     return "\(days / 7)w ago"
 }
 
-/// The tray button that sits in the composer's toolbar: hidden while the stash
-/// is empty and the box is empty (a "0" is chrome advertising a feature you
-/// have not used); "put in" when the box has text, "take out" when it does
-/// not and the stash has something. Long-press always opens the list.
 struct StashButton: View {
     let hasDraft: Bool
     let onStash: () -> Void
@@ -91,9 +80,6 @@ struct StashButton: View {
                 if hasDraft { onStash() } else { onOpen() }
             } label: {
                 ZStack(alignment: .topTrailing) {
-                    // The tray's circle scales with its glyph, the same
-                    // affordance as the composer's circles (#674). The count
-                    // badge above it has no frame and takes a token instead.
                     Image(systemName: hasDraft ? "tray.and.arrow.down" : "tray.full")
                         .foregroundStyle(Theme.text)
                         .scaledGlyphBox(44, glyph: 15)

@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// THE PASS BETWEEN A REPLY AND A VOICE. Every case here is something
-/// `MarkdownContent.renderPlainText()` reads out loud today and should not:
-/// fence bodies, pipe rows, raw TeX, bare URLs.
 @Suite struct SpeakableTextTests {
     @Test func aFencedCodeBlockIsNeverRead() {
         let spoken = speakableText("""
@@ -29,7 +26,6 @@ import Testing
     @Test func aLinkIsItsLabelAndTheUrlIsNotSpeech() {
         #expect(speakableText("See [the docs](https://example.com/a_b) for more.")
             == "See the docs for more.")
-        // Reference style, and a bare autolink nobody would want spelled out.
         #expect(speakableText("See [the docs][1] and <https://example.com>.")
             == "See the docs and a link.")
     }
@@ -60,13 +56,10 @@ import Testing
         #expect(speakableText("And $$E = mc^2$$ closes it.") == "And an equation closes it.")
         #expect(speakableText("Before\n\n$$\nR_t = \\frac{P_t}{P_{t-1}}\n$$\n\nAfter")
             == "Before.\nan equation.\nAfter.")
-        // The web's rule, and the renderer's: single dollars are money.
         #expect(speakableText("It costs $5 to $10.") == "It costs $5 to $10.")
     }
 
     @Test func aCodeSpanIsReadAsWrittenAndEmphasisIsNot() {
-        // An identifier is one word; its underscores are part of it, and the
-        // emphasis around it is tone the voice cannot wear.
         #expect(speakableText("Call **`read_file`** on it, *twice*.")
             == "Call read_file on it, twice.")
         #expect(speakableText("A _stressed_ word and a snake_case one.")
@@ -110,8 +103,6 @@ import Testing
     }
 }
 
-/// WHICH reply gets read: the newest SETTLED turn's closing prose, chosen by
-/// the same `newestResultTurn` the read receipt confirms against.
 @Suite struct LastReplySourceTests {
     private func turn(
         _ sequence: Int, _ state: TurnState = .completed,
@@ -129,8 +120,6 @@ import Testing
     }
 
     @Test func aRunningTurnIsNotAnAnswerYet() {
-        // Speak the SETTLED reply only: a half-arrived one can still be
-        // replaced, and audio cannot be un-said.
         #expect(lastReplySource([turn(2, .running, prose: "still going")]) == nil)
         #expect(lastReplySource([turn(2, .completed, prose: "done"), turn(3, .running, prose: "next")])
             == "done")

@@ -1,8 +1,5 @@
 import SwiftUI
 
-/// THE FILES TAB: the checkout as a tree beside the file that is open —
-/// the desktop's Editor. Files arrive by the dozen, so they get a strip of
-/// their own inside this tab rather than a panel tab each.
 struct FilesSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -17,18 +14,8 @@ struct FilesSurface: View {
     @State private var expanded: Set<String> = []
     @State private var searched = false
     @State private var saving: [String: SaveState] = [:]
-    /// A file "Reveal in file tree" asked for: the tree may only just have
-    /// been shown, so the scroll is done once its rows exist rather than
-    /// inside the menu's action.
     @State private var revealing: String?
-    /// THE PANEL'S OWN WIDTH decides the arrangement, not the window's size
-    /// class: inside an inspector column an iPad reports compact, and an
-    /// inspector wide enough for both would have been split anyway. 220 for
-    /// the tree plus a body still worth reading is the line.
     @State private var width: CGFloat = 0
-    /// The tree's disclosure column, off the chevron's own style (#674). One
-    /// metric for the chevron and for the blank a file row puts in its place,
-    /// so the two cannot drift apart.
     @ScaledMetric(relativeTo: .caption2) private var chevronColumn: CGFloat = 10
 
     enum SaveState { case saving, problem }
@@ -49,29 +36,21 @@ struct FilesSurface: View {
                     body_
                 }
             } else if panel.editor.treeShown || panel.editor.active == nil {
-                // Narrow: the tree REPLACES the file, and the strip's toggle
-                // is the way between them. Without this the tree was gone for
-                // good the moment a file opened.
                 treeColumn
             } else {
                 body_
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
-        // A file opened from anywhere — the tree, a transcript chip, a
-        // `display.opened` — is a request to LOOK at it.
         .onChange(of: panel.editor.activePath) { if !sideBySide { panel.setTreeShown(false) } }
         .task(id: "\(sessionId):\(active)") { await load() }
     }
-
-    // MARK: the strip of open files
 
     private var fileStrip: some View {
         HStack(spacing: 2) {
             Button {
                 panel.setTreeShown(!panel.editor.treeShown)
             } label: {
-                // The toggle's square scales with its glyph (#674).
                 Image(systemName: panel.editor.treeShown ? "sidebar.left" : "sidebar.leading")
                     .foregroundStyle(Theme.textMuted)
                     .scaledGlyphBox(28, glyph: 12)
@@ -118,18 +97,12 @@ struct FilesSurface: View {
         .overlay(alignment: .bottom) { Divider().overlay(Theme.borderSubtle) }
     }
 
-    /// The desktop's open-file menu, minus Reveal in Finder — a bridge to a
-    /// machine this app is not running on, so it is ABSENT rather than greyed.
     @ViewBuilder private func chipMenu(_ file: OpenFile) -> some View {
         Button("Close", systemImage: "xmark") { panel.closeFile(file.path) }
         Button("Close others") { panel.closeOtherFiles(file.path) }
         Button("Close to the right") { panel.closeFilesToTheRight(file.path) }
         Button("Close all") { panel.closeAllFiles() }
         Divider()
-        // ONLY WHERE IT WOULD DO SOMETHING: pinning a file that is already
-        // pinned is a row that does nothing, which is worse than a row that
-        // is not there. ONE WORD FOR PINNING, here and in the tree's "Open
-        // pinned" — this strip used to say "Keep open" for the same verb.
         if !file.pinned { Button("Pin", systemImage: "pin") { panel.pinFile(file.path) } }
         Button("Reveal in file tree", systemImage: "sidebar.left") { reveal(file.path) }
         if let absolute = workspaceFilePath(listing?.workspacePath, file.path) {
@@ -138,9 +111,6 @@ struct FilesSurface: View {
         }
     }
 
-    /// The tree, opened to a file and scrolled to it. A search in progress is
-    /// cleared first: a filtered tree does not hold the row unless the query
-    /// happens to match it.
     private func reveal(_ path: String) {
         query = ""
         expanded.formUnion(ancestorsOf([path]))
@@ -148,8 +118,6 @@ struct FilesSurface: View {
         panel.activateFile(path)
         revealing = path
     }
-
-    // MARK: the tree
 
     private var treeColumn: some View {
         VStack(spacing: 0) {
@@ -172,9 +140,6 @@ struct FilesSurface: View {
             .padding(.horizontal, 10)
             .scaledHeight(32, relativeTo: .footnote)
             .contentShape(Rectangle())
-            // The desktop puts Refresh and Collapse all on the header and on
-            // the tree's empty space; the header is the part of that a phone
-            // can hit reliably.
             .contextMenu {
                 Button("Refresh", systemImage: "arrow.clockwise") { Task { await load() } }
                 Button("Collapse all", systemImage: "arrow.down.right.and.arrow.up.left") { expanded = [] }
@@ -199,10 +164,6 @@ struct FilesSurface: View {
                             }
                             .padding(.vertical, 4)
                         }
-                        // A BEAT FOR THE ROWS TO EXIST. The tree may have been
-                        // hidden when "Reveal in file tree" was picked, and
-                        // `scrollTo` a row the lazy stack has not built yet is
-                        // a no-op with nothing to retry it.
                         .task(id: revealing) {
                             guard let target = revealing else { return }
                             try? await Task.sleep(for: .milliseconds(60))
@@ -239,10 +200,6 @@ struct FilesSurface: View {
                         .frame(width: chevronColumn)
                     Image(systemName: isOpen ? "folder.fill" : "folder").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 } else {
-                    // The blank that stands in for a missing chevron takes the
-                    // SAME metric, not a matching literal — a file indented by
-                    // 10 under a folder indented by more is the alignment bug
-                    // this column exists to prevent.
                     Spacer().frame(width: chevronColumn)
                     Image(systemName: fileGlyph(node.path)).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
                 }
@@ -282,8 +239,6 @@ struct FilesSurface: View {
         }
     }
 
-    /// A directory opens and closes; a search's tree is expanded by the search
-    /// itself, so the toggle has nothing to say while one is running.
     private func toggle(_ path: String) {
         guard query.isEmpty else { return }
         if expanded.contains(path) { expanded.remove(path) } else { expanded.insert(path) }
@@ -291,15 +246,9 @@ struct FilesSurface: View {
 
     private func openFromTree(_ path: String, pin: Bool) {
         panel.openFile(path, pin: pin)
-        // Re-tapping the file already open leaves `activePath` alone, so the
-        // watcher on `activePath` would not fire.
         if !sideBySide { panel.setTreeShown(false) }
     }
 
-    /// The three rows a file-shaped menu ends with. Reveal in Finder and "Open
-    /// in <app>" are the desktop's bridge to a machine this app is not running
-    /// on: absent here, never greyed — a disabled row is a promise restated on
-    /// every long press that the phone can never keep.
     @ViewBuilder private func pathItems(_ path: String) -> some View {
         if let absolute = workspaceFilePath(listing?.workspacePath, path) {
             Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = absolute }
@@ -324,8 +273,6 @@ struct FilesSurface: View {
         }
     }
 
-    // MARK: the file body
-
     @ViewBuilder private var body_: some View {
         if let file = panel.editor.active {
             FileBody(
@@ -343,8 +290,6 @@ struct FilesSurface: View {
         }
     }
 
-    // MARK: reads
-
     private func load() async {
         do {
             async let files = api.sessionFiles(sessionId)
@@ -352,13 +297,11 @@ struct FilesSurface: View {
             self.listing = listing
             error = nil
             if expanded.isEmpty {
-                // One level open on arrival, the way the desktop's tree lands.
                 expanded = Set(buildFileTree(listing.files).filter(\.isDirectory).map(\.path))
             }
         } catch {
             self.error = describe(error)
         }
-        // Git status is decoration: it may fail alone.
         if let diff = try? await (api as? any EngineAPI)?.sessionDiff(sessionId) {
             statuses = Dictionary(uniqueKeysWithValues: diff.files.map { ($0.path, $0.status) })
         }
@@ -383,8 +326,6 @@ struct FilesSurface: View {
     }
 }
 
-/// One glyph per kind, from the extension — enough to tell a notebook from
-/// a table from a picture at a glance.
 func fileGlyph(_ path: String) -> String {
     switch (path as NSString).pathExtension.lowercased() {
     case "ipynb": "text.book.closed"
@@ -400,7 +341,6 @@ func fileGlyph(_ path: String) -> String {
     }
 }
 
-/// Which body a path gets, and whether it is prose the phone may edit.
 enum FileKind {
     case prose, code, image, pdf, notebook, notebookReadOnly, table, binary
 

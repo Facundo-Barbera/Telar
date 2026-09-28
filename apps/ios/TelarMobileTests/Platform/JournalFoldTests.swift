@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-// Builders — decode from JSON rather than hand-constructing, so the tests
-// exercise the same decode path production data takes.
-
 func makeTurn(_ runId: String, state: String = "running", input: String = "hello", sequence: Int = 0) -> Turn {
     try! JSONDecoder().decode(Turn.self, from: Data("""
     {"runId":"\(runId)","sessionId":"s","sequence":\(sequence),"state":"\(state)",
@@ -28,8 +25,6 @@ func makeEvent(_ json: String) -> EngineEvent {
 
 @Suite struct JournalFoldTests {
     @Test func itemsSortByOpeningEventIdNeverTimestamp() {
-        // Item B opened LATER (higher event id) but carries an EARLIER
-        // startedAt — id must win.
         let events = [
             makeEvent(#"{"id":10,"at":999,"sessionId":"s","runId":"run_1","type":"item.started","item":{"id":"item_a","runId":"run_1","sessionId":"s","status":"completed","detail":{"type":"assistant_message","text":"first"},"startedAt":500}}"#),
             makeEvent(#"{"id":20,"at":999,"sessionId":"s","runId":"run_1","type":"item.started","item":{"id":"item_b","runId":"run_1","sessionId":"s","status":"completed","detail":{"type":"assistant_message","text":"second"},"startedAt":1}}"#),
@@ -39,7 +34,6 @@ func makeEvent(_ json: String) -> EngineEvent {
     }
 
     @Test func snapshotItemsSortBeforeTailItems() {
-        // openedBy 0 for snapshot rows — they precede anything the tail opens.
         let snapshotItem = makeItem("item_old", startedAt: 900)
         let events = [
             makeEvent(#"{"id":5,"at":10,"sessionId":"s","runId":"run_1","type":"item.started","item":{"id":"item_new","runId":"run_1","sessionId":"s","status":"inProgress","detail":{"type":"assistant_message","text":""},"startedAt":1}}"#),
@@ -53,7 +47,6 @@ func makeEvent(_ json: String) -> EngineEvent {
             makeEvent(#"{"id":1,"at":10,"sessionId":"s","runId":"run_1","type":"item.started","item":{"id":"item_a","runId":"run_1","sessionId":"s","status":"inProgress","detail":{"type":"assistant_message","text":""},"startedAt":10}}"#),
             makeEvent(#"{"id":2,"at":11,"sessionId":"s","runId":"run_1","type":"content.delta","itemId":"item_a","stream":"assistant_text","text":"Hel"}"#),
             makeEvent(#"{"id":3,"at":12,"sessionId":"s","runId":"run_1","type":"content.delta","itemId":"item_a","stream":"assistant_text","text":"lo"}"#),
-            // A whole-item update must not wipe accumulated streamed text.
             makeEvent(#"{"id":4,"at":13,"sessionId":"s","runId":"run_1","type":"item.updated","item":{"id":"item_a","runId":"run_1","sessionId":"s","status":"inProgress","detail":{"type":"assistant_message","text":""},"startedAt":10}}"#),
         ]
         let turns = projectJournal(turns: [makeTurn("run_1")], items: [], events: events)
@@ -77,8 +70,6 @@ func makeEvent(_ json: String) -> EngineEvent {
     }
 
     @Test func itemWithUnseenTaskStaysOnMainTimelineThenNests() {
-        // Item names a task the fold has not met → main timeline (an invisible
-        // row is worse than a misplaced one).
         let orphan = [
             makeEvent(#"{"id":1,"at":10,"sessionId":"s","runId":"run_1","type":"item.started","item":{"id":"item_a","runId":"run_1","sessionId":"s","status":"inProgress","detail":{"type":"command_execution","command":{"command":"ls"}},"startedAt":10,"taskId":"task_1"}}"#),
         ]
@@ -86,7 +77,6 @@ func makeEvent(_ json: String) -> EngineEvent {
         #expect(before[0].items.count == 1)
         #expect(before[0].tasks.isEmpty)
 
-        // Once the task exists and the item is seen again, it moves home.
         let after = projectJournal(turns: [makeTurn("run_1")], items: [], events: orphan + [
             makeEvent(#"{"id":2,"at":11,"sessionId":"s","runId":"run_1","type":"task.started","task":{"id":"task_1","sessionId":"s","runId":"run_1","kind":"agent","state":"running","startedAt":11,"updatedAt":11}}"#),
             makeEvent(#"{"id":3,"at":12,"sessionId":"s","runId":"run_1","type":"item.updated","item":{"id":"item_a","runId":"run_1","sessionId":"s","status":"inProgress","detail":{"type":"command_execution","command":{"command":"ls"}},"startedAt":10,"taskId":"task_1"}}"#),
@@ -104,8 +94,6 @@ func makeEvent(_ json: String) -> EngineEvent {
     }
 
     @Test func taskEventsPreserveCollectedItems() {
-        // Every task event repeats the whole task; a replace would empty the
-        // item list each time one arrives.
         let events = [
             makeEvent(#"{"id":1,"at":10,"sessionId":"s","runId":"run_1","type":"task.started","task":{"id":"task_1","sessionId":"s","runId":"run_1","kind":"agent","state":"running","startedAt":10,"updatedAt":10}}"#),
             makeEvent(#"{"id":2,"at":11,"sessionId":"s","runId":"run_1","type":"item.started","item":{"id":"item_sub","runId":"run_1","sessionId":"s","status":"inProgress","detail":{"type":"reasoning","text":"hm"},"startedAt":11,"taskId":"task_1"}}"#),
@@ -148,7 +136,6 @@ func makeEvent(_ json: String) -> EngineEvent {
             makeEvent(#"{"id":2,"at":500,"sessionId":"s","runId":"run_1","type":"content.delta","itemId":"item_a","stream":"assistant_text","text":"x"}"#),
         ]
         let turns = projectJournal(turns: [makeTurn("run_1")], items: [], events: events)
-        // Item timestamps did not move; the delta's `at` is the activity.
         #expect(turns[0].lastActivityAt == 500)
     }
 
@@ -169,7 +156,6 @@ func makeEvent(_ json: String) -> EngineEvent {
 
     @Test func displayToolNameStripsAddressing() {
         #expect(displayToolName("mcp__telar__browser_click") == "browser_click")
-        // The rest-join: a tool name may itself contain `__`.
         #expect(displayToolName("mcp__github__fetch__pr") == "fetch__pr")
         #expect(displayToolName("Bash") == "Bash")
         #expect(displayToolName("mcp__") == "mcp__")
@@ -183,7 +169,6 @@ func makeEvent(_ json: String) -> EngineEvent {
             events: page.events, tasks: snapshot.tasks
         )
         #expect(!turns.isEmpty)
-        // The captured session streamed text — the fold must have carried it.
         let streamed = turns.flatMap(\.items).contains { !$0.streamedText.isEmpty || !$0.text.isEmpty }
         #expect(streamed)
     }
@@ -204,9 +189,6 @@ func makeEvent(_ json: String) -> EngineEvent {
         #expect(result[0].items[0].text == "Hello world")
     }
 
-    /// #912: the engine opens a `background_task` turn so a sub-agent that
-    /// outlived its turn can have a call decided. It is not a transcript row —
-    /// two person's turns with a claim between them draw two rows, not three.
     @Test func aBackgroundClaimIsNotATranscriptRow() throws {
         let claim = try JSONDecoder().decode(Turn.self, from: Data("""
         {"runId":"run_claim","sessionId":"s","sequence":2,"state":"completed","input":"",

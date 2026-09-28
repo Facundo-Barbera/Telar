@@ -1,11 +1,7 @@
 import SwiftUI
 
-/// Register a project from the phone: drill through the MAC's folders
-/// (`/api/fs` — directories only, repositories badged), land on the one you
-/// want, name it, register. The browser starts at the Mac's home folder.
 struct AddProjectView: View {
     let api: any EngineAPI
-    /// Called with the registered project — the caller refreshes its list.
     let onAdded: (ProjectRef) -> Void
 
     var body: some View {
@@ -15,7 +11,6 @@ struct AddProjectView: View {
 
 struct DirectoryBrowserView: View {
     let api: any EngineAPI
-    /// nil = the Mac's home folder.
     let path: String?
     let onAdded: (ProjectRef) -> Void
 

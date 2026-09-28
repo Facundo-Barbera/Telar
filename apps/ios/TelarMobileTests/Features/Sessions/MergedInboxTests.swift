@@ -45,7 +45,6 @@ private func session(_ id: String, createdAt: Timestamp, updatedAt: Timestamp? =
     }
 
     @Test func sameSessionIdOnTwoMacsStaysTwoRows() {
-        // Two Macs can mint the same engine id — the scoped id keeps them apart.
         let merged = mergeInbox([
             (hostA, InboxSections(active: [session("twin", createdAt: 100)])),
             (hostB, InboxSections(active: [session("twin", createdAt: 200)])),

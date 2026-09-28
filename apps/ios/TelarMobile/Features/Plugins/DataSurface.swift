@@ -1,9 +1,5 @@
 import SwiftUI
 
-/// THE DATA TAB: plots, variables and the environment behind one tab, with
-/// the kernel's pill and controls once, at the strip's trailing edge — a
-/// kernel's controls belong next to its state, not inside whichever view is
-/// showing. The sub-tab is a habit, remembered per device, not per session.
 struct DataSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -86,8 +82,6 @@ struct DataSurface: View {
     }
 }
 
-/// A plot is an attachment tagged `plot`. Pinned plots sort first; tap opens
-/// the lightbox. A failed read is an error, not "no plots yet".
 struct PlotsSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID
@@ -122,8 +116,6 @@ struct PlotsSurface: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // A PLOT LANDING WHILE YOU WATCH. Only image outputs count: a cell
-        // printing a table should not reload the gallery.
         .task(id: "\(sessionId):\(active):\(signals.plotRevision)") {
             if loadedOnce { try? await Task.sleep(for: .milliseconds(250)) }
             guard !Task.isCancelled else { return }
@@ -172,8 +164,6 @@ private struct PlotCard: View {
                 if let image {
                     Image(uiImage: image).resizable().scaledToFit()
                 } else {
-                    // Left fixed on purpose (#717), like CellOutputView's: the
-                    // height stands in for a chart, not for text.
                     ProgressView().frame(height: 120)
                 }
             }
@@ -200,8 +190,6 @@ private struct PlotCard: View {
     }
 }
 
-/// The kernel's namespace: one row per variable, tap to inspect. Opening
-/// this never starts a kernel.
 struct VariablesSurface: View {
     @Environment(\.kernelSignals) private var signals
     @State private var loadedOnce = false
@@ -256,8 +244,6 @@ struct VariablesSurface: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        // ANY cell run can change the namespace, so this follows every
-        // output rather than one notebook's.
         .task(id: "\(sessionId):\(active):\(kernel.rawValue):\(signals.outputRevision)") {
             if loadedOnce { try? await Task.sleep(for: .milliseconds(250)) }
             guard !Task.isCancelled else { return }
@@ -284,8 +270,6 @@ struct VariablesSurface: View {
     }
 }
 
-/// The session's Python environment: manager, interpreter, packages.
-/// Read-only in this pass.
 struct EnvironmentSurface: View {
     let api: any PanelAPI
     let sessionId: EngineID

@@ -2,10 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The cache is the first frame, and reading it is no longer the tap's cost:
-/// both stores read and decode off the main thread and only assign there.
-/// These pin that the frame still lands, and that the Mac's answer wins
-/// over a cache read that finishes late.
 private func tempCache() -> SnapshotCache {
     SnapshotCache(root: FileManager.default.temporaryDirectory.appending(path: "telar-restore-\(UUID().uuidString)"))
 }
@@ -25,7 +21,6 @@ private let inboxJSON = Data("""
  "projects":[{"id":"p","name":"Proj"}]}
 """.utf8)
 
-/// Never reached: these tests exercise the cache path only.
 private struct UnreachableAPI: EngineAPI {
     func health() async throws -> EngineHealth { fatalError("unused") }
     func liveSessions() async throws -> LiveSessions { fatalError("unused") }
@@ -62,7 +57,6 @@ private struct UnreachableAPI: EngineAPI {
         let cache = tempCache()
         cache.writeSession(host: host, id: "s", data: snapshotJSON)
         let engine = SessionSyncEngine(api: UnreachableAPI(), sessionId: "s", cache: HostSnapshotCache(cache: cache, hostId: host))
-        // The initialiser returns before the bytes are read: nothing yet.
         #expect(engine.turns.isEmpty)
         await engine.awaitPendingWork()
         #expect(engine.session?.title == "Cached")
@@ -90,7 +84,6 @@ private struct UnreachableAPI: EngineAPI {
         #expect(store.sections.active.map(\.id) == ["s"])
         #expect(store.projectNames["p"] == "Proj")
         #expect(store.recordedAt != nil)
-        // A copy is not a claim that the list is complete.
         #expect(!store.loaded)
     }
 }

@@ -1,9 +1,5 @@
 import SwiftUI
 
-/// THE VIEW HALF OF `PluginUI` — which surface draws each plugin tab. The
-/// surfaces themselves are the plugins' own and unchanged; this only binds them
-/// to a tab, so `PanelView` draws "whatever plugin surface this is" rather than
-/// naming Data or LaTeX. A tab no bundled plugin owns draws nothing.
 struct PluginSurfaceView: View {
     let tab: PanelTab
     let api: any PanelAPI

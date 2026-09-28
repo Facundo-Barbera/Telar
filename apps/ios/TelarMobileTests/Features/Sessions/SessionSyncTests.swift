@@ -2,9 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// Records the exact call sequence and replays canned responses — the hydrate
-/// ordering is load-bearing and this is the test that stops it being
-/// "optimised" away.
 actor RecordingEngineAPI: EngineAPI {
     private(set) var calls: [String] = []
     var eventPages: [EventPage]
@@ -21,8 +18,6 @@ actor RecordingEngineAPI: EngineAPI {
     func liveSessions() async throws -> LiveSessions { fatalError("unused") }
 
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot {
-        // The window is part of the recorded shape: a hydrate that silently
-        // dropped it would fetch the whole history again.
         if let window {
             let before = window.before.map { ",before:\($0)" } ?? ""
             calls.append("session(turns:\(window.turns)\(before))")
@@ -95,7 +90,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
 
 @Suite struct SessionSyncTests {
     @Test func hydrateOpensOnTheSnapshotAndTailsFromItsCursor() async throws {
-        // session (stamped 7) → events(7). Never events(0).
         let api = RecordingEngineAPI(
             eventPages: [
                 page(#"{"events":[{"id":9,"at":2,"sessionId":"s","type":"turn.completed","resultText":"ok"}],"cursor":9,"more":false}"#),
@@ -131,7 +125,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
     }
 
     @Test func tailFetchesSnapshotOnlyOnQueueChangingEvents() async throws {
-        // A page of pure deltas: NO snapshot call.
         let deltas = RecordingEngineAPI(
             eventPages: [
                 page(#"{"events":[{"id":11,"at":1,"sessionId":"s","runId":"r","type":"content.delta","itemId":"i","stream":"assistant_text","text":"x"}],"cursor":11,"more":false}"#),
@@ -143,7 +136,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
         #expect(quiet.cursor == 11)
         #expect(await deltas.recorded() == ["events(10)"])
 
-        // turn.completed and request.opened both earn one.
         for eventJSON in [
             #"{"id":12,"at":1,"sessionId":"s","runId":"r","type":"turn.completed","resultText":""}"#,
             #"{"id":12,"at":1,"sessionId":"s","runId":"r","type":"request.opened"}"#,
@@ -183,13 +175,11 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
         let older = try await loadOlderTurns(api, "s", before: "run_5")
         #expect(await api.recorded() == ["session(turns:20,before:run_5)"])
         #expect(older.turns.map(\.runId) == ["run_1"])
-        // JSON null `before` decodes as nil — the session's start.
         #expect(older.page?.before == nil)
         #expect(older.page?.more == false)
     }
 
     @Test func mergeOlderPagePrependsWithoutDuplicatingTheOverlap() async throws {
-        // Current holds run_2..run_3; the older page overlaps on run_2.
         let current = snapshot(
             turns: "[\(turnJSON("run_2", 2, state: "completed")),\(turnJSON("run_3", 3))]",
             items: "[\(itemJSON("i_2", "run_2"))]"
@@ -203,8 +193,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
             tasks: [], page: SnapshotPage(before: nil, more: false)
         )
         let merged = mergeOlderPage(current: current, page: older)
-        // Oldest-first after merge, no duplicate for the overlap — and the
-        // CURRENT row wins it (the fresher read of a settling turn).
         #expect(merged.turns.map(\.runId) == ["run_1", "run_2", "run_3"])
         #expect(merged.turns[1].state == .completed)
         #expect(merged.items.map(\.id) == ["i_1", "i_2"])
@@ -219,9 +207,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
         #expect(tail.cursor == 42)
     }
 
-    /// THE JOURNAL ARRIVES IN PAGES NOW (#494). A phone that folded the first
-    /// one and stopped would show a transcript silently short of what the
-    /// session did — worse than the 36.5 MB over the radio that paging removes.
     @Test func aFullPageIsFollowedFromTheLastIdSeen() async throws {
         let api = RecordingEngineAPI(
             eventPages: [
@@ -231,15 +216,11 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
             snapshots: [snapshot()]
         )
         let tail = try await tailSession(api, "s", after: 10)
-        // KEYSET: each ask names the last id folded, so a delta landing
-        // mid-walk can be neither skipped nor counted twice.
         #expect(await api.recorded() == ["events(10)", "events(12)", "session"])
         #expect(tail.events.map(\.id) == [11, 12, 13])
         #expect(tail.cursor == 13)
     }
 
-    /// A page claiming `more` that moved nothing ends the walk. This is the one
-    /// way the loop could fail to finish, and a poll may not hang.
     @Test func aStalledPageEndsTheWalkRatherThanSpinning() async throws {
         let api = RecordingEngineAPI(
             eventPages: [page(#"{"events":[],"cursor":5,"more":true,"next":5}"#)],
@@ -250,8 +231,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
         #expect(tail.cursor == 5)
     }
 
-    /// An engine older than the paged route never sends `more`, and absent must
-    /// mean what it always did: that was everything.
     @Test func anEngineWithoutMoreIsReadExactlyAsItAlwaysWas() async throws {
         let api = RecordingEngineAPI(
             eventPages: [page(#"{"events":[{"id":7,"at":1,"sessionId":"s","type":"turn.started"}],"cursor":7}"#)],
@@ -262,9 +241,6 @@ private func itemJSON(_ id: String, _ runId: String) -> String {
         #expect(tail.events.map(\.id) == [7])
     }
 
-    /// The cursorless fallback wants the journal's END, and a page answers from
-    /// its BEGINNING — taking page one's last id would tail from event 2 and
-    /// re-fold the whole history, the exact cost paging exists to remove.
     @Test func theCursorlessFallbackWalksToTheEndOfTheJournal() async throws {
         let api = RecordingEngineAPI(
             eventPages: [

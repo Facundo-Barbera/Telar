@@ -2,10 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// RELAY v2 FROM THE PHONE'S SIDE. The relay's own suite pins what it
-/// accepts; these pin that the phone asks in exactly that shape. That means
-/// an attestation over the challenge it was given, an assertion over the exact
-/// bytes it sends, one key per Mac, and starting over when the relay forgets it.
 @MainActor @Suite struct PushRelayClientTests {
     final class FakeAttest: AppAttesting {
         var isSupported = true
@@ -44,14 +40,12 @@ import Testing
         let credential = await subject.credential(for: "mac-a", tokens: tokens)
         #expect(credential == RelayCredential(url: "https://relay.test", handle: "h1", keyId: "k1", sendKey: "s1"))
         #expect(relay.calls == ["GET /v2/challenge", "POST /v2/devices", "POST /v2/devices/h1/keys"])
-        // The attestation binds the challenge the relay issued, nothing else.
         #expect(attest.attested.map(\.hash) == [PushRelayClient.sha256("issued-challenge")])
         let registration = try JSONSerialization.jsonObject(with: relay.requests[1].httpBody!) as! [String: Any]
         #expect(registration["challenge"] as? String == "issued-challenge")
         #expect(registration["bundle"] as? String == "io.github.novarix.telar")
         #expect(registration["keyId"] as? String == "attest-key-1")
         #expect(registration["token"] as? String == tokens.token)
-        // The assertion covers exactly the bytes sent.
         let keyRequest = relay.requests[2]
         #expect(keyRequest.value(forHTTPHeaderField: "x-telar-assertion") == Data("assertion".utf8).base64EncodedString())
         #expect(attest.asserted.map(\.hash) == [PushRelayClient.sha256(PushRelayClient.clientData(method: "POST", path: "/v2/devices/h1/keys", body: keyRequest.httpBody!))])
@@ -88,7 +82,6 @@ import Testing
         let subject = client(state: registered) { now }
         _ = await subject.credential(for: "mac-a", tokens: tokens)
         #expect(relay.requests.isEmpty, "unchanged and fresh: nothing to send")
-        // A Mac's start came back `not_registered`: the relay lost the start token.
         subject.forceRefresh()
         relay.replies = [(200, "{}")]
         _ = await subject.credential(for: "mac-a", tokens: tokens)
@@ -106,7 +99,6 @@ import Testing
         relay.replies = [(410, "{}"), (200, #"{"challenge":"c2"}"#), (201, #"{"handle":"new"}"#), (201, #"{"keyId":"k-new","sendKey":"s-new"}"#)]
         let credential = await subject.credential(for: "mac-a", tokens: moved)
         #expect(relay.calls == ["PUT /v2/devices/old", "GET /v2/challenge", "POST /v2/devices", "POST /v2/devices/new/keys"])
-        // A new registration never reuses a key minted for the old one.
         #expect(credential == RelayCredential(url: "https://relay.test", handle: "new", keyId: "k-new", sendKey: "s-new"))
     }
 
@@ -142,7 +134,6 @@ import Testing
         relay.replies = [(200, #"{"challenge":"issued-challenge"}"#), (401, "{}")]
         #expect(await subject.credential(for: "mac-a", tokens: tokens) == nil)
         #expect(subject.unavailable)
-        // A second Mac, or the next sync, costs nothing: no retry loop.
         #expect(await subject.credential(for: "mac-b", tokens: tokens) == nil)
         #expect(relay.calls == ["GET /v2/challenge", "POST /v2/devices"])
         #expect(attest.attested.count == 1)

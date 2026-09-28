@@ -2,7 +2,6 @@ import Foundation
 import Testing
 @testable import TelarMobile
 
-/// The fold's pinned cases, ported from apps/web/src/lib/model-families.test.ts.
 @Suite struct ModelFamiliesTests {
     private func model(_ id: String, label: String, resolves: String? = nil,
                        isDefault: Bool = false, efforts: [String] = [], fastMode: Bool = false) -> ProviderModel {
@@ -19,10 +18,8 @@ import Testing
         ]
         let families = ModelFamilies.group(models)
         #expect(families.count == 2)
-        // The standard row names the family; version restored from the key.
         #expect(families[0].label == "Sonnet 5")
         #expect(families[0].rows.count == 2)
-        // No standard row → long row's label, window stripped.
         #expect(families[1].label == "Opus 5")
         #expect(families[1].isDefault)
         #expect(ModelFamilies.windows(of: families[0]) == [.standard, .long])
@@ -37,7 +34,6 @@ import Testing
     }
 
     @Test func aFixedWindowBeatsTheSuffix() throws {
-        // Opus 4.8 is always 1M and publishes its bare slug (#914).
         let fixed = #"{"id":"claude-opus-4-8","label":"Opus 4.8","isDefault":false,"hidden":false,"efforts":[],"fastMode":true,"contextWindow":1000000}"#
         #expect(ModelFamilies.contextWindow(of: try JSONDecoder().decode(ProviderModel.self, from: Data(fixed.utf8))) == .long)
         #expect(ModelFamilies.contextWindow(of: model("haiku", label: "Haiku")) == .standard)
@@ -51,8 +47,6 @@ import Testing
     }
 
     @Test func aPointReleaseIsItsOwnFamily() {
-        // Fable 5.1: `-5-1` is a version, not an 8-digit dated build — the
-        // strip must not eat it, and the label restores the dotted version.
         let models = [
             model("claude-fable-5[1m]", label: "Fable", resolves: "claude-fable-5[1m]"),
             model("claude-fable-5-1[1m]", label: "Fable", resolves: "claude-fable-5-1[1m]"),
@@ -85,8 +79,6 @@ import Testing
     }
 }
 
-/// The per-model knobs: which sections show, the Default markers, what a tap
-/// stores.
 @Suite struct ModelOptionsTests {
     private func decode(_ json: String) throws -> ProviderModel {
         try JSONDecoder().decode(ProviderModel.self, from: Data(json.utf8))
@@ -136,7 +128,6 @@ import Testing
         #expect(standard?.id == "opus")
         #expect(standard?.defaultWindow != true)
         #expect(ModelFamilies.row(for: family, window: .long)?.defaultWindow == true)
-        // Picking 200k from 1M keeps what the row honours.
         let from = ModelChoice(driver: "claude", model: "opus[1m]", effort: "low", fastMode: true, ultracode: nil)
         let moved = ModelOptions.moving(from, to: standard!, driver: "claude")
         #expect(moved.model == "opus")
@@ -166,7 +157,6 @@ import Testing
         #expect(!ModelOptions.offersUltracode(driver: "codex", row: try decode(codexJSON)))
         let on = ModelChoice(driver: "claude", model: "opus", ultracode: true)
         #expect(!ModelOptions.isEffortSelected("high", choice: on, row: row))
-        // Moving to a row without xhigh drops it.
         let moved = ModelOptions.moving(on, to: claude("sonnet", resolves: "claude-sonnet-5", efforts: ["high"]), driver: "claude")
         #expect(moved.ultracode == nil)
     }
@@ -189,7 +179,6 @@ import Testing
         #expect(ModelOptions.storedTier(for: "priority", row: row) == "priority")
         #expect(ModelOptions.isTierSelected("flex", choice: ModelChoice(driver: "codex"), row: row))
         #expect(ModelOptions.isTierSelected("priority", choice: ModelChoice(driver: "codex", serviceTier: "priority"), row: row))
-        // A row that does not list the tier drops it.
         let plain = try decode(#"{"id":"gpt-mini","label":"Mini","isDefault":false,"hidden":false,"efforts":[],"fastMode":false}"#)
         #expect(ModelOptions.moving(ModelChoice(driver: "codex", serviceTier: "priority"), to: plain, driver: "codex").serviceTier == nil)
     }

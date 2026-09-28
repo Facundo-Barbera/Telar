@@ -1,6 +1,5 @@
 import SwiftUI
 
-/// The app icon's warp-and-weft mark, drawn natively at any display size.
 struct TelarMark: View {
     var color: Color = .blue
     var body: some View {

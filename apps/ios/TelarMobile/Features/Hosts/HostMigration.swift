@@ -1,10 +1,5 @@
 import Foundation
 
-/// One ordered pass from the single-host world, run once at launch, keyed on
-/// the absence of "telar.hosts". Composes with the pre-flavor-split keychain
-/// hop (KeychainStore.readLegacySingle runs it first). "telar.baseURL" is
-/// LEFT IN PLACE for one release so a downgrade to an older nightly still
-/// finds its cockpit; the hosts key's presence is the sole idempotency mark.
 enum HostMigration {
     static let hostsKey = "telar.hosts"
     static let legacyBaseURLKey = "telar.baseURL"
@@ -12,9 +7,6 @@ enum HostMigration {
 
     struct Plan: Equatable {
         var host: Host?
-        /// UserDefaults renames: legacy "telar.pendingSend.<sessionId>" →
-        /// "telar.pendingSend.<hostId>.<sessionId>". The migrated host owns
-        /// every legacy key — it was the only host there was.
         var pendingSendRenames: [Rename]
 
         struct Rename: Equatable {
@@ -23,8 +15,6 @@ enum HostMigration {
         }
     }
 
-    /// Pure: what should be written, or nil when there is nothing to migrate
-    /// (fresh install — the caller still writes an empty host list).
     static func plan(
         legacyBaseURL: String?, existingKeys: [String],
         now: Date, id: HostID
@@ -45,7 +35,6 @@ enum HostMigration {
         return Plan(host: host, pendingSendRenames: renames)
     }
 
-    /// The only impure entry point. Returns true when a migration ran.
     @discardableResult
     static func run(defaults: UserDefaults, vault: any TokenVault, now: Date = Date()) -> Bool {
         guard defaults.data(forKey: hostsKey) == nil else { return false }

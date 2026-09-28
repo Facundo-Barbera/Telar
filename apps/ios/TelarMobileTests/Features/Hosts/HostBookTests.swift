@@ -14,12 +14,9 @@ import Testing
         var book = HostBook()
         let first = book.upsert(baseURLString: "http://100.1.1.1:3000")
         guard case .added(let id) = first else { Issue.record("expected added"); return }
-        // Re-pairing the same address: same identity, so its scoped keychain
-        // account and pending sends stay reachable.
         let again = book.upsert(baseURLString: "HTTP://100.1.1.1:3000")
         #expect(again == .replaced(id))
         #expect(book.hosts.count == 1)
-        // A different Mac is added, never evicting the first.
         guard case .added = book.upsert(baseURLString: "http://100.2.2.2:3000") else {
             Issue.record("expected added"); return
         }
@@ -51,8 +48,6 @@ import Testing
             baseURLString: "http://100.1.1.1:3000", now: Date(timeIntervalSince1970: 200)
         ) else { return }
         #expect(book.recordDaemonId("daemon_x", for: older) == false)
-        // The tailnet record turns out to be the same Mac: merge keeps the
-        // OLDER id (it owns the scoped data) and the NEWER address.
         #expect(book.recordDaemonId("daemon_x", for: newer) == true)
         #expect(book.hosts.count == 1)
         #expect(book.hosts[0].id == older)

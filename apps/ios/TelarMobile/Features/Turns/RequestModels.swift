@@ -1,37 +1,25 @@
 import Foundation
 
-/// Mirror of `packages/engine-client/src/protocol/requests.ts` — the things
-/// that need a human. While one is open, no further work happens on the
-/// session, which is exactly why the phone exists.
-
 enum RequestDecision: String, Codable {
     case accept
-    /// Accept and stop asking for this kind of thing this session.
     case acceptForSession
     case decline
-    /// Withdraw the whole turn rather than answering.
     case cancel
 }
 
 struct UserInputField: Codable, Identifiable, Equatable {
     var key: String
     var label: String
-    var kind: String // text | secret | choice | boolean
+    var kind: String
     var choices: [String]?
     var required: Bool?
-    /// `choice` only: the person may pick several, and the answer goes back as
-    /// an array of the chosen labels rather than one string. Absent — which is
-    /// every request the engine has sent until now — means one pick.
     var multiple: Bool?
 
     var id: String { key }
 
-    /// Nothing downstream should have to remember that absent means single.
     var isMultiSelect: Bool { kind == "choice" && multiple == true }
 }
 
-/// One password-manager item a `secret_access` request may fill from.
-/// Metadata only, by contract — the values never leave the engine's worker.
 struct SecretCandidate: Codable, Identifiable, Equatable {
     var id: String
     var title: String
@@ -40,12 +28,10 @@ struct SecretCandidate: Codable, Identifiable, Equatable {
 }
 
 struct SecretAccessField: Codable, Equatable {
-    var kind: String // username | password | otp | field
+    var kind: String
     var label: String?
 }
 
-/// A credential fill awaiting approval. Never auto-resolved in ANY runtime
-/// mode — this card is exactly why the phone renders open requests.
 struct SecretAccessDetail: Codable, Equatable {
     var origin: String
     var fields: [SecretAccessField]
@@ -60,8 +46,6 @@ enum RequestDetail: Equatable {
     case toolCall(ToolCallDetail)
     case userInput(prompt: String, fields: [UserInputField])
     case secretAccess(SecretAccessDetail)
-    /// An approval kind this build does not know. Still renders a card that
-    /// can accept or decline — parking the session silently would be worse.
     case unknown(kind: String)
 }
 
@@ -103,7 +87,7 @@ struct EngineRequest: Identifiable, Equatable {
     var runId: EngineID
     var sessionId: EngineID
     var itemId: EngineID?
-    var state: String // open | resolved
+    var state: String
     var detail: RequestDetail
     var openedAt: Timestamp
     var decision: RequestDecision?
