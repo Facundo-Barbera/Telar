@@ -16,7 +16,7 @@
  * framework standing in for two strings.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, jest, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -68,6 +68,7 @@ const bridge: UpdatesBridge = {
 
 const { AppSidebarFooterRow } = await import("./app-sidebar-footer");
 const { UpdatesSection } = await import("./settings/updates-section");
+const { UPDATE_TOAST_MS } = await import("./ui/update-toast");
 
 // The restart question asks the engine what is running, and Settings reads the
 // session defaults; nothing is running and nothing is set here.
@@ -87,21 +88,6 @@ const GLYPH = {
   spinner: "lucide-loader-circle",
 } as const;
 
-/** Poll a condition the way a person watches for one, inside `act` so React's
- *  own work is flushed between looks. */
-// 15 s, the bound the engine suite's `eventually`/`until` helpers carry, under
-// the 20 s bunfig ceiling: the caller waits for a toast it expects to dismiss
-// itself, so a healthy run leaves on the first passing poll and only a loaded
-// runner ever spends the budget (#458).
-async function waitFor(done: () => boolean, timeoutMs = 15_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!done()) {
-    if (Date.now() > deadline) throw new Error("timed out waiting for the toast to dismiss itself");
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    });
-  }
-}
 
 type Surface = { host: HTMLElement; unmount: () => void };
 
@@ -152,6 +138,10 @@ function mountBoth() {
 beforeEach(() => {
   listeners.clear();
   installs.length = 0;
+});
+
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 describe("the footer row", () => {
@@ -292,14 +282,19 @@ describe("the toast", () => {
   });
 
   test("it dismisses itself and does not come back for the same news", async () => {
+    jest.useFakeTimers();
     const both = mountBoth();
     await both.settle();
     await both.push({ status: "downloaded", version: "0.3.1" });
     expect(both.toasts()[0]).toContain("restart to install");
-    // WAITED FOR, NOT SLEPT THROUGH. The dismissal is on a four-second real
-    // clock; polling for it asserts the same thing without pinning the suite to
-    // a machine's spare capacity.
-    await waitFor(() => both.toasts().every((toast) => toast === null));
+    // The dismissal is on a four-second clock, advanced rather than waited out.
+    await act(async () => {
+      jest.advanceTimersByTime(UPDATE_TOAST_MS - 1);
+    });
+    expect(both.toasts()[0]).toContain("restart to install");
+    await act(async () => {
+      jest.advanceTimersByTime(1);
+    });
     expect(both.toasts()).toEqual([null, null]);
     await both.push({ status: "downloaded", version: "0.3.1" });
     expect(both.toasts()).toEqual([null, null]);

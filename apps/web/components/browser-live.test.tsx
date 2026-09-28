@@ -2,7 +2,7 @@
  * THE BROWSER'S `⋯` MENU AND ITS DEVICE TOOLBAR (#473).
  *
  * WHY THIS FILE MOUNTS AND CLICKS where `browser-live.test.ts` beside it is
- * arithmetic and a source scan: what this issue changed is WHICH CONTROLS
+ * arithmetic: what this issue changed is WHICH CONTROLS
  * EXIST AND WHERE. A menu that stopped rendering a row, a toolbar that
  * appeared in fit mode, a toggle that sent the wrong mode — none of those are
  * visible to a pure function, and all of them are the bug.

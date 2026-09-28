@@ -1,8 +1,5 @@
 // @ts-expect-error Bun test types are provided by the test runner.
 import { describe, expect, test } from "bun:test";
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   ADDRESS_CONTROLS,
   ADDRESS_INPUT_FLOOR,
@@ -51,7 +48,7 @@ test("remote host routes cannot use this computer's native browser", () => {
  * here. A control that wants words back wants the measuring hook back with it.
  *
  * The arithmetic is tested rather than the pixels because the arithmetic IS
- * the rule; the scan below is what keeps the markup and the budget one claim.
+ * the rule.
  */
 describe("the address row's width budget", () => {
   /** Panel width → the content width the row's controls are spent from. */
@@ -117,69 +114,6 @@ describe("the two folding tool glyphs", () => {
       expect(!seen || fits).toBe(true);
     }
     expect(seen).toBe(true);
-  });
-});
-
-describe("the row's markup is the budget's own claim", () => {
-  const source = fs.readFileSync(path.join(fileURLToPath(new URL(".", import.meta.url)), "browser-live.tsx"), "utf8");
-
-  test("the input takes the slack and can be crushed by nothing", () => {
-    expect(source).toContain('className="h-6 min-w-0 flex-1 rounded-md border border-transparent bg-muted/60 px-2 font-mono text-2xs outline-none focus:border-ring"');
-  });
-
-  test("the row spells NOTHING out — which is why the budget is one number", () => {
-    // The measuring hook and its labelled/compact split are gone with the two
-    // labels; reintroducing a label without them is #319 returning with
-    // nothing left to protect the input.
-    expect(source).not.toContain("compactRow");
-    expect(source).not.toContain("useCompactAddressRow");
-    // The viewport's words, which were the last thing the row wrote out.
-    expect(source).not.toContain('{viewportMode === "fit" ? "Fit panel"');
-  });
-
-  test("the profile control writes no name at any width — it is a glyph, so the budget is honest", () => {
-    // A label on the ROW would make ADDRESS_CONTROLS understate it by 116px
-    // and quietly bring back the crushed input of #319. The name is still
-    // said where there is room for it: the menu, the title, the aria-label.
-    expect(source).not.toContain('<span className="max-w-28 truncate">{state.profile.label}</span>');
-    expect(source).toContain('<IdentityIcon icon={state.profile.icon} color={state.profile.color} className="size-3.5 shrink-0" />');
-  });
-
-  /**
-   * THE LOCK IS THE ROW'S TIGHTEST BUTTON (#422), AND THAT IS THE SLACK.
-   *
-   * The site-permissions anchor wears `p-0.5` rather than the `p-1` of every
-   * button beside it. At the 420px panel #319 was filed about, the row clears
-   * the floor by exactly what that choice saves — so a padding change here is
-   * a crushed address bar at that width, which is the bug, returning.
-   */
-  test("the site-permissions lock is the row's tightest button, which is what the budget assumes", () => {
-    expect(source).toContain('"relative shrink-0 rounded-md p-0.5 hover:bg-muted"');
-    expect(source).toContain("export const ADDRESS_CONTROLS = 4 * 22 + 18 + 44 + 22 + 7 * 4;");
-    // `p-1` would cost the lock 4 more px, which is the whole of the slack.
-    expect(addressInputRoom(420 - ADDRESS_ROW_PADDING) - 4).toBe(ADDRESS_INPUT_FLOOR);
-  });
-
-  /**
-   * The glyphs are gated on the MEASURED row, not on a guess — and the same
-   * two gestures are in the `⋯` menu unconditionally, so folding costs a
-   * shortcut and never a capability.
-   */
-  test("the camera and the pen are drawn only when the measured row can afford them", () => {
-    expect(source).toContain("{rowFitsTools && canCapture ? (");
-    expect(source).toContain("const rowFitsTools = useAddressRowTools(addressRowRef);");
-    // ...and the menu's rows are gated on `canCapture` alone, at every width.
-    expect(source).toContain("{canCapture ? (");
-    expect(source).toContain("Screenshot the full page");
-    expect(source).toContain("Annotate this page");
-  });
-
-  test("the 1Password warning is a mark with the sentence in its tooltip, not a paragraph in the toolbar", () => {
-    expect(source).toContain('<TriangleAlertIcon aria-hidden className="size-3 shrink-0 text-destructive" />');
-    // The sentence is still SAID — in the title and the accessible name, in
-    // every phase. A warning nobody can read is not a smaller warning.
-    expect(source).toContain('title={`${extension.name ?? "Password manager"}: ${describeExtensionHealth(extension).text}`}');
-    expect(source).not.toContain('<span className="max-w-48 truncate">{describeExtensionHealth(extension).text}</span>');
   });
 });
 

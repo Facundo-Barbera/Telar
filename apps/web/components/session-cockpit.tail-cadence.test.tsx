@@ -44,19 +44,19 @@
  * reason in reverse: that singleton outlives a test, so reusing the first
  * test's id would let it pass on the first test's warm connection.
  *
- * THE WINDOWS ARE REAL SECONDS, and that is a deliberate trade. The periods
- * under test are 1 s and 3 s, so a window that can tell them apart is a few
- * seconds long. The alternative was to `mock.module` the constants smaller,
- * which would have measured a cadence this app never runs and — `mock.module`
- * being process-wide, last-writer-wins — could have silently re-timed every
- * other cockpit test in the suite.
+ * THE WINDOWS ARE THE APP'S OWN SECONDS, ON A FAKE CLOCK. The periods under
+ * test are 1 s and 3 s, so a window that can tell them apart is a few seconds
+ * long; fake timers advance through it without waiting. `mock.module`-ing the
+ * constants smaller was the rejected alternative: it would have measured a
+ * cadence this app never runs and — being process-wide, last-writer-wins —
+ * could have silently re-timed every other cockpit test in the suite.
  *
  * IN PROCESS, AND NOTHING SURVIVES THE TURN — happy-dom and React's own `act`,
  * the harness `session-cockpit.switch.test.tsx` already uses. No browser, no
  * server, no daemon, no Electron.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, jest, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -192,6 +192,7 @@ let root: Root | undefined;
 let host: HTMLDivElement | undefined;
 
 beforeEach(() => {
+  jest.useFakeTimers();
   mockNavigation();
   clearTranscriptCache();
   tails = 0;
@@ -207,28 +208,36 @@ afterEach(async () => {
   host?.remove();
   root = undefined;
   host = undefined;
+  jest.useRealTimers();
 });
 
 afterAll(async () => {
   await GlobalRegistrator.unregister();
 });
 
-/** Let the opening's promise chain drain. A fixed sleep would be a flake on a
- *  slow runner; six turns of the loop is what the switch test uses. */
-async function settle() {
-  for (let pass = 0; pass < 6; pass += 1) {
-    await act(async () => {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    });
-  }
+/** Let the fixture's answers resolve between clock steps. */
+async function flush() {
+  for (let pass = 0; pass < 20; pass += 1) await Promise.resolve();
 }
 
-/** Real time, inside `act`, so the interval's own setState lands in a commit
- *  rather than warning about an update outside a test-act. */
+/** Fake time, inside `act`, in small steps so each tick's read resolves before
+ *  the next one is due, and the interval's setState lands in a commit. */
+const STEP_MS = 50;
 async function elapse(ms: number) {
   await act(async () => {
-    await new Promise<void>((resolve) => setTimeout(resolve, ms));
+    let spent = 0;
+    do {
+      const step = Math.min(STEP_MS, ms - spent);
+      jest.advanceTimersByTime(step);
+      spent += step;
+      await flush();
+    } while (spent < ms);
   });
+}
+
+/** Let the opening's deferred tasks and promise chain drain. */
+async function settle() {
+  for (let pass = 0; pass < 6; pass += 1) await elapse(0);
 }
 
 /** Tails the fixture answered over a fresh window of `WINDOW_MS`. */
@@ -285,7 +294,7 @@ describe("how often an open cockpit re-reads the journal", () => {
 
     const relived = await tailsInAWindow();
     expect(relived).toBeGreaterThanOrEqual(LIVE_TICKS);
-  }, 20_000);
+  });
 
   test("and the transcript is whole across the slow stretch, not merely fast to arrive", async () => {
     /**
@@ -316,5 +325,5 @@ describe("how often an open cockpit re-reads the journal", () => {
     // The settled answer is intact underneath the turn that just arrived.
     expect(host!.textContent).toContain("counted");
     expect(rows).toHaveLength(2);
-  }, 20_000);
+  });
 });

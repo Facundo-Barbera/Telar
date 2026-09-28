@@ -7,7 +7,7 @@
  * record answers and has to lose to a human pick made at any point after.
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
-import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -29,6 +29,7 @@ mock.module("next/navigation", () => ({
 
 const { SessionCockpit } = await import("./session-cockpit");
 const { SidebarProvider } = await import("@/components/ui/sidebar");
+const { forgetModelCatalogues } = await import("@/lib/model-catalogue-cache");
 
 const row = (id: string, label: string, efforts: string[], isDefault = false): ProviderModel => ({
   id,
@@ -62,6 +63,10 @@ function wire(defaultModel?: ModelSelection, extra: { envMode?: "local" | "workt
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
+
+// The catalogue cache is a module singleton the whole suite's process shares:
+// a file that read an empty catalogue first (perf-marks.falsify) would win.
+beforeEach(() => forgetModelCatalogues());
 
 afterEach(async () => {
   globalThis.fetch = realFetch;

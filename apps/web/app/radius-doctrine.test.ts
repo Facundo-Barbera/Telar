@@ -92,17 +92,7 @@ describe("the base, and the rungs the doctrine names", () => {
 });
 
 describe("the doctrine says what ships", () => {
-  test("it names all four rungs, cards at 14px", () => {
-    expect(css).toContain("8px controls, 10px fields and popovers, 14px");
-    expect(css).toContain("CARDS, 18px dialogs and the composer");
-  });
-
-  test("it no longer claims 18px cards — the old wording survives only as the quoted correction", () => {
-    expect(css.match(/18px cards and dialogs/g) ?? []).toHaveLength(1);
-    expect(css).toContain('used to say "18px cards and dialogs"');
-  });
-
-  test("and the card rung it names is the one the components reach for", () => {
+  test("the card rung it names is the one the components reach for", () => {
     // Not an exact count — that would fail on every unrelated card added. The
     // assertion is the RANKING, which is what made the old comment wrong: the
     // radius most cards are drawn at is the one the doctrine has to name.

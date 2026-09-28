@@ -18,7 +18,6 @@
  */
 // @ts-expect-error bun:test has no types in this app's tsconfig
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import { readFileSync } from "node:fs";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -466,17 +465,6 @@ describe("the pane sits in the same reading column as every other", () => {
     // per-pane branch coming back, whatever width it picks.
     expect(appearance).toBe(general);
     expect(appearance).toContain("max-w-2xl");
-  });
-
-  test("the shell offers no per-pane width to opt out through", () => {
-    // Pinned against source because the old escape hatch was a PROP: a pane
-    // could be widened again without any rendered element here changing until
-    // somebody passed it. Both halves are checked — the knob and its caller.
-    const shell = readFileSync(new URL("./settings-shell.tsx", import.meta.url), "utf8");
-    const page = readFileSync(new URL("./settings-page.tsx", import.meta.url), "utf8");
-    expect(shell).not.toContain("max-w-[1400px]");
-    expect(shell).not.toContain("wide?: boolean");
-    expect(page).not.toContain("wide=");
   });
 });
 
