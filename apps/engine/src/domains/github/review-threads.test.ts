@@ -3,7 +3,7 @@ import { readPull } from "./detail";
 import { type GhResult, type GhRunner } from "./gh";
 import { parseReviewThreads } from "./threads";
 import { replyToThread, resolveThread, threadReplyArgv } from "./writes";
-import { failed, ok, runner, verbRunner } from "./test-helpers";
+import { failed, ok, verbRunner } from "./test-helpers";
 
 const reviewThreadsReply = (nodes: unknown[], totalCount = nodes.length) =>
   JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { totalCount, nodes } } } } });

@@ -18,7 +18,7 @@ module.exports = {
   },
 
   async settlePopupTabs() {
-    await Promise.allSettled([...this.pendingPopupTabs]);
+    await Promise.allSettled(this.pendingPopupTabs);
   },
 
   decidePopup(opener, details) {

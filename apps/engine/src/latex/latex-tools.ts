@@ -144,7 +144,7 @@ export function latexTools(tool: ToolFactory, capability: LatexCapability): unkn
       { pdf: z.boolean().optional().describe("Also remove the last compile's PDF.") },
       async (args) => {
         try {
-          const result = await capability.clean({ ...(typeof args.pdf === "boolean" ? { pdf: args.pdf } : {}) });
+          const result = await capability.clean(typeof args.pdf === "boolean" ? { pdf: args.pdf } : {});
           return ok(result.removed.length ? `Removed ${result.removed.join(", ")}.` : "Nothing to clean.");
         } catch (error) {
           return err(`Could not clean: ${failure(error)}`);

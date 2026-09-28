@@ -313,7 +313,7 @@ function noteOpened(userData, deps = {}) {
 function setPending(userData, pending, deps = {}) {
   const { now } = resolveDeps(deps);
   const { marker } = readMarker(userData, deps);
-  writeMarker(userData, { ...(marker ?? {}), pending: { path: pending.path, requestedAt: now() } }, deps);
+  writeMarker(userData, { ...marker, pending: { path: pending.path, requestedAt: now() } }, deps);
 }
 
 function clearPending(userData, deps = {}) {

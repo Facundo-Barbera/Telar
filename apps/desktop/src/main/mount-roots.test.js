@@ -1,8 +1,6 @@
 "use strict";
 
 const { expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
 const { mainSource } = require("../../test/main-source");
 
 const { mountRootsFor: shared, volumeSupportOn } = require("../../../../packages/engine-client/src/mounts");

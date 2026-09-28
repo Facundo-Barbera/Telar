@@ -26,7 +26,6 @@ import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind, ProviderInstance, ProviderProbe, ProviderSignIn, ProviderUpdate } from "@telar/engine-client";
 import { cliUpdateFor, cliUsable, resolveCliAsync, type CliId } from "./domains/providers";
-import { TELAR_ENGINE_VERSION } from "./version";
 
 /**
  * A version probe costs a subprocess, and this is read from a settings page
@@ -280,7 +279,7 @@ export type VersionProbe = {
  * than a comment.
  */
 async function probeVersion(driver: CliId, binaryPath?: string, force = false): Promise<VersionProbe> {
-  const resolution = await resolveCliAsync(driver, { ...(binaryPath ? { binaryPath } : {}) });
+  const resolution = await resolveCliAsync(driver, binaryPath ? { binaryPath } : {});
   if (resolution.status === "missing") {
     return { installed: false, ...(resolution.message ? { message: resolution.message } : {}) };
   }

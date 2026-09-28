@@ -358,7 +358,7 @@ function callTool(spec: StdioSpec, name: string, args: Record<string, unknown>, 
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>;
     try {
-      child = (deps.spawn ?? spawn)(spec.command, spec.args ?? [], { env: { ...process.env, ...(spec.env ?? {}) }, stdio: ["pipe", "pipe", "ignore"] });
+      child = (deps.spawn ?? spawn)(spec.command, spec.args ?? [], { env: { ...process.env, ...spec.env }, stdio: ["pipe", "pipe", "ignore"] });
     } catch (error) {
       resolve({ kind: "error", message: error instanceof Error ? error.message : "could not start the client" });
       return;

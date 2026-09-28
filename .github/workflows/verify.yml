@@ -191,13 +191,11 @@ jobs:
       - name: knip
         run: bun run knip
 
-  # Report-only until the findings are cleared; not a dependency of verify-passed.
-  guards:
-    name: Guards (oxlint; report only)
+  oxlint:
+    name: oxlint
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -208,7 +206,6 @@ jobs:
           set -euo pipefail
           bun install --frozen-lockfile
       - name: oxlint
-        continue-on-error: true
         run: bun run lint:ox
 
   typecheck:
@@ -1083,7 +1080,7 @@ jobs:
     name: Verify passed
     runs-on: ubuntu-latest
     if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    needs: [source, knip, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
+    needs: [source, knip, oxlint, typecheck, lint, test, test-engine, macos, electron, ios-changes, ios]
     timeout-minutes: 5
     steps:
       - name: Report the aggregate

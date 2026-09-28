@@ -37,7 +37,7 @@ contextBridge.exposeInMainWorld("telarDesktop", {
 
     clearBrowsingData: (scopeKey, kind) => ipcRenderer.invoke("telar:browser:clear-data", { scopeKey, kind }),
 
-    capture: (scopeKey, options) => ipcRenderer.invoke("telar:browser:capture", { scopeKey, ...(options || {}) }),
+    capture: (scopeKey, options) => ipcRenderer.invoke("telar:browser:capture", { scopeKey, ...options }),
     callTool: (scopeKey, name, args) => ipcRenderer.invoke("telar:browser:tool", { scopeKey, name, args }),
 
     setBounds: (scopeKey, bounds) => {

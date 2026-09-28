@@ -49,8 +49,6 @@ const MAX_BYTES = 1_048_576;
 
 const text = (value: unknown): string | undefined => {
   if (typeof value !== "string" || value.length === 0) return undefined;
-  // Control characters would break the one-line-per-record shape, and are not
-  // something any legitimate value here contains.
   const clean = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
   return clean.length > MAX_FIELD ? clean.slice(0, MAX_FIELD) : clean;
 };

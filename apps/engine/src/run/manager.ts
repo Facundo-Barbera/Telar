@@ -297,7 +297,7 @@ export class RunManager {
     const kill: RunKill = options.kill ?? ((pid, signal) => process.kill(pid, signal));
     this.platform = options.platform ?? process.platform;
     const group = options.processGroup ?? processGroupFor(this.platform, kill);
-    this.launcher = options.launcher ?? pipeLauncher(group, { ...(options.stopGraceMs === undefined ? {} : { graceMs: options.stopGraceMs }) });
+    this.launcher = options.launcher ?? pipeLauncher(group, options.stopGraceMs === undefined ? {} : { graceMs: options.stopGraceMs });
     this.journal = options.journal ?? nullRunJournal;
     this.closeSettleMs = options.closeSettleMs ?? CLOSE_SETTLE_MS;
     this.readyPollMs = options.readyPollMs ?? READY_POLL_MS;
@@ -1140,7 +1140,7 @@ export class RunManager {
     // ORDER IS THE WHOLE FIX: refuse new opens, then drain the ones in flight,
     // so every spawn this manager will ever do has happened before closing.
     this.shuttingDown = true;
-    await Promise.allSettled([...this.pending]);
+    await Promise.allSettled(this.pending);
     if (this.launcher.kind === "pipes") {
       await Promise.allSettled(
         [...this.runs.values()].filter((run) => !isTerminal(run.status)).map((run) => this.close(run.terminalId, "telar")),

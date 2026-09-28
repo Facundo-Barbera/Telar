@@ -8,7 +8,6 @@ const { createTabStore, serializeInventory, parseInventory, rememberableUrl, INV
 const { ProfileRegistry } = require("./browser-profiles");
 
 const PROJECT = "project_0123456789abcdef0123456789abcdef";
-const OTHER = "project_fedcba9876543210fedcba9876543210";
 
 function registry(existingPartitions = []) {
   let next = -1;

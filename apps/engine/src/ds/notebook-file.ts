@@ -173,7 +173,7 @@ export function toNbOutputs(outputs: CellOutput[], images: (attachmentId: string
       case "image": {
         const b64 = o.attachmentId ? images(o.attachmentId) : o.dataB64;
         const data = b64 ? { [o.mediaType]: o.mediaType === "image/svg+xml" ? Buffer.from(b64, "base64").toString("utf8") : b64 } : {};
-        out.push({ output_type: "display_data", data, metadata: { ...(o.attachmentId ? { telar: { attachmentId: o.attachmentId } } : {}) } });
+        out.push({ output_type: "display_data", data, metadata: o.attachmentId ? { telar: { attachmentId: o.attachmentId } } : {} });
         break;
       }
       case "json":

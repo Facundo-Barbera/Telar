@@ -71,7 +71,7 @@ test("declared dependencies come from pyproject and requirements.txt, canonical 
 });
 
 test("listPackages parses uv pip list and conda list", async () => {
-  const exec: Exec = async (file, args) => {
+  const exec: Exec = async (file) => {
     if (file.endsWith("uv")) return { status: 0, stdout: JSON.stringify([{ name: "pandas", version: "3.0.5" }, { name: "numpy", version: "2.3.1" }]), stderr: "" };
     if (file.endsWith("conda")) return { status: 0, stdout: JSON.stringify([{ name: "python", version: "3.12.4", channel: "conda-forge" }]), stderr: "" };
     return { status: 1, stdout: "", stderr: "boom" };

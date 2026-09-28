@@ -82,7 +82,7 @@ test("a patch cut at the engine's output bound says so, on both runners (#694)",
   const lines = 30_000;
   const before = Array.from({ length: lines }, (_, index) => `line ${index} ${"a".repeat(50)}`).join("\n");
   const after = Array.from({ length: lines }, (_, index) => `LINE ${index} ${"b".repeat(50)}`).join("\n");
-  const { root, git } = repo({ "big.txt": `${before}\n` });
+  const { root } = repo({ "big.txt": `${before}\n` });
   fs.writeFileSync(path.join(root, "big.txt"), `${after}\n`);
 
   /**

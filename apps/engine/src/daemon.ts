@@ -2,6 +2,7 @@
 // It intentionally has no provider imports: Phase 1 proves ownership and crash
 // semantics before a driver is allowed to execute an agent turn.
 import crypto from "node:crypto";
+import { atomicWrite } from "./platform/fs/atomic";
 import { createExecutionPort, withDirectExecution } from "./execution-port";
 import fs from "node:fs";
 import http from "node:http";
@@ -39,7 +40,6 @@ import {
   type TurnSubmissionResult,
   type UsageLimits,
   type WorkerClaim,
-  type WorkerStatus,
   pluginEnabled,
   machineAllows,
   parseDiffBaseQuery,
@@ -783,24 +783,9 @@ function subscriptionPath(pathname: string): { subscriptionId: string } | undefi
 
 
 function writeDiscovery(store: EngineStore, discovery: EngineDiscovery): void {
-  // This capability document includes the bearer token and must remain private
-  // even on a single-user laptop. `writeFileSync` via atomic state storage is
-  // intentionally duplicated here only because engine.json is not a user data
-  // document and is created after the socket is known.
-  const file = store.paths.engine;
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const temporary = `${file}.tmp-${process.pid}-${crypto.randomUUID()}`;
-  try {
-    fs.writeFileSync(temporary, `${JSON.stringify(discovery, null, 2)}\n`, { mode: 0o600 });
-    fs.renameSync(temporary, file);
-    fs.chmodSync(file, 0o600);
-  } finally {
-    try {
-      fs.unlinkSync(temporary);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
+  // Carries the bearer token, so it stays private even on a single-user laptop.
+  fs.mkdirSync(path.dirname(store.paths.engine), { recursive: true, mode: 0o700 });
+  atomicWrite(store.paths.engine, discovery);
 }
 
 function removeOwnDiscovery(store: EngineStore, daemonId: string): void {
@@ -1375,7 +1360,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const updateProvider =
     options.runProviderUpdate ??
     ((driver: ProviderDriverKind, binaryPath: string | undefined) => {
-      return runCliUpdate(driver, { ...(binaryPath ? { binaryPath } : {}) });
+      return runCliUpdate(driver, binaryPath ? { binaryPath } : {});
     });
   /**
    * A REGISTRATION RETIRES — THE ONE DOOR. Dropping the registration and
@@ -5436,7 +5421,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         await browser?.close("engine shutting down");
         // THE EVENT STREAMS FIRST, and before the server: `server.close()`
         // waits for open connections, and an SSE stream never closes itself.
-        for (const stream of [...openStreams]) (stream.end ?? stream)();
+        for (const stream of openStreams) (stream.end ?? stream)();
         openStreams.clear();
         await closeServer(server);
         stopTimers();

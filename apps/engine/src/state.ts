@@ -45,7 +45,6 @@ import {
   workspaceBaseRef,
   workspacePath,
   TextGenPolicy as TextGenPolicySchema,
-  Item as ItemSchema,
   MAX_AUTO_SETTLE_HOURS,
   MAX_SETTLED_TERMINAL_LIMIT,
   STALLED_AFTER_MS,
@@ -91,7 +90,6 @@ import {
   type SessionSettledBy,
   type PluginPatch,
   type LatexConfig,
-  Session as SessionSchema,
   NotificationDetail as NotificationDetailSchema,
   Subscription as SubscriptionSchema,
   Cohort as CohortSchema,
@@ -1134,7 +1132,7 @@ const blankSidebarLayout = (): SidebarLayout => ({ ...DEFAULT_SIDEBAR_LAYOUT, pr
  * without a shell, so this is belt and braces — and the braces are what keep a
  * text field from becoming a command the day somebody adds one.
  */
-const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+const REF_NAME = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 function workspaceRootOf(session: Pick<Session, "workspace">): string {
   const root = workspacePath(session.workspace);
@@ -4896,7 +4894,7 @@ export class EngineStore {
 
   /** Every cached git read that names `root` — see `forgetProjectReads`. */
   private forgetGitReadsUnder(root: string): void {
-    for (const key of [...this.gitReadCache.keys()]) {
+    for (const key of this.gitReadCache.keys()) {
       if (key.includes(root)) this.gitReadCache.delete(key);
     }
   }
@@ -5543,7 +5541,7 @@ export class EngineStore {
         fromLegacy.latex = pluginConfigFromLegacy(config.data);
       }
     }
-    const pluginPatch: PluginPatch = { ...fromLegacy, ...(patch.plugins ?? {}) };
+    const pluginPatch: PluginPatch = { ...fromLegacy, ...patch.plugins };
     if (Object.keys(pluginPatch).length > 0) {
       next.plugins = applyPluginPatch(readProjectPlugins(next).plugins, pluginPatch);
       // Compiles leave aux files under `.telar/latex/`; a project turning LaTeX
@@ -6242,7 +6240,7 @@ export class EngineStore {
         const queue = this.readQueue(sessionId);
         const turn = queue.turns.find((candidate) => candidate.runId === runId);
         if (!turn) return;
-        const merged = { ...(turn.anchor ?? {}), ...patch };
+        const merged = { ...turn.anchor, ...patch };
         // A LATER GOOD READ CLEARS AN EARLIER DOUBT, but a doubt never erases a
         // sha somebody already observed: `before` and `after` are separate
         // observations and only the failing one is in doubt.
@@ -6665,7 +6663,7 @@ export class EngineStore {
    * shape that no longer existed. Caught by the merge test, not by reasoning.
    */
   private forgetGitHub(projectId: string): void {
-    for (const key of [...this.githubCache.keys()]) {
+    for (const key of this.githubCache.keys()) {
       if (key === projectId || key.startsWith(`${projectId}:`)) this.githubCache.delete(key);
     }
   }
@@ -10336,7 +10334,7 @@ export class EngineStore {
     if (!model) return normalized;
     // `instanceId` is required on a selection, so it comes from the session
     // rather than being conjured — an absent selection has none of its own.
-    return { ...(normalized ?? {}), instanceId: normalized?.instanceId ?? instanceId, model };
+    return { ...normalized, instanceId: normalized?.instanceId ?? instanceId, model };
   }
 
   /**
@@ -13954,7 +13952,7 @@ export class EngineStore {
             origin: "restart",
             restartOrigin: { reason: "update", plannedAt, interruptedRunId: last.runId },
             // The same model and effort the cut-off turn was running on.
-            ...(last.model ? { model: (({ instanceId: _, ...selection }) => selection)(last.model) } : {}),
+            ...(last.model ? { model: (({ instanceId: _instanceId, ...selection }) => selection)(last.model) } : {}),
           });
           resumed.push(turn.runId);
         } catch (error) {

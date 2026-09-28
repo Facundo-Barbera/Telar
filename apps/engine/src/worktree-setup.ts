@@ -245,6 +245,6 @@ export class WorktreeSetups {
 
   /** Stop everything on the way out, so no setup outlives its engine. */
   stopAll(): void {
-    for (const sessionId of [...this.live.keys()]) this.stop(sessionId);
+    for (const sessionId of this.live.keys()) this.stop(sessionId);
   }
 }

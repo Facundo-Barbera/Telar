@@ -201,7 +201,7 @@ function startRunTerminalServer({ port, token, getTerminalHost, onMirror, heartb
         onData: (id, data) => broadcast("data", { id, data }),
         onExit: (id, ending) => broadcast("exit", ending),
         close: () => {
-          for (const listener of [...listeners]) {
+          for (const listener of listeners) {
             try {
               listener.end();
             } catch {

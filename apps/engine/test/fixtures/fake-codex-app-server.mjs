@@ -32,7 +32,7 @@ async function callConfiguredTool(serverKey, tool, args) {
   if (!entry?.url) return { error: `no ${serverKey} server was configured` };
   const response = await fetch(entry.url, {
     method: "POST",
-    headers: { "content-type": "application/json", ...(entry.http_headers ?? {}) },
+    headers: { "content-type": "application/json", ...entry.http_headers },
     body: JSON.stringify({ jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: tool, arguments: args ?? {} } }),
   });
   return await response.json();

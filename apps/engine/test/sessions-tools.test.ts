@@ -1654,7 +1654,7 @@ describe("the six query tools", () => {
     expect(String(first.json!.note)).toContain("after: 50");
 
     // Paging with the cursor loses nothing and repeats nothing.
-    const seen = [...page.map((row) => row.index)];
+    const seen = page.map((row) => row.index);
     let cursor = first.json!.next as number;
     for (let guard = 0; guard < 10; guard += 1) {
       const next = await call(tools, "sessions_steps", { sessionId: session.id, runId: "run_long", after: cursor });

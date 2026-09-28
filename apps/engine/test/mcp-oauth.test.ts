@@ -67,7 +67,7 @@ function stubFetch(routes: Record<string, { status?: number; body?: unknown; hea
     if (!route) return new Response("not found", { status: 404 });
     return new Response(route.body === undefined ? "" : JSON.stringify(route.body), {
       status: route.status ?? 200,
-      headers: { "content-type": "application/json", ...(route.headers ?? {}) },
+      headers: { "content-type": "application/json", ...route.headers },
     });
   }) as unknown as typeof fetch;
   return { impl, calls };

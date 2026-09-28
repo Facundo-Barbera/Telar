@@ -234,7 +234,7 @@ class PermissionPrompts {
 
   cancelWhere(match) {
     let cancelled = 0;
-    for (const [requestId, entry] of [...this.pendingById]) {
+    for (const [requestId, entry] of this.pendingById) {
       if (!match(entry.record)) continue;
       this.cancel(requestId);
       cancelled += 1;
@@ -248,7 +248,7 @@ class PermissionPrompts {
   }
 
   dispose() {
-    for (const requestId of [...this.pendingById.keys()]) this.cancel(requestId);
+    for (const requestId of this.pendingById.keys()) this.cancel(requestId);
   }
 }
 
@@ -364,7 +364,6 @@ function createPermissionHandlers({
     if (decision === "block") return { granted: false };
     for (const kind of kinds) {
       if (!DEVICE_MEDIA[kind]) continue;
-      // eslint-disable-next-line no-await-in-loop -- the OS dialog is modal; two at once is not a thing
       if (await media.ask(kind)) continue;
       return { granted: false, reason: systemSettingsSentence(kind, media.status(kind)) };
     }
@@ -426,7 +425,7 @@ function createPermissionHandlers({
         origin,
         kinds: ["display-capture"],
 
-        sources: listed.map(({ handle, ...source }) => source),
+        sources: listed.map(({ handle: _handle, ...source }) => source),
       });
       if (asked.decision === "block") {
         store.remember(partition, origin, "display-capture", "block");

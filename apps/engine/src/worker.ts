@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
-import type { EngineClient, ProviderDriverKind, RequestDecision, WorkerClaim, WorkerTurnFailure } from "@telar/engine-client";
+import type { EngineClient, ProviderDriverKind, WorkerClaim, WorkerTurnFailure } from "@telar/engine-client";
 import { collectTelarWall, telarWall, type TelarCapabilities, type TelarSocketLease, type TelarToolSocket } from "./telar-socket";
 import { pluginToolModules } from "./plugins/bundled";
 import { pluginCall } from "./plugins/tool-module";
@@ -714,7 +714,7 @@ export class EngineWorker {
      */
     if (this.inFlight.size > 0) {
       await Promise.race([
-        Promise.allSettled([...this.inFlight]),
+        Promise.allSettled(this.inFlight),
         new Promise<void>((resolve) => {
           setTimeout(resolve, this.shutdownSettleMs).unref?.();
         }),

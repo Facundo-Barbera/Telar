@@ -20,8 +20,8 @@ There is no `on: paths` filter. A workflow skipped that way never reports, and a
 | `Does anything here reach the iOS build?` | diffs the change against its base and matches paths with `.github/workflows/ios-paths.sh` |
 | `Archive iOS (only when something iOS changed)` | on macOS: an unsigned Release archive, a type-check budget report, and `TelarMobileTests` on a simulator (at least 562 must pass). Otherwise a no-op on Linux |
 | `knip` | `bun run knip`: fails on any unused file, export, dependency or config hint |
+| `oxlint` | `bun run lint:ox`: fails on any finding in engine, desktop and engine-client |
 | `Verify passed` | the aggregate: fails unless every job above reports `success` |
-| `Guards (oxlint; report only)` | `bun run lint:ox`. Never fails the run |
 
 Notes for operating it:
 

@@ -178,7 +178,7 @@ test("it is idempotent, finds its pairs after compaction and the usage fold, and
 
     // The other sweeps go first and move their own watermarks to the terminal
     // event. A prune sharing one of those keys would find nothing.
-    store.sweep(["compact"]).journal;
+    store.sweep(["compact"]);
     expect(store.sweep(["fold"]).usage.turns).toBe(1);
     expect(store.sweep(["prune"]).requests.pairs).toBe(1);
     expect(store.sweep(["prune"]).requests).toEqual({ pairs: 0, turns: 0, sessions: 0, refused: 0 });

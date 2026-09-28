@@ -12,7 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { EngineStateError, EngineStore } from "../src/state";
 import { worktreeReady } from "./worktree-ready";
-import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, createWorktreeQueue, DEFAULT_GIT_ADMISSION_MS, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WORKTREE_ADD_TIMEOUT_MS, WORKTREE_ADMISSION_MS, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner, type GitRunner } from "../src/worktree";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, createSessionWorktreeAsync, DEFAULT_GIT_ADMISSION_MS, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, lockSessionWorktree, prepareSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WORKTREE_ADD_TIMEOUT_MS, WORKTREE_ADMISSION_MS, WorktreeError, worktreeLockReason, defaultWorktreesRoot, type AsyncGitRunner } from "../src/worktree";
 import { gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "../src/domains/git";
 
 const roots: string[] = [];

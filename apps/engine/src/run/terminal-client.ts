@@ -486,7 +486,7 @@ export class RunTerminalClient {
     try {
       await this.attach();
       const held = new Set((await this.state()).map((terminal) => terminal.id));
-      for (const [id, sink] of [...this.sinks]) {
+      for (const [id, sink] of this.sinks) {
         if (held.has(id)) continue;
         this.sinks.delete(id);
         sink.gone("Telar's terminal host no longer has this terminal; it ended while the engine was not listening");

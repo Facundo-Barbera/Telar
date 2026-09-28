@@ -254,7 +254,7 @@ export type SessionsCapability = {
   query: SessionsQueryCapability;
 };
 
-import { err, failure, fillWithin, json, ok, type ToolFactory } from "../tool-kit";
+import { err, failure, fillWithin, json, type ToolFactory } from "../tool-kit";
 import { deferredQuery, sessionQueryTools, type SessionsQueryCapability } from "./query";
 export type { ToolFactory };
 export type { SessionsQueryCapability } from "./query";

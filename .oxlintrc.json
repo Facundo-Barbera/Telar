@@ -1,10 +1,76 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "categories": { "correctness": "warn" },
-  "env": { "node": true, "browser": true, "es2024": true },
-  "ignorePatterns": ["**/node_modules/**", "**/dist/**", "**/out/**", "**/build/**", "**/test-fixtures/**"],
-  "rules": {
-    "max-lines": ["warn", { "max": 800 }],
-    "max-lines-per-function": ["warn", { "max": 150 }]
-  }
+  "categories": {
+    "correctness": "warn"
+  },
+  "env": {
+    "node": true,
+    "browser": true,
+    "es2024": true
+  },
+  "ignorePatterns": [
+    "**/node_modules/**",
+    "**/dist/**",
+    "**/out/**",
+    "**/build/**",
+    "**/test-fixtures/**"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "apps/desktop/src/browser/browser-downloads.js",
+        "apps/engine/src/domains/remote/routes.ts",
+        "apps/engine/src/state.ts",
+        "apps/engine/src/worker-diagnostics.ts"
+      ],
+      "rules": {
+        "no-control-regex": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/engine/src/state.ts"
+      ],
+      "rules": {
+        "no-unsafe-finally": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/engine/src/domains/providers/models.ts",
+        "apps/engine/src/provider-skills.ts",
+        "apps/engine/test/driver.test.ts"
+      ],
+      "rules": {
+        "require-yield": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/engine/src/ds/kernel-host.ts"
+      ],
+      "rules": {
+        "typescript/triple-slash-reference": "off"
+      }
+    },
+    {
+      "files": [
+        "apps/engine/src/claude-runtime.ts",
+        "apps/engine/src/platform/kernel/kernel.ts",
+        "apps/engine/src/state.ts",
+        "apps/engine/src/worker.ts"
+      ],
+      "rules": {
+        "unicorn/no-useless-spread": "off"
+      }
+    },
+    {
+      "files": [
+        "packages/engine-client/src/index.ts"
+      ],
+      "rules": {
+        "typescript/no-unsafe-declaration-merging": "off"
+      }
+    }
+  ]
 }

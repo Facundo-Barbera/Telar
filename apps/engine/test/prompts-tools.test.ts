@@ -81,7 +81,7 @@ describe("who a draft is for", () => {
     const seen: Array<{ sessionId?: string }> = [];
     const wall = build({
       create: async (input) => {
-        seen.push({ ...(input.sessionId ? { sessionId: input.sessionId } : {}) });
+        seen.push(input.sessionId ? { sessionId: input.sessionId } : {});
         return prompt({ ...input, sessionId: input.sessionId, author: "session" });
       },
     });

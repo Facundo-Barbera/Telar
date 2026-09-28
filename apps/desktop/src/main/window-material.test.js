@@ -1,6 +1,4 @@
 const { describe, expect, test } = require("bun:test");
-const fs = require("node:fs");
-const path = require("node:path");
 const {
   DARK_MATERIAL,
   LIGHT_MATERIAL,
@@ -94,7 +92,7 @@ describe("windowBackgroundColor", () => {
 });
 
 describe("backdropWindowOptions", () => {
-  const shape = ({ backgroundColor, vibrancy, visualEffectState, ...rest }) => rest;
+  const shape = ({ backgroundColor: _b, vibrancy: _v, visualEffectState: _s, ...rest }) => rest;
 
   test("#243: on and off build the SAME window, apart from vibrancy and background", () => {
     for (const dark of [true, false]) {

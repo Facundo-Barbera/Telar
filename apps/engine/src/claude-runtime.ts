@@ -639,7 +639,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
   }
 
   destroyAll(): void {
-    for (const sessionId of [...this.runtimes.keys()]) this.destroy(sessionId);
+    for (const sessionId of this.runtimes.keys()) this.destroy(sessionId);
     // Nothing is left to sweep, and a live timer here is what would keep a
     // disposed driver's worker process from settling.
     if (this.unattendedTimer) clearTimeout(this.unattendedTimer);

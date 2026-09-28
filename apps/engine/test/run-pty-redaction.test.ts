@@ -98,7 +98,7 @@ test("two secrets sharing a prefix do not leak the longer one's tail", () => {
 test("a secret split one character at a time is never emitted in pieces", () => {
   const secrets = order(["correct-horse-battery"]);
   const text = `before correct-horse-battery after`;
-  const emitted = stream(text, secrets, new Array(text.length).fill(1));
+  const emitted = stream(text, secrets, Array.from({ length: text.length }, () => 1));
   const joined = emitted.join("");
   expect(joined).toBe(redactPtyText(text, secrets));
   // No single emitted piece may carry a fragment of the value either: the

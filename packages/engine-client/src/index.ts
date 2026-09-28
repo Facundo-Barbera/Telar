@@ -502,9 +502,7 @@ export class EngineClient implements EngineTransport {
       });
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-      throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, {
-        ...(sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {}),
-      });
+      throw new EngineClientError("engine_unavailable", "engine is unreachable", undefined, sanitizeTransportCause(cause) ? { transport: sanitizeTransportCause(cause)! } : {});
     }
     const tag = response.headers.get("etag") ?? undefined;
     if (response.status === 304) return { unchanged: true, ...(tag ? { etag: tag } : {}) };
