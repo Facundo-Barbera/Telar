@@ -80,7 +80,7 @@ const turnElement = (turn: JournalTurn, live = false) => (
     onInsert={() => {}}
     onOpenFile={() => {}}
     onDecide={() => {}}
-    onRetry={() => {}}
+   
   />
 );
 

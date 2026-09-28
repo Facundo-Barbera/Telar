@@ -28,7 +28,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
   onConversationClick: (event: React.MouseEvent) => void;
   projectId: string | undefined;
   fresh: boolean;
-  turn: Pick<TurnProps, "roster" | "sending" | "onInsert" | "onOpenAgent" | "onOpenTab" | "onOpenFile" | "onOpenFileInNewTab" | "onDecide" | "onRetry">;
+  turn: Pick<TurnProps, "roster" | "sending" | "onInsert" | "onOpenAgent" | "onOpenTab" | "onOpenFile" | "onOpenFileInNewTab" | "onDecide">;
   onResumeNow: (runId: string) => void;
 }) {
   const { session, error, loadingOlder, loadOlder } = sync;

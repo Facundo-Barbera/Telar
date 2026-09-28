@@ -1,10 +1,10 @@
 import type {
-InboxPolicy,SidebarLayout,Project,LiveSessionRow,Turn,
-TurnSubmissionResult,SessionAssignment
+InboxPolicy,SidebarLayout,Project,LiveSessionRow,
+SessionAssignment
 } from "@telar/engine-client";
 import { pathnameFetcher } from "@/platform/engine/host-client";
 import { domainMethods } from "@telar/engine-client";
-import { apiTransport, EngineApiError, type Fetcher } from "./transport";
+import { apiTransport, type Fetcher } from "./transport";
 import { machineCalls, settingsCalls } from "./machine-calls";
 import { sessionCalls, turnCalls } from "./session-calls";
 import { integrationCalls, workspaceCalls } from "./workspace-calls";
@@ -65,34 +65,3 @@ export function newRunId(uuid: () => string = randomUuid): string {
   return `run_${uuid().replaceAll("-", "")}`;
 }
 
-type TurnApi = Pick<ReturnType<typeof createEngineApi>, "discardAmbiguousTurn" | "submitTurn">;
-
-/** Abandons the lost run's execution and keeps everything else; nothing is resubmitted. */
-export async function continueAfterAmbiguousTurn(
-  api: Pick<ReturnType<typeof createEngineApi>, "discardAmbiguousTurn">,
-  sessionId: string,
-  turn: Pick<Turn, "runId" | "state">,
-): Promise<void> {
-  if (turn.state !== "ambiguous") {
-    throw new EngineApiError("conflict", "Only an ambiguous turn needs a recovery decision.");
-  }
-  await api.discardAmbiguousTurn(sessionId, turn.runId);
-}
-
-/** Records the discard, then submits the same prompt under a new id. Work the first attempt did is not undone. */
-export async function retryAmbiguousTurn(
-  api: TurnApi,
-  sessionId: string,
-  turn: Pick<Turn, "runId" | "state" | "input">,
-  createRunId: () => string = newRunId,
-): Promise<TurnSubmissionResult> {
-  if (turn.state !== "ambiguous") {
-    throw new EngineApiError("conflict", "Only an ambiguous turn requires explicit discard before retrying.");
-  }
-  await api.discardAmbiguousTurn(sessionId, turn.runId);
-  const runId = createRunId();
-  if (runId === turn.runId) {
-    throw new EngineApiError("conflict", "Retry must use a fresh run id.");
-  }
-  return api.submitTurn(sessionId, { runId, input: turn.input });
-}

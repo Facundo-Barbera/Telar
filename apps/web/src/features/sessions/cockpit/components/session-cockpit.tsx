@@ -138,7 +138,6 @@ export function SessionCockpit({
             onInsert: composer.insertIntoComposer,
             ...panelGestures,
             onDecide: (requestId, decision, extra) => void actions.decideRequest(requestId, decision, extra),
-            onRetry: (item) => void actions.retryAmbiguous(item),
           }}
           onResumeNow={(runId) => void actions.resumeNow(runId)}
         />

@@ -1,8 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import type { RequestDecision, RuntimeMode, Turn } from "@telar/engine-client";
-import { asEngineError, createEngineApi, newRunId, retryAmbiguousTurn } from "@/platform/engine";
+import type { RequestDecision, RuntimeMode } from "@telar/engine-client";
+import { asEngineError, createEngineApi, newRunId } from "@/platform/engine";
 import { sessionModelSelection, type ModelChoice } from "@/features/providers";
 import type { useSessionSync } from "./use-session-sync";
 
@@ -49,9 +49,6 @@ export function useSessionActions(sessionId: string | undefined, { session, hydr
     compact: () => act((id) => api.submitTurn(id, { runId: newRunId(), input: "/compact", kind: "compact" }), "Could not start the compaction."),
     decideRequest: (requestId: string, decision: RequestDecision, extra?: { answers?: Record<string, unknown> }) =>
       act((id) => api.resolveRequest(id, requestId, { decision, ...(extra?.answers ? { answers: extra.answers } : {}) }), "Could not answer the approval."),
-    // A retry records a discard first, so refresh even when only the new submission failed.
-    retryAmbiguous: (turn: Pick<Turn, "runId" | "state" | "input">) =>
-      act((id) => retryAmbiguousTurn(api, id, turn), "Could not retry the ambiguous turn.", true),
     resumeNow: (runId: string) => act((id) => api.resumeRateLimitedTurn(id, runId), "Could not resume that turn."),
     setResumeAfterRateLimit: (next: boolean) => patch({ resumeAfterRateLimit: next }, "Could not change that setting."),
     rename: (title: string) => patch({ title }, "Could not rename the session."),

@@ -94,7 +94,7 @@ const turn = (over: Partial<JournalTurn> & Pick<JournalTurn, "runId">): JournalT
 });
 
 const render = (subject: JournalTurn) =>
-  renderToStaticMarkup(<SessionTurn turn={subject} requests={[]} sending={false} live={false} onDecide={() => {}} onRetry={() => {}} />);
+  renderToStaticMarkup(<SessionTurn turn={subject} requests={[]} sending={false} live={false} onDecide={() => {}} />);
 
 const rows = (html: string) => html.match(/aria-label="Notification"/g)?.length ?? 0;
 
