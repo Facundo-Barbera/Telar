@@ -91,7 +91,6 @@ import {
   type SessionSettledBy,
   type PluginPatch,
   type LatexConfig,
-  NotificationDetail as NotificationDetailSchema,
   Subscription as SubscriptionSchema,
   Cohort as CohortSchema,
   Turn as TurnSchema,
@@ -195,7 +194,7 @@ import {
 } from "@telar/engine-client";
 import { WorkspaceConfigStore } from "./workspace-config";
 import { assertId, assertStateVersion, EngineStateError, ID, Kernel, STATE_VERSION, type JournalEntry } from "./platform/kernel";
-import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
+import { isResultTurn, latestProviderSessionId, newestFirst, parseSession, releaseDelegationSettle, SessionItems, OpenPrefixes, SessionRecords, SessionRequests, SessionTasks, SessionQueues, SessionMailbox, isPeerMail, awaitsRateLimitSweep, emptyQueue, sessionQueueFile, sessionQueueIndexFile, type SessionQueue, sessionDir, sessionMetadataFile, storedSession } from "./domains/sessions";
 import { boundedOutline, context, FIND_SCAN, firstLine, GREP_CONTEXT_CHARS, ITEM_TITLE_CHARS, type OutlineRow, outlineRow, RELAY_RULE, summariseTurn, TURN_ANSWER_NO_SUCH_RUN, TURN_ANSWER_NONE, WHY_CHARS } from "./domains/turns";
 import { TELAR_ORIENTATION } from "./orientation";
 import { dictationCredential, readDictationKey, writeDictationKey } from "./dictation/credentials";
@@ -211,7 +210,7 @@ import { needsRefresh, refreshAccessToken, type ConnectContext, type McpOAuthRec
 import { cloneRepository, commitSessionWork, defaultRemoteBaseAsync, ensureTelarGitignore, gitOverviewAsync, isCloneFailure, listGitRefsAsync, projectRemoteAsync, pullRequestBlockedBy, pushSessionBranch, removeTelarGitignore, sessionBranchFacts, sessionDiffAsync, sessionFilePatchAsync, type GitOverview } from "./domains/git";
 import { porcelainPaths } from "./platform/git/parse";
 import { inlineExcerpt, quotedExcerpt } from "./agent-notice";
-import { cohortNotification, heldDelivery, MAX_COHORT_ENTRIES, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
+import { cohortNotification, heldDelivery, MAX_DELIVERIES, mergeNotifications, mergeRunOutcome, notificationLabel, peerNotification, wakeNotification, withoutWakesFrom } from "./notification";
 import { commentOn, commentOnPullLine, DEFAULT_ISSUE_FILTER, DEFAULT_PULL_FILTER, defaultGhRunner, mergePull, openPullRequest, reactOn, readCheckLog, readForgeFacets, readGitHub, readIssue, readPull, readPullFiles, readPullForBranch, replyToThread, resolveThread, type GhRunner } from "./domains/github";
 import { z } from "zod";
 import { inheritedOwnedEnv, providerEnvIsCredential, providerOwnsEnv, providerProcessEnv, stoppedInheriting } from "./domains/providers";
@@ -496,9 +495,6 @@ function endedByShutdown(turn: Turn): boolean {
  */
 /** The intents that speak for the run that sent them — see `messageDeliveredTo`. */
 const FOLDING_INTENTS: ReadonlySet<NonNullable<Turn["agentIntent"]>> = new Set(["report", "result", "blocker"]);
-/** Held mail that is a peer talking — a report or an unawaited result — rather
- *  than a wake. It never opens a turn of its own. */
-const isPeerMail = (detail: NotificationDetail): boolean => detail.kind === "peer_message";
 const RESULT_DELIVERED_STATES: ReadonlySet<Turn["state"]> = new Set(["claimed", "running", "steering", "steered", "completed"]);
 
 /** The contract's own list, as a set, so an unknown mode is refused at the edge
@@ -1298,17 +1294,6 @@ function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
 
 
 
-/**
- * THE NOTIFICATION MAILBOX — what arrived while this session was working.
- *
- * PER SESSION, beside its queue, because that is whose context is being spent:
- * a subscription is engine-wide (`subscriptions.json`) but a HELD notification
- * belongs to the recipient, and a session that is archived or deleted should
- * take its unread mail with it rather than leave it in a shared file.
- */
-function notificationsFile(paths: EngineStatePaths, sessionId: string): string {
-  return path.join(sessionDir(paths, sessionId), "notifications.json");
-}
 
 /** The id → metadata index for a session's uploaded files. */
 function attachmentsFile(paths: EngineStatePaths, sessionId: string): string {
@@ -1467,6 +1452,7 @@ export class EngineStore {
   private readonly sessionRequests: SessionRequests;
   private readonly sessionTasks: SessionTasks;
   private readonly sessionQueues: SessionQueues;
+  private readonly mailbox: SessionMailbox;
 
   private registerCacheHooks(): void {
     this.kernel.onWrite((file, write, written) => {
@@ -1945,45 +1931,12 @@ export class EngineStore {
    *  row after a restart is noise, not a lie. */
   private readonly browserControlLast = new Map<string, string>();
 
-  /**
-   * WHAT THE PERSON DID THAT A SESSION'S AGENT SHOULD HEAR ABOUT, by session —
-   * today only "the person closed terminal …". IN MEMORY AND HANDED OVER ONCE:
-   * the next claim carries them before the turn's own input, and a restart
-   * loses them, which costs a sentence the terminal list still says.
-   *
-   * A NOTE, NOT A WAKE. Nothing here starts a turn: the person closing a
-   * terminal is not work for the agent, only a fact it should not contradict
-   * the next time it speaks.
-   */
-  private readonly nextTurnNotes = new Map<string, string[]>();
 
-  /** Keep a sentence for this session's next turn. A few at most, oldest
-   *  dropped, so a burst of closes cannot grow a prompt without bound. */
   noteForNextTurn(sessionId: string, note: string): void {
-    const notes = this.nextTurnNotes.get(sessionId) ?? [];
-    if (!notes.includes(note)) notes.push(note);
-    this.nextTurnNotes.set(sessionId, notes.slice(-5));
+    this.mailbox.noteForNextTurn(sessionId, note);
   }
 
-  /**
-   * PEER MAIL, HANDED OVER WITH WHATEVER TURN STARTS NEXT. Reports never open
-   * a turn of their own (`submitAgentTurn`), so this is how they arrive: as a
-   * note ahead of the next turn's input, whether that is a wake or the person
-   * typing. Only a box of peer mail alone — anything else in it is a wake the
-   * turn-end flush delivers as its own notification.
-   */
-  private takeHeldMail(sessionId: string): string[] {
-    const pending = this.readPendingNotifications(sessionId);
-    if (pending.length === 0 || !pending.every(isPeerMail)) return [];
-    this.writePendingNotifications(sessionId, []);
-    return [`Held for you while you were busy; no reply needed.\n${mergeNotifications(pending).body}`];
-  }
 
-  private takeNextTurnNotes(sessionId: string): string[] {
-    const notes = this.nextTurnNotes.get(sessionId) ?? [];
-    this.nextTurnNotes.delete(sessionId);
-    return notes;
-  }
 
   attachBrowser(browser: AttachedBrowser): void {
     this.browser = browser;
@@ -4170,6 +4123,7 @@ export class EngineStore {
     this.sessionItems = new SessionItems(this.kernel);
     this.sessionRequests = new SessionRequests(this.kernel, () => this.records.ids());
     this.sessionTasks = new SessionTasks(this.kernel);
+    this.mailbox = new SessionMailbox(this.kernel);
     this.sessionQueues = new SessionQueues(this.kernel, {
       sessionIds: () => this.records.ids(),
       itemsForRuns: (sessionId, runs) => this.sessionItems.forRuns(sessionId, runs),
@@ -8952,7 +8906,7 @@ export class EngineStore {
       this.appendEvent(sessionId, { type: "turn.accepted", turn, replayed: false }, turn.runId);
       if (passive) {
         if (turn.notification) this.writeNotificationItem(sessionId, turn);
-        if (turn.notification && !turn.wakeReason && !input.foldedIntoWaitingWake) this.holdNotification(sessionId, turn.notification);
+        if (turn.notification && !turn.wakeReason && !input.foldedIntoWaitingWake) this.mailbox.hold(sessionId, turn.notification);
         this.appendEvent(sessionId, { type: "turn.completed", resultText: "" }, turn.runId);
         return { turn: structuredClone(turn), replayed: false };
       }
@@ -9178,7 +9132,7 @@ export class EngineStore {
       throw new EngineStateError("invalid_request", `corrects must name an earlier message you sent to this session; ${correctedRunId} is not one`);
     }
     if (corrected.state === "queued") return "queued";
-    const held = this.readPendingNotifications(sessionId).some((each) => each.kind === "peer_message" && each.runId === correctedRunId);
+    const held = this.mailbox.pending(sessionId).some((each) => each.kind === "peer_message" && each.runId === correctedRunId);
     return corrected.agentDelivery === "passive" && held ? "held" : "read";
   }
 
@@ -9187,9 +9141,7 @@ export class EngineStore {
    *  mailbox. Either way the correction is now the one the reader will meet. */
   private withdrawCorrected(sessionId: string, correctedRunId: string, where: "queued" | "held"): void {
     if (where === "held") {
-      const pending = this.readPendingNotifications(sessionId);
-      const kept = pending.filter((each) => !(each.kind === "peer_message" && each.runId === correctedRunId));
-      if (kept.length !== pending.length) this.writePendingNotifications(sessionId, kept, kept.length > 0 ? this.heldSince(sessionId) : undefined);
+      this.mailbox.withdrawPeer(sessionId, correctedRunId);
       return;
     }
     const queue = this.readQueue(sessionId);
@@ -10000,7 +9952,7 @@ export class EngineStore {
           })(),
           ...(this.getAgentOrientation().preamble ? { orientation: TELAR_ORIENTATION } : {}),
           ...(() => {
-            const notes = [...this.takeNextTurnNotes(session.id), ...this.takeHeldMail(session.id)];
+            const notes = [...this.mailbox.takeNextTurnNotes(session.id), ...this.mailbox.takeHeldMail(session.id)];
             return notes.length > 0 ? { notes } : {};
           })(),
           turn,
@@ -12036,7 +11988,7 @@ export class EngineStore {
        * change: the loud behaviour is no longer what you get by not choosing.
        */
       if ((subscription.completionWake ?? "settled_only") === "settled_only" && this.hasLiveTurn(subscriberId)) {
-        this.holdNotification(subscriberId, notification);
+        this.mailbox.hold(subscriberId, notification);
         if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
         continue;
       }
@@ -12048,8 +12000,8 @@ export class EngineStore {
        * cohort would arrive as two — which is the merge failing at exactly the
        * moment it matters, since that window is when a busy session drains.
        */
-      if (this.readPendingNotifications(subscriberId).length > 0) {
-        this.holdNotification(subscriberId, notification);
+      if (this.mailbox.pending(subscriberId).length > 0) {
+        this.mailbox.hold(subscriberId, notification);
         this.flushPendingNotifications(subscriberId);
         if (subscription.once && TERMINAL_WAKE_KINDS.includes(kind)) remove(subscription);
         continue;
@@ -12742,7 +12694,7 @@ export class EngineStore {
      */
     const deliveries = (waiting.notification?.deliveries ?? 1) + 1;
     if (deliveries > MAX_DELIVERIES) {
-      this.holdNotification(subscriberId, notification);
+      this.mailbox.hold(subscriberId, notification);
       return true;
     }
     const at = this.now();
@@ -12861,7 +12813,7 @@ export class EngineStore {
      */
     const deliveries = (waiting.notification.deliveries ?? 1) + 1;
     if (deliveries > MAX_DELIVERIES) {
-      this.holdNotification(subscriberId, notification);
+      this.mailbox.hold(subscriberId, notification);
       return true;
     }
     const at = this.now();
@@ -12965,61 +12917,8 @@ export class EngineStore {
     );
   }
 
-  /* ---------------------------------------------------------------- *
-   * THE NOTIFICATION MAILBOX — issue #550 clause 3.
-   *
-   * A wake used to be delivered the instant it was fired, whatever the
-   * recipient was doing: a coordinator with four workers took four mid-turn
-   * interruptions, each landing in a context already full of the work it
-   * interrupted. `Subscription.completionWake` defaults to `settled_only`
-   * because interrupting is the expensive choice and should be the asked-for
-   * one, and this is where "not now" is kept until "now".
-   * ---------------------------------------------------------------- */
 
-  /** What this session has not been told yet. Absent file means an empty box —
-   *  no migration, and a session that never held one costs nothing. */
-  private readPendingNotifications(sessionId: string): NotificationDetail[] {
-    const stored = this.readDocument(notificationsFile(this.paths, sessionId));
-    if (stored === undefined) return [];
-    const parsed = NotificationDetailSchema.array().safeParse((stored as { pending?: unknown }).pending);
-    // A torn or older mailbox is DROPPED rather than thrown on. Unread mail is
-    // worth less than the session it is attached to, and every fact in here is
-    // still one `sessions_read` away from its source.
-    return parsed.success ? parsed.data : [];
-  }
 
-  private writePendingNotifications(sessionId: string, pending: NotificationDetail[], heldSince?: number): void {
-    this.writeDocument(notificationsFile(this.paths, sessionId), {
-      version: STATE_VERSION,
-      pending,
-      ...(heldSince === undefined ? {} : { heldSince }),
-    });
-  }
-
-  /**
-   * WHEN THIS BOX STARTED WAITING — the report window's clock, issue #723.
-   *
-   * ON THE MAILBOX RATHER THAN THE SESSION, because it is a fact about the box:
-   * stamped when a hold makes it non-empty, gone when a flush empties it, and
-   * written by the same two functions that write `pending`. A copy on the
-   * session record would be a second truth about one thing, drifting on the one
-   * path that matters — a crash between the two writes.
-   *
-   * SO THE WINDOW OPENS ON THE FIRST HELD REPORT, not on a timer the engine
-   * keeps running. A session with nothing waiting has no clock to be wrong
-   * about, and "the next window is measured from the delivery" needs no code:
-   * the flush clears the box, and the next report stamps a fresh one.
-   *
-   * ABSENT ON A BOX FILLED BEFORE THIS EXISTED, which `windowDueAt` reads as
-   * "due now" rather than inventing a stamp — mail that has already been
-   * waiting is not made fresher by the field arriving.
-   */
-  private heldSince(sessionId: string): number | undefined {
-    const stored = this.readDocument(notificationsFile(this.paths, sessionId));
-    if (stored === undefined) return undefined;
-    const held = (stored as { heldSince?: unknown }).heldSince;
-    return typeof held === "number" && Number.isFinite(held) ? held : undefined;
-  }
 
   /** Is a turn of this session's actually in front of a provider right now? The
    *  question `settled_only` turns on — and `queued` is deliberately NOT busy:
@@ -13028,32 +12927,6 @@ export class EngineStore {
     return this.scanQueue(sessionId).turns.some((turn) => turn.state === "claimed" || turn.state === "running" || turn.state === "steering");
   }
 
-  /**
-   * HOLD ONE, MERGING IT ONTO WHAT IS ALREADY WAITING.
-   *
-   * THE NEWEST FACT ABOUT ONE RUN WINS, which is `coalesceQueuedWake`'s rule
-   * applied to the box rather than to the queue: a child that parks an approval,
-   * gets it, then finishes has produced three facts about one run and only the
-   * last is worth a recipient's attention. Different runs stay separate — a
-   * failure on one turn is not erased by another turn finishing.
-   *
-   * BOUNDED, because a fan-out is exactly the shape that fills this. Past the
-   * cap the OLDEST goes: a coordinator coming up for air after an hour wants
-   * what happened recently, and the rest is still readable at its source.
-   */
-  private holdNotification(sessionId: string, detail: NotificationDetail): void {
-    const pending = this.readPendingNotifications(sessionId);
-    const index = pending.findIndex(
-      (each) => each.kind === detail.kind && each.sessionId === detail.sessionId && each.runId === detail.runId,
-    );
-    if (index >= 0) pending[index] = detail;
-    else pending.push(detail);
-    // THE OLDEST WAIT IS WHAT THE WINDOW MEASURES, so an existing stamp is kept:
-    // a newer report joining the cohort must not push the delivery back, or a
-    // steady trickle of them would hold the box open for ever (#723).
-    const heldSince = this.heldSince(sessionId) ?? this.now();
-    this.writePendingNotifications(sessionId, pending.slice(-MAX_COHORT_ENTRIES), heldSince);
-  }
 
   /**
    * DELIVER EVERYTHING HELD, AS ONE NOTIFICATION — the cohort merge.
@@ -13068,7 +12941,7 @@ export class EngineStore {
    */
   private flushPendingNotifications(sessionId: string): void {
     if (!this.hasLiveTurn(sessionId)) this.deliverReadyCohorts(sessionId);
-    const pending = this.readPendingNotifications(sessionId);
+    const pending = this.mailbox.pending(sessionId);
     if (pending.length === 0) return;
     if (this.hasLiveTurn(sessionId)) return;
     // Peer mail alone is not a reason for a turn: it rides with the next one.
@@ -13076,7 +12949,7 @@ export class EngineStore {
     const merged = heldDelivery(mergeNotifications(pending));
     // CLEARED BEFORE THE SUBMIT, so a submit that throws cannot be retried into
     // a duplicate — and after it, the facts live on the turn, which is durable.
-    this.writePendingNotifications(sessionId, []);
+    this.mailbox.setPending(sessionId, []);
     // A notification turn already queued takes the held mail with it.
     const waiting = this.waitingNotificationTurn(sessionId);
     if (waiting) {
@@ -13134,7 +13007,7 @@ export class EngineStore {
    */
   pendingNotifications(sessionId: string): NotificationDetail[] {
     this.records.require(sessionId);
-    return structuredClone(this.readPendingNotifications(sessionId));
+    return structuredClone(this.mailbox.pending(sessionId));
   }
 
   /** The other half of `writeNotificationItem`: the row a coalesce superseded. */
