@@ -1,6 +1,9 @@
 import { notesClient } from "./notes/client";
 import type { EngineTransport } from "./platform/transport";
 import { promptsClient } from "./prompts/client";
+import { schedulesClient } from "./schedules/client";
+import { storageClient } from "./storage/client";
+import { usageClient } from "./usage/client";
 import { parsePublishedAppearance, type PublishedAppearance } from "./look";
 import { diffBaseQuery, filePatchQuery } from "./protocol/diff-query";
 import type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
@@ -45,25 +48,12 @@ import {
   type ProjectWorkspaceView,
   type SidebarLayout,
   type SidebarMode,
-  type StorageReport,
-  type JournalReclaim,
-  type JournalRetirement,
-  type RetentionBucket,
-  type RetentionPolicy,
-  type Schedule,
-  type ScheduleRule,
-  type StoreCopy,
   type TextGenPolicy,
   type WorktreeMoveResult,
   type WorktreeInventory,
   type WorktreeReclaimItem,
   type WorktreeReclaimOutcome,
   type WorktreesRoot,
-  type UsageReport,
-  type UsageResolution,
-  type UsageLimits,
-  type UsageLimitSource,
-  type UsageLimitSourceKind,
   type ModelCatalogue,
   type ModelOverlay,
   type CustomProviderModel,
@@ -162,6 +152,9 @@ import {
 export * from "./protocol";
 export * from "./notes/schema";
 export * from "./prompts/schema";
+export * from "./schedules/schema";
+export * from "./storage/schema";
+export * from "./usage/schema";
 
 export * from "./look";
 
@@ -446,7 +439,12 @@ export type { DirectoryEntry, DirectoryListing } from "./files/schema";
 export { LOCAL_HOST_ID, type PublicHost } from "./hosts/schema";
 export type { DiffBaseOption, FilePatchOptions } from "./protocol/diff-query";
 
-export interface EngineClient extends Methods<typeof notesClient>, Methods<typeof promptsClient> {}
+export interface EngineClient
+  extends Methods<typeof notesClient>,
+    Methods<typeof promptsClient>,
+    Methods<typeof schedulesClient>,
+    Methods<typeof storageClient>,
+    Methods<typeof usageClient> {}
 
 export class EngineClient implements EngineTransport {
   constructor(
@@ -854,78 +852,6 @@ export class EngineClient implements EngineTransport {
   /** Take one back. The next fill of that item asks again. */
   revokeBrowserLogin(id: string): Promise<{ ok: boolean }> {
     return this.request("DELETE", `/v2/browser/logins/${encodeURIComponent(id)}`);
-  }
-
-  /** Spend over time, folded from the engine's journals — see `UsageReport`. */
-  usageReport(input: { sinceMs: number; untilMs: number; resolution?: UsageResolution; timeZone?: string }): Promise<{ usage: UsageReport }> {
-    const query = new URLSearchParams({ since: String(input.sinceMs), until: String(input.untilMs) });
-    if (input.resolution) query.set("resolution", input.resolution);
-    if (input.timeZone) query.set("tz", input.timeZone);
-    return this.request("GET", `/v2/usage?${query.toString()}`);
-  }
-
-  usageLimitSources(): Promise<{ sources: UsageLimitSource[] }> {
-    return this.request("GET", "/v2/usage/sources");
-  }
-
-  saveUsageLimitSource(input: {
-    id: string;
-    kind?: UsageLimitSourceKind;
-    /** `null` clears it; absent leaves it alone. */
-    label?: string | null;
-    url?: string;
-    managementKey?: string;
-    enabled?: boolean;
-  }): Promise<{ source: UsageLimitSource }> {
-    const { id, ...patch } = input;
-    return this.request("PUT", `/v2/usage/sources/${encodeURIComponent(id)}`, patch);
-  }
-
-  /** Forget a hub and its stored key together. */
-  removeUsageLimitSource(id: string): Promise<{ removed: boolean }> {
-    return this.request("DELETE", `/v2/usage/sources/${encodeURIComponent(id)}`);
-  }
-
-  usageLimits(options: { refresh?: boolean } = {}): Promise<{ limits: UsageLimits }> {
-    return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
-  }
-
-  storage(options: { refresh?: boolean; signal?: AbortSignal } = {}): Promise<{ storage: StorageReport }> {
-    return this.request("GET", `/v2/storage${options.refresh ? "?refresh=1" : ""}`, undefined, options.signal);
-  }
-
-  reclaimJournal(): Promise<{ reclaimed: JournalReclaim }> {
-    return this.request("POST", "/v2/storage/journal/reclaim");
-  }
-
-  copyStore(destination: string): Promise<{ copy: StoreCopy }> {
-    return this.request("POST", "/v2/storage/copy", { destination });
-  }
-
-  retention(options: { bytes?: boolean; signal?: AbortSignal } = {}): Promise<{ retention: RetentionPolicy; buckets: RetentionBucket[] }> {
-    return this.request("GET", `/v2/storage/retention${options.bytes ? "?bytes=1" : ""}`, undefined, options.signal);
-  }
-
-  /** Set the window, or turn it off with `idleAfterDays: null`. A window with
-   *  no export destination is refused: the copy comes before the delete. */
-  setRetention(patch: { idleAfterDays?: number | null; exportTo?: string | null }): Promise<{ retention: RetentionPolicy }> {
-    return this.request("PUT", "/v2/storage/retention", patch);
-  }
-
-  sweepRetention(): Promise<{ swept: JournalRetirement }> {
-    return this.request("POST", "/v2/storage/retention/sweep");
-  }
-
-  schedules(sessionId?: string): Promise<{ schedules: Schedule[] }> {
-    return this.request("GET", `/v2/schedules${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`);
-  }
-
-  putSchedule(input: { id?: string; sessionId: string; prompt: string; rule: ScheduleRule; zone: string; enabled?: boolean }): Promise<{ schedule: Schedule }> {
-    return this.request("POST", "/v2/schedules", input);
-  }
-
-  deleteSchedule(id: string): Promise<{ deleted: boolean }> {
-    return this.request("DELETE", `/v2/schedules/${encodeURIComponent(id)}`);
   }
 
   /** Where session checkouts go on this install — see `WorktreesRoot`. */
@@ -1955,6 +1881,6 @@ export class EngineClient implements EngineTransport {
 
 type Methods<T> = { [K in keyof T]: OmitThisParameter<T[K]> };
 
-Object.assign(EngineClient.prototype, notesClient, promptsClient);
+Object.assign(EngineClient.prototype, notesClient, promptsClient, schedulesClient, storageClient, usageClient);
 
 export { ENGINE_PROTOCOL_VERSION };
