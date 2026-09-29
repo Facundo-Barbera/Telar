@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { ACTIVITY_STALE_S, AUTOMATIC_ACTIVITY, CARD_LINGER_S, automaticActivityDelivery, type MobileRegistration } from "./push";
+import { AUTOMATIC_ACTIVITY, CARD_LINGER_S, type MobileRegistration } from "./push";
+import { ACTIVITY_STALE_S, BARE_END_DISMISS_S, END_DISMISS_S, automaticActivityDelivery } from "./card";
 import { v2Body } from "./relay-v2";
 
 const swift = readFileSync(new URL("../../../../ios/Shared/SessionActivityAttributes.swift", import.meta.url), "utf8");
 function fields(body: string) {
-  const all = [...body.matchAll(/var (\w+): ([\w?]+)(?: = [^\n]+)?\n/g)].filter(m => !body.slice(0, m.index).includes("{ url(")).map(m => ({ name: m[1], optional: m[2].endsWith("?") }));
+  const all = [...body.matchAll(/var (\w+): ([\w?[\]]+)(?: = [^\n]+)?\n/g)].filter(m => !body.slice(0, m.index).includes("{ url(")).map(m => ({ name: m[1], optional: m[2].endsWith("?") }));
   return { all: all.map(f => f.name).sort(), required: all.filter(f => !f.optional).map(f => f.name).sort() };
 }
 const stateBody = swift.slice(swift.indexOf("struct ContentState"), swift.indexOf("}", swift.indexOf("struct ContentState")));
@@ -27,7 +28,7 @@ function expectDecodable(state: Record<string, unknown>) {
 
 test("the Swift type was read, so the checks below compare against something", () => {
   expect(contentState.required).toEqual(["ended", "startedAt", "status", "title", "updatedAt"]);
-  expect(contentState.all).toEqual(["activeCount", "ended", "sessionId", "startedAt", "status", "title", "updatedAt"]);
+  expect(contentState.all).toEqual(["activeCount", "ended", "rows", "sessionId", "startedAt", "status", "title", "updatedAt"]);
   expect(attributes.all).toEqual(["hostId", "hostName", "sessionId"]);
 });
 
@@ -51,14 +52,16 @@ describe("the host card", () => {
     expect(aps["stale-date"]).toBe(Math.floor(now + ACTIVITY_STALE_S));
   });
 
-  test("finished work updates the card in place, and only an end dismisses it, at once", () => {
+  test("finished work updates the card in place, and an end dismisses it soon, or later when it has rows to show", () => {
     const finished = automaticActivityDelivery(record, [{ ...working, activity: "idle" }], "c".repeat(64), 1, now).payload.aps;
     expect(finished.event).toBe("update");
     expect(finished["content-state"]).toMatchObject({ status: "Finished", ended: true });
     expect(finished).not.toHaveProperty("dismissal-date");
     expect(finished["stale-date"]).toBe(Math.floor(now + ACTIVITY_STALE_S + CARD_LINGER_S));
     const end = automaticActivityDelivery(record, [], "c".repeat(64), 1, now, "end").payload.aps;
-    expect(end["dismissal-date"]).toBe(Math.floor(now));
+    expect(end["dismissal-date"]).toBe(Math.floor(now + BARE_END_DISMISS_S));
+    const done = { ...working, activity: "idle", lastTurnEndedAt: now * 1000 - 1000 };
+    expect(automaticActivityDelivery(record, [done], "c".repeat(64), 1, now, "end").payload.aps["dismissal-date"]).toBe(Math.floor(now + END_DISMISS_S));
     expectDecodable(end["content-state"] as Record<string, unknown>);
   });
 });

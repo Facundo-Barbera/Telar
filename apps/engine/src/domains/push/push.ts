@@ -29,6 +29,7 @@ export interface SessionSignal {
   lastTurnEndedAt?: number; lastTurnFailed?: boolean; lastTurnOrigin?: Turn["origin"];
   hasParent?: boolean; delegating?: boolean;
   projectId?: string;
+  project?: string;
   lastTurnSequence?: number; lastReadTurnSequence?: number;
   approvable?: string;
 }
@@ -143,7 +144,7 @@ export function saveRegistration(deviceId: string, registration: MobileRegistrat
   const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: old?.automaticStartedAt, cardFinishedAt: sameCard ? old?.cardFinishedAt : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, readSync: old?.readSync, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
-function turnIsOver(activity: SessionSignal["activity"]): boolean {
+export function turnIsOver(activity: SessionSignal["activity"]): boolean {
   return activity === "idle" || activity === "waiting" || activity === "scheduled";
 }
 export function signalKey(session: SessionSignal): string {
@@ -177,6 +178,12 @@ export function alertKind(session: SessionSignal, previous: string | undefined, 
     if (completions) return "finished";
   }
 }
+export function alertSound(record: MobileRegistration, kind: AlertKind): string | undefined {
+  if (kind !== "blocked") return;
+  if (record.sounds === undefined) return "default";
+  const named = soundFor(record.sounds, kind);
+  return named && `${named}.caf`;
+}
 export function notification(record: MobileRegistration, session: SessionSignal, previous: string | undefined): Delivery | undefined {
   if (!record.enabled || record.mutedSessions.includes(session.id)) return;
   const kind = alertKind(session, previous, record.completions);
@@ -184,8 +191,7 @@ export function notification(record: MobileRegistration, session: SessionSignal,
   const body = ALERT_BODY[kind];
   const approvable = session.activity === "blocked" ? session.approvable : undefined;
   const collapseId = crypto.createHash("sha256").update(session.id).digest("hex");
-  const named = record.sounds && soundFor(record.sounds, kind);
-  const sound = kind !== "blocked" ? undefined : record.sounds === undefined ? "default" : named && `${named}.caf`;
+  const sound = alertSound(record, kind);
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert", collapseId,
     payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, ...(sound ? { sound } : {}),
       "interruption-level": kind === "finished" ? "passive" : "active", "thread-id": `${record.hostId}:${session.id}`,
@@ -262,29 +268,4 @@ export function activityReport(record: PushRecord): ActivityReport {
   const start = record.automaticStart;
   return { card, ...(blocker ? { blocker } : {}),
     ...(start ? { lastStart: { at: start.at, status: start.status, ...(start.reason ? { reason: start.reason } : {}), relay: start.relay === true, ...(start.token ? { token: start.token } : {}) } } : {}) };
-}
-export const ACTIVITY_STALE_S = 300;
-export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
-  const rank: Record<string, number> = { blocked: 0, working: 1, queued: 2, monitoring: 3 };
-  return sessions.filter(s => s.activity in rank).sort((a,b) => rank[a.activity]! - rank[b.activity]! || a.id.localeCompare(b.id));
-}
-export type CardEvent = "start" | "update" | "end";
-export function automaticActivityDelivery(record: MobileRegistration, sessions: SessionSignal[], token: string, startedAt: number, now: number, event: CardEvent = "update"): Delivery {
-  const start = event === "start";
-  const active = record.liveActivities ? automaticSessions(sessions) : [];
-  const focus = active[0];
-  const ended = !focus;
-  const state = {
-    title: record.previews && active.length === 1 ? focus!.title.slice(0,160) : active.length > 1 ? `${active.length} active sessions` : ended ? "Work finished" : "Telar work",
-    status: ended ? "Finished" : focus.activity === "blocked" ? "Needs you" : focus.activity === "queued" ? "Queued" : focus.activity === "monitoring" ? "Background" : "Working",
-    startedAt: startedAt - 978307200, updatedAt: now - 978307200, ended,
-    sessionId: focus?.id, activeCount: active.length,
-  };
-  return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", ...(start ? {} : { activityId: AUTOMATIC_ACTIVITY }),
-    collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
-    payload: { aps: { timestamp: Math.floor(now), event, "content-state": state,
-      "stale-date": Math.floor(now + ACTIVITY_STALE_S + (ended ? CARD_LINGER_S : 0)), ...(event === "end" ? {"dismissal-date":Math.floor(now)} : {}),
-      ...(start ? { "attributes-type":"SessionActivityAttributes", attributes:{hostId:record.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:record.hostName ?? "Mac"},
-        "input-push-token":1, alert:{title:"Telar",body:"Agent work in progress"} } : {}),
-    } } };
 }
