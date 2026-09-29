@@ -20,7 +20,6 @@ function write(root: string, relative: string, text = "x"): void {
   fs.writeFileSync(path.join(root, relative), text);
 }
 
-/** A monorepo with installed dependencies and a fresh worktree cut from it. */
 function fixture(): { checkout: string; worktree: string } {
   const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "telar-deps-")));
   roots.push(base);

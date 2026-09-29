@@ -28,9 +28,7 @@ const DEFAULT_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 const MAX_LINES = 2000;
 const MAX_LINE_CHARS = 4000;
-/** How long a stopped setup's group gets between SIGTERM and SIGKILL — the
- *  grace its launcher is built with. Longer than a terminal's second: an
- *  installer interrupted mid-write deserves the time to clean up. */
+/** Between SIGTERM and SIGKILL: longer than a terminal's, so an interrupted installer can clean up. */
 export const SETUP_STOP_GRACE_MS = 5000;
 
 type Live = {

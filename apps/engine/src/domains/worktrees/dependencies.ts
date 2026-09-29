@@ -32,7 +32,7 @@ function inside(root: string, target: string): string | undefined {
   return relative && !relative.startsWith("..") && !path.isAbsolute(relative) ? relative : undefined;
 }
 
-// A workspace package links back into the checkout; in the worktree it must resolve to the worktree's own copy.
+// A real directory of links keeps `node_modules/` ignore rules matching; workspace packages resolve to the worktree's copy.
 function linkTarget(checkout: string, worktree: string, source: string): string {
   if (!fs.lstatSync(source).isSymbolicLink()) return source;
   let real: string;
@@ -56,10 +56,6 @@ function linkEntries(checkout: string, worktree: string, from: string, to: strin
   }
 }
 
-/**
- * Gives a new worktree the checkout's node_modules and .venv directories. Each becomes a real
- * directory of links, so a `node_modules/` ignore rule still matches it; returns what it linked.
- */
 export function shareDependencies(checkout: string, worktree: string): string[] {
   const shared: string[] = [];
   for (const relative of find(checkout, DEPENDENCY_DIRS)) {
@@ -67,15 +63,14 @@ export function shareDependencies(checkout: string, worktree: string): string[] 
     if (!fs.existsSync(path.dirname(destination)) || fs.existsSync(destination)) continue;
     try {
       linkEntries(checkout, worktree, path.join(checkout, relative), destination);
-      shared.push(relative);
     } catch {
-      // Best-effort: a half-linked directory is still one `bun install` away from whole.
+      continue;
     }
+    shared.push(relative);
   }
   return shared;
 }
 
-/** Deletes the worktree's ignored .next, dist and .turbo directories; a tracked one stays. */
 export async function pruneBuildOutputs(git: AsyncGitRunner, worktree: string): Promise<string[]> {
   if (!fs.existsSync(worktree)) return [];
   const candidates = find(worktree, BUILD_OUTPUT_DIRS);
