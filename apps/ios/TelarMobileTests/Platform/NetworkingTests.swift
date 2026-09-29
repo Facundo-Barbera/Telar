@@ -3,7 +3,10 @@ import Testing
 @testable import TelarMobile
 
 final class StubURLProtocol: URLProtocol {
-    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))?
+    nonisolated(unsafe) static var handler: (@Sendable (URLRequest) -> (Int, Data))? {
+        didSet { headers = nil }
+    }
+    nonisolated(unsafe) static var headers: [String: String]?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -27,7 +30,7 @@ final class StubURLProtocol: URLProtocol {
             request.httpBody = data
         }
         let (status, body) = handler(request)
-        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: Self.headers)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: body)
         client?.urlProtocolDidFinishLoading(self)
@@ -72,6 +75,21 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(try await api.sessionFile("s", path: "docs/a.md").sha256 == "h1")
         let result = try await api.writeSessionFile("s", path: "docs/a.md", text: "hello", expectedSha256: "h1")
         #expect(result == .refused(.conflict, sha256: "h9"))
+    }
+
+    @Test func rawFileKeepsTheContentTypeTheMacSent() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path() == "/api/sessions/s/files/raw")
+            #expect(request.url?.query() == "path=report/main.pdf")
+            return (200, Data("%PDF".utf8))
+        }
+        StubURLProtocol.headers = ["Content-Type": "application/pdf"]
+        let file = try await stubAPI().sessionFileRaw("s", path: "report/main.pdf")
+        #expect(file.data == Data("%PDF".utf8))
+        #expect(file.contentType == "application/pdf")
+
+        StubURLProtocol.handler = { _ in (200, Data("?".utf8)) }
+        #expect(try await stubAPI().sessionFileRaw("s", path: "x").contentType == nil)
     }
 
     @Test func pluginDoorsPostEachMethodSegment() async throws {
