@@ -92,6 +92,16 @@ private func stubAPI() -> HTTPEngineAPI {
         #expect(try await stubAPI().sessionFileRaw("s", path: "x").contentType == nil)
     }
 
+    @Test func latexLogAsksForTheTailAndReadsItsLines() async throws {
+        StubURLProtocol.handler = { request in
+            #expect(request.url?.path() == "/api/sessions/s/latex/log")
+            let body = try? JSONSerialization.jsonObject(with: request.httpBody ?? Data()) as? [String: Any]
+            #expect(body?["tail"] as? Int == 400)
+            return (200, Data(#"{"lines":["This is pdfTeX","Output written on main.pdf (1 page)."]}"#.utf8))
+        }
+        #expect(try await stubAPI().latexLog("s") == ["This is pdfTeX", "Output written on main.pdf (1 page)."])
+    }
+
     @Test func pluginDoorsPostEachMethodSegment() async throws {
         StubURLProtocol.handler = { request in
             #expect(request.httpMethod == "POST")

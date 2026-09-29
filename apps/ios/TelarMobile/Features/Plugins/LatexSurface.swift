@@ -165,6 +165,9 @@ struct LatexSurface: View {
                 .buttonStyle(.plain)
                 if logOpen {
                     CodeBlockView(code: (log ?? status.logTail).joined(separator: "\n"))
+                        .task(id: "\(status.jobId ?? ""):\(status.status.rawValue):\(status.finishedAt.map { "\($0)" } ?? "")") {
+                            log = try? await api.latexLog(sessionId)
+                        }
                 }
             }
             Text("\(errors.count) error\(errors.count == 1 ? "" : "s") · \(warnings.count) warning\(warnings.count == 1 ? "" : "s")")
