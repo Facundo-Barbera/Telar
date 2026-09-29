@@ -24,6 +24,7 @@ import {
   SparklesIcon,
   TerminalIcon,
   VariableIcon,
+  Volume2Icon,
 } from "lucide-react";
 import type { SettingsPageSpec } from "./search";
 
@@ -308,6 +309,12 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
             hint: "Which device each alert goes to.",
             keywords: ["duplicate", "twice", "desktop notifications", "banner", "iphone", "mac", "idle", "away"],
             icon: BellIcon,
+          },
+          {
+            title: "Notification sounds",
+            hint: "The sound this Mac's alerts play.",
+            keywords: ["sound", "chime", "audio", "mute", "silent", "hilo", "armonico", "felt"],
+            icon: Volume2Icon,
           },
         ],
       },
