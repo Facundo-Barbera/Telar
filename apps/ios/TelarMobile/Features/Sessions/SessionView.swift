@@ -272,9 +272,6 @@ struct SessionView: View {
                 if !wantsColumn || panel.isFullScreen { panel.close() }
                 composerFocused = true
             }
-            .onChange(of: store.sync.session) { _, session in
-                if let session, let hostId { Task { await MobileNotifications.shared.update(session, hostId: hostId) } }
-            }
             .alert("Live Activity", isPresented: Binding(get: { MobileNotifications.shared.activityError != nil }, set: { if !$0 { MobileNotifications.shared.activityError = nil } })) {
                 Button("OK") { MobileNotifications.shared.activityError = nil }
             } message: { Text(MobileNotifications.shared.activityError ?? "") }

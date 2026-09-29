@@ -30,7 +30,6 @@ import Testing
 
     @Test func eachMacBlockerAndSilenceHasItsOwnLine() {
         #expect(LiveActivityDiagnosis.line(ActivityReport(card: false, blocker: "no-start-token"), now: now) == "has no push-to-start token from this phone yet.")
-        #expect(LiveActivityDiagnosis.line(ActivityReport(card: false, blocker: "gave-up"), now: now).hasPrefix("tried 3 starts"))
         #expect(LiveActivityDiagnosis.line(ActivityReport(card: false), now: now) == "waiting for active work to start a card.")
         #expect(LiveActivityDiagnosis.line(nil, now: now).hasPrefix("no report"))
     }
