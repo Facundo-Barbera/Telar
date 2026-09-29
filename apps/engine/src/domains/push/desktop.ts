@@ -1,8 +1,6 @@
-import crypto from "node:crypto";
-import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES, type NotifyOn } from "@telar/engine-client";
-import fs from "node:fs";
-import path from "node:path";
-import { ALERT_BODY, alertKind, pushFile, signalKey, type AlertKind, type SessionSignal } from "./push";
+import type { NotificationSounds, NotifyOn } from "@telar/engine-client";
+import { readNotifyOn, readSounds, soundFor } from "./prefs";
+import { ALERT_BODY, alertKind, signalKey, type AlertKind, type SessionSignal } from "./push";
 
 const sessionHref = (session: { id: string; projectId?: string }) =>
   session.projectId ? `/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}` : "/main";
@@ -21,12 +19,11 @@ export type DesktopNotice = {
   body: string;
   path: string;
   request?: string;
+  sound?: string;
 };
 
 export type DesktopPrefs = { completions: boolean; previews: boolean };
 const DESKTOP_PREFS: DesktopPrefs = { completions: true, previews: true };
-
-export const isNotifyOn = (value: unknown): value is NotifyOn => NOTIFY_ON_VALUES.includes(value as NotifyOn);
 
 export type Presence = { active: boolean; viewingPath: string | null; at: number };
 export const PRESENCE_STALE_MS = 45_000;
@@ -37,20 +34,6 @@ export function notifyRoute(notifyOn: NotifyOn, presence: Presence | undefined, 
   if (active && presence.viewingPath === path) return { desktop: false, phone: false };
   if (notifyOn === "both") return { desktop: true, phone: true };
   return { desktop: active, phone: !active };
-}
-
-function notifyOnFile(): string { return path.join(path.dirname(pushFile()), "notify-on.json"); }
-export function readNotifyOn(file?: string): NotifyOn {
-  try {
-    const value = (JSON.parse(fs.readFileSync(file ?? notifyOnFile(), "utf8")) as { notifyOn?: unknown }).notifyOn;
-    return isNotifyOn(value) ? value : DEFAULT_NOTIFY_ON;
-  } catch { return DEFAULT_NOTIFY_ON; }
-}
-export function writeNotifyOn(notifyOn: NotifyOn, file = notifyOnFile()): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${crypto.randomUUID()}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify({ notifyOn }), { mode: 0o600 });
-  fs.renameSync(tmp, file);
 }
 
 export type DesktopState = { seen: Record<string, string>; baselined: boolean; offered: Record<string, string> };
@@ -120,7 +103,7 @@ export function desktopAttached(channel: Channel = desktopStream): boolean {
 export function notifyDesktop(
   sessions: readonly SessionSignal[],
   changed: ReadonlySet<string> | undefined,
-  { channel = desktopStream, notifyOn = readNotifyOn(), now = Date.now() }: { channel?: Channel; notifyOn?: NotifyOn; now?: number } = {},
+  { channel = desktopStream, notifyOn = readNotifyOn(), sounds = readSounds(), now = Date.now() }: { channel?: Channel; notifyOn?: NotifyOn; sounds?: NotificationSounds; now?: number } = {},
 ): void {
   const { notices, state } = desktopNotices(desktopGlobal.telarDesktopNotify ?? emptyDesktopState(), sessions, changed);
   desktopGlobal.telarDesktopNotify = state;
@@ -130,7 +113,8 @@ export function notifyDesktop(
     const route = notifyRoute(notifyOn, desktopGlobal.telarDesktopPresence, notice.path, now);
     if (route.phone) delete took[notice.sessionId]; else took[notice.sessionId] = state.seen[notice.sessionId];
     if (!route.desktop) continue;
-    channel.send(notice);
+    const sound = soundFor(sounds, notice.kind);
+    channel.send(sound ? { ...notice, sound } : notice);
   }
   desktopGlobal.telarDesktopTook = took;
 }

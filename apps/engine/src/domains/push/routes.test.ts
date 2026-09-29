@@ -57,3 +57,13 @@ describe("Notify on, persisted beside the phones", () => {
     expect((await call("GET", "/v2/push/notify-on")).body).toEqual({ notifyOn: "mac" });
   });
 });
+
+describe("Notification sounds, persisted beside the phones", () => {
+  test("defaults to Hilo, keeps a valid choice and refuses anything else", async () => {
+    const call = setup();
+    expect((await call("GET", "/v2/push/sounds")).body).toEqual({ sounds: "hilo" });
+    expect((await call("PUT", "/v2/push/sounds", { sounds: "off" })).status).toBe(200);
+    for (const body of [{ sounds: "kazoo" }, {}]) expect((await call("PUT", "/v2/push/sounds", body)).status).toBe(400);
+    expect((await call("GET", "/v2/push/sounds")).body).toEqual({ sounds: "off" });
+  });
+});
