@@ -27,7 +27,7 @@ export type RelayCredential = { handle: string; keyId: string; sendKey: string }
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean; lastTurnOrigin?: Turn["origin"];
-  hasParent?: boolean;
+  hasParent?: boolean; delegating?: boolean;
   projectId?: string;
   lastTurnSequence?: number; lastReadTurnSequence?: number;
   approvable?: string;
@@ -169,7 +169,9 @@ const PERSON_ORIGINS = new Set<Turn["origin"]>([undefined, "user", "schedule"]);
 export function alertKind(session: SessionSignal, previous: string | undefined, completions: boolean): AlertKind | undefined {
   if (previous === undefined || previous === signalKey(session)) return;
   if (session.activity === "blocked") return "blocked";
-  if (session.hasParent || !PERSON_ORIGINS.has(session.lastTurnOrigin)) return;
+  if (session.hasParent) return;
+  const nothingInFlight = session.activity === "idle" && !session.delegating;
+  if (!PERSON_ORIGINS.has(session.lastTurnOrigin) && !nothingInFlight) return;
   if (turnIsOver(session.activity) && session.lastTurnEndedAt && String(session.lastTurnEndedAt) !== previous.split(":")[2]) {
     if (session.lastTurnFailed) return "failed";
     if (completions) return "finished";

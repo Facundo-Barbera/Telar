@@ -179,9 +179,11 @@ export async function markApprovable(
 }
 
 export function signals(sessions: readonly LiveSessionRow[], assignments: Record<string, SessionAssignment[]> = {}): SessionSignal[] {
+  const delegating = new Set(Object.values(assignments).flat().filter(task => task.outcome === undefined).map(task => task.fromSessionId));
   return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, lastTurnOrigin, startedFrom, projectId, lastTurnSequence, lastReadTurnSequence }) => ({
     id, title, activity,
     ...(startedFrom !== undefined || assignments[id]?.some(task => task.outcome !== "detached") ? { hasParent: true } : {}),
+    ...(delegating.has(id) ? { delegating: true } : {}),
     ...(lastTurnOrigin === undefined ? {} : { lastTurnOrigin }),
     ...(projectId === undefined ? {} : { projectId }),
     ...(activityAt === undefined ? {} : { activityAt }),

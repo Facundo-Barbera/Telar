@@ -141,11 +141,27 @@ describe("an alert goes to the person only for what is theirs", () => {
     expect(alerted(ended({ lastTurnOrigin: "schedule" }))).toMatchObject({ body: ALERT_BODY.finished });
   });
 
-  test("an orchestrator turn a wake, a worker's message or the provider started ends silently", () => {
-    for (const lastTurnOrigin of ["session", "provider"] as const) {
-      expect(alerted(ended({ lastTurnOrigin }))).toBeUndefined();
-      expect(alerted(ended({ lastTurnOrigin, lastTurnFailed: true }))).toBeUndefined();
+  test("an orchestrator's wake, restart or provider turn alerts once nothing is left in flight", () => {
+    for (const lastTurnOrigin of ["session", "restart", "provider"] as const) {
+      expect(alerted(ended({ lastTurnOrigin }))).toMatchObject({ body: ALERT_BODY.finished });
+      expect(alerted(ended({ lastTurnOrigin, lastTurnFailed: true }))).toMatchObject({ body: ALERT_BODY.failed });
     }
+  });
+
+  test("an orchestrator's wake turn stays silent while builders still work for it", () => {
+    const [orchestrator] = signals([row({ id: "orchestrator", lastTurnOrigin: "session" }), row({})], { child: [task()] });
+    expect(orchestrator.delegating).toBe(true);
+    expect(alerted(orchestrator)).toBeUndefined();
+    expect(alerted(ended({ lastTurnOrigin: "session", activity: "waiting" }))).toBeUndefined();
+    expect(alerted(ended({ lastTurnOrigin: "session", activity: "scheduled" }))).toBeUndefined();
+    const [done] = signals([row({ id: "orchestrator", lastTurnOrigin: "session" })], { child: [task("completed")] });
+    expect(alerted(done)).toMatchObject({ body: ALERT_BODY.finished });
+  });
+
+  test("the person's turn followed straight away by a wake still reaches the Mac", () => {
+    const state = { seen: { orchestrator: signalKey({ ...working, id: "orchestrator" }) }, baselined: true, offered: {} };
+    const afterWake = { ...working, id: "orchestrator", activity: "idle", activityAt: 5000, lastTurnEndedAt: 5000, lastTurnOrigin: "session" as const };
+    expect(desktopNotices(state, [afterWake], undefined).notices.map(n => n.kind)).toEqual(["finished"]);
   });
 
   test("a sub-session's finish or failure goes to its orchestrator, not the phone or the Mac", () => {
