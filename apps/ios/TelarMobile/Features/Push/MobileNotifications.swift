@@ -16,6 +16,7 @@ struct PushRegistration: Encodable {
     var enabled: Bool
     var completions: Bool
     var previews: Bool
+    var sounds: String? = nil
     var mutedSessions: [String]
     var activities: [Follow]
     var liveActivities: Bool = false
@@ -109,6 +110,9 @@ struct PushStatus: Decodable {
     var previews = UserDefaults.standard.bool(forKey: "telar.notifications.previews") {
         didSet { defaults.set(previews, forKey: "telar.notifications.previews") }
     }
+    var sounds = UserDefaults.standard.string(forKey: "telar.notifications.sounds").flatMap(NotificationSound.init(rawValue:)) ?? .hilo {
+        didSet { defaults.set(sounds.rawValue, forKey: "telar.notifications.sounds") }
+    }
     var muted = Set(UserDefaults.standard.stringArray(forKey: "telar.notifications.muted") ?? []) {
         didSet { defaults.set(Array(muted), forKey: "telar.notifications.muted") }
     }
@@ -176,7 +180,7 @@ struct PushStatus: Decodable {
             do {
                 let reply = try await api.registerPush(.init(hostId: host.id.uuidString, token: token,
                     topic: Bundle.main.bundleIdentifier ?? "io.github.novarix.telar", sandbox: sandbox,
-                    enabled: enabled && allowed, completions: completions, previews: previews,
+                    enabled: enabled && allowed, completions: completions, previews: previews, sounds: sounds.rawValue,
                     mutedSessions: mutedSessions, activities: subscriptions,
                     liveActivities: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
                     pushToStartToken: startToken, hostName: host.name, relay: relay))
@@ -379,7 +383,7 @@ final class MobileAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificati
         if response.actionIdentifier == NotificationActions.approve,
            let approval = NotificationActions.approval(from: response.notification.request.content.userInfo) {
             Task { @MainActor in
-                if !(await MobileNotifications.shared.approve(approval)) { await NotificationActions.reportFailure(approval) }
+                if !(await MobileNotifications.shared.approve(approval)) { await NotificationActions.reportFailure(approval, sound: MobileNotifications.shared.sounds) }
                 completionHandler()
             }
             return

@@ -37,6 +37,7 @@ export function NotificationSoundsRow() {
       label="Notification sounds"
       icon={Volume2Icon}
       hint="The sound this Mac's alerts play."
+      info="Your iPhone has its own choice, in its notification settings."
       {...(error ? { error } : {})}
       {...(sounds === DEFAULT_NOTIFICATION_SOUNDS ? {} : { onRevert: () => void save(DEFAULT_NOTIFICATION_SOUNDS) })}
       control={

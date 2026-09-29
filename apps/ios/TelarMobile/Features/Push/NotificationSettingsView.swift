@@ -6,6 +6,7 @@ struct NotificationSettingsView: View {
     @State private var completions = MobileNotifications.shared.completions
     @State private var liveActivities = MobileNotifications.shared.liveActivities
     @State private var previews = MobileNotifications.shared.previews
+    @State private var sounds = MobileNotifications.shared.sounds
     var body: some View {
         Form {
             Section {
@@ -26,6 +27,14 @@ struct NotificationSettingsView: View {
                         notifications.previews = value
                         Task { await notifications.refreshActivityPrivacy(); await notifications.syncRegistrations() }
                     }
+                Picker("Sound", selection: $sounds) {
+                    ForEach(NotificationSound.allCases) { Text($0.label).tag($0) }
+                }
+                .onChange(of: sounds) { _, value in
+                    notifications.sounds = value
+                    SoundPreview.play(value)
+                    Task { await notifications.syncRegistrations() }
+                }
             } header: { Text("Stay in touch with your work") } footer: {
                 Text("Get notified when a session needs you or fails. Session titles stay private unless you enable previews. You can mute individual sessions from their menu.")
             }
