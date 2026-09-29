@@ -2,7 +2,7 @@
 // and origin, and change when a device is re-plugged.
 export type MicrophoneChoice = {
   deviceId: string;
-  // For display when the device is absent; never used to match.
+  // Names the device when absent, and re-finds it when its id changed.
   label: string;
 };
 
@@ -74,9 +74,18 @@ export function subscribeMicrophone(listener: () => void): () => void {
   };
 }
 
-/** `ideal` rather than `exact`; `true` when nothing is chosen. */
+/** `exact`, since Chromium treats a bare or `ideal` id as a hint and may open the default instead. */
 export function audioConstraints(choice: MicrophoneChoice | undefined): MediaStreamConstraints["audio"] {
-  return choice?.deviceId ? { deviceId: { ideal: choice.deviceId } } : true;
+  return choice?.deviceId ? { deviceId: { exact: choice.deviceId } } : true;
+}
+
+/** By id, else by a label only one input carries: ids change per origin and on re-plug, names do not. */
+export function matchMicrophone(choice: MicrophoneChoice | undefined, inputs: readonly AudioInput[]): AudioInput | undefined {
+  if (choice === undefined) return undefined;
+  const byId = inputs.find((input) => input.deviceId === choice.deviceId);
+  if (byId || choice.label === "") return byId;
+  const byLabel = inputs.filter((input) => input.label === choice.label);
+  return byLabel.length === 1 ? byLabel[0] : undefined;
 }
 
 /**
@@ -96,7 +105,7 @@ export function labelsWithheld(devices: readonly MediaDeviceInfo[]): boolean {
 }
 
 export function connected(choice: MicrophoneChoice | undefined, inputs: readonly AudioInput[]): boolean {
-  return choice !== undefined && inputs.some((input) => input.deviceId === choice.deviceId);
+  return matchMicrophone(choice, inputs) !== undefined;
 }
 
 /**

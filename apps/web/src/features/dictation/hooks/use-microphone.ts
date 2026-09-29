@@ -7,9 +7,9 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
-  audioConstraints,
   audioInputs,
   labelsWithheld,
+  matchMicrophone,
   microphoneSnapshot,
   readMicrophone,
   subscribeMicrophone,
@@ -20,6 +20,7 @@ import {
 import { hostVisible, subscribeHostVisibility } from "@/platform/desktop/host-visibility";
 import type { DictationBox } from "../interim";
 import { createLevelMeter, type LevelMeter } from "../level";
+import { openMicrophone } from "../open-microphone";
 import { microphoneRefusal } from "../refusal";
 import { useDictation, type DictationState } from "./use-dictation";
 
@@ -55,7 +56,11 @@ export function useAudioInputs(): AudioInputsHandle {
         .enumerateDevices()
         .then((devices) => {
           if (!live) return;
-          setInputs(audioInputs(devices));
+          const named = audioInputs(devices);
+          const stored = readMicrophone();
+          const found = matchMicrophone(stored, named);
+          if (stored && found && found.deviceId !== stored.deviceId) writeMicrophone({ ...stored, deviceId: found.deviceId });
+          setInputs(named);
           setWithheld(labelsWithheld(devices));
         })
         .catch(() => undefined);
@@ -128,12 +133,13 @@ export function useMicrophoneTest(): MicrophoneTest {
     void (async () => {
       try {
         // Read the stored choice now so the meter tests the input the next press will use.
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(readMicrophone()) });
+        const { stream, fallback } = await openMicrophone(navigator.mediaDevices);
         if (generation.current !== mine) {
           // Granted after a stop: release it here.
           for (const track of stream.getTracks()) track.stop();
           return;
         }
+        if (fallback) setMeterError(fallback);
         own.current = stream;
         attach(stream);
         setMetering(true);

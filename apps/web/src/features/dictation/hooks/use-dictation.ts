@@ -10,8 +10,8 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createEngineApi } from "@/platform/engine";
 import { CHUNK_MS, listenProtocols, listenUrl, recordingType } from "../deepgram";
-import { audioConstraints, readMicrophone } from "../devices";
 import { createDictationWriter, type DictationBox, type DictationWriter } from "../interim";
+import { openMicrophone } from "../open-microphone";
 import { microphoneRefusal, microphoneUnavailable } from "../refusal";
 import { parseFrame, readFrame } from "../transcript";
 
@@ -231,13 +231,13 @@ export function useDictation(input: {
       if (minted.provider !== "deepgram") {
         throw new Error(`This browser does not know how to dictate with ${minted.provider}. Update Telar, or choose another provider in Settings → Dictation.`);
       }
-      // A per-browser device choice (`devices.ts`); `ideal` so an unplugged headset falls back to the default.
-      const microphone = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints(readMicrophone()) });
+      const { stream: microphone, fallback } = await openMicrophone(navigator.mediaDevices);
       // Permission granted after a stop: the teardown can't reach this track.
       if (abandoned()) {
         for (const track of microphone.getTracks()) track.stop();
         return;
       }
+      if (fallback) refuse(fallback);
       stream.current = microphone;
       // Before the socket opens, so the settings meter moves while the provider connects.
       onStream.current?.(microphone);
