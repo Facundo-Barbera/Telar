@@ -13,9 +13,9 @@ const SOUNDS: Pref<NotificationSounds> = { name: "notification-sounds", key: "so
 
 const prefFile = (pref: Pref<unknown>) => path.join(path.dirname(pushFile()), `${pref.name}.json`);
 
-function readPref<T>(pref: Pref<T>, file = prefFile(pref)): T {
+function readPref<T>(pref: Pref<T>, file?: string): T {
   try {
-    const value = (JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>)[pref.key];
+    const value = (JSON.parse(fs.readFileSync(file ?? prefFile(pref), "utf8")) as Record<string, unknown>)[pref.key];
     return pref.values.includes(value as T) ? (value as T) : pref.fallback;
   } catch { return pref.fallback; }
 }
@@ -37,7 +37,6 @@ export const writeSounds = (value: NotificationSounds, file?: string) => writePr
 
 const SOUND_EVENT: Record<AlertKind, string> = { finished: "done", blocked: "needs", failed: "error" };
 
-/** The bundled file's name without its extension; undefined means silent. */
 export function soundFor(sounds: NotificationSounds, kind: AlertKind): string | undefined {
   return sounds === "off" ? undefined : `telar-${sounds}-${SOUND_EVENT[kind]}`;
 }
