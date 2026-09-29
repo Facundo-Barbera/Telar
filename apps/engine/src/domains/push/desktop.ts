@@ -1,6 +1,6 @@
 import type { NotificationSounds, NotifyOn } from "@telar/engine-client";
-import { readNotifyOn, readSounds, soundFor } from "./prefs";
-import { ALERT_BODY, alertKind, signalKey, type AlertKind, type SessionSignal } from "./push";
+import { readNotifyOn, readSounds } from "./prefs";
+import { ALERT_BODY, alertKind, signalKey, soundFor, type AlertKind, type SessionSignal } from "./push";
 
 const sessionHref = (session: { id: string; projectId?: string }) =>
   session.projectId ? `/projects/${encodeURIComponent(session.projectId)}/sessions/${encodeURIComponent(session.id)}` : "/main";

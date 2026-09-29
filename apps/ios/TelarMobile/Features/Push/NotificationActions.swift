@@ -29,8 +29,9 @@ enum NotificationActions {
         return Approval(ref: ref, requestId: request)
     }
 
-    static func reportFailure(_ approval: Approval) async {
+    static func reportFailure(_ approval: Approval, sound: NotificationSound) async {
         let content = UNMutableNotificationContent()
+        content.sound = sound.sound(.error)
         content.title = "Telar"
         content.body = "Couldn't approve. Open Telar to review the request."
         content.userInfo = ["url": approval.ref.url.absoluteString]

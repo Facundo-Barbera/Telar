@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import type { ActivityReport } from "@telar/engine-client";
+import { NOTIFICATION_SOUNDS_VALUES, type ActivityReport, type NotificationSounds } from "@telar/engine-client";
 import fs from "node:fs";
 import path from "node:path";
 import http2 from "node:http2";
@@ -17,6 +17,7 @@ export interface MobileRegistration {
   enabled: boolean;
   completions: boolean;
   previews: boolean;
+  sounds?: NotificationSounds;
   mutedSessions: string[];
   activities: { sessionId: string; token: string; startedAt: number }[];
   relay?: RelayCredential;
@@ -86,6 +87,7 @@ export function parseRegistration(input: unknown): MobileRegistration {
   if ((x.liveActivities !== undefined && typeof x.liveActivities !== "boolean")
     || (x.pushToStartToken !== undefined && (typeof x.pushToStartToken !== "string" || !hex.test(x.pushToStartToken)))
     || (x.hostName !== undefined && (typeof x.hostName !== "string" || x.hostName.length > 160))) throw new PushInputError("Invalid automatic activity registration");
+  if (x.sounds !== undefined && !NOTIFICATION_SOUNDS_VALUES.includes(x.sounds as NotificationSounds)) throw new PushInputError("Invalid sounds");
   for (const a of x.activities) {
     if (!a || typeof a.sessionId !== "string" || !a.sessionId || a.sessionId.length > 256 || typeof a.token !== "string" || !hex.test(a.token)
       || typeof a.startedAt !== "number" || !Number.isFinite(a.startedAt) || a.startedAt <= 0) throw new PushInputError("Invalid activity");
@@ -95,6 +97,7 @@ export function parseRegistration(input: unknown): MobileRegistration {
     ...(relay === undefined ? {} : { relay }),
     ...(x.pushToStartToken === undefined ? {} : { pushToStartToken: x.pushToStartToken as string }),
     ...(x.hostName === undefined ? {} : { hostName: x.hostName as string }),
+    ...(x.sounds === undefined ? {} : { sounds: x.sounds as NotificationSounds }),
     hostId: x.hostId, token: x.token, topic: x.topic as string, sandbox: x.sandbox as boolean,
     enabled: x.enabled as boolean, completions: x.completions as boolean, previews: x.previews as boolean,
     mutedSessions: [...x.mutedSessions], activities: x.activities.map(a => ({sessionId: a.sessionId, token: a.token, startedAt: a.startedAt})) };
@@ -151,6 +154,12 @@ export const ALERT_BODY: Record<AlertKind, string> = {
   failed: "A session failed. Open Telar to review it.",
   finished: "A session finished. Its result is ready to review.",
 };
+const SOUND_EVENT: Record<AlertKind, string> = { finished: "done", blocked: "needs", failed: "error" };
+
+export function soundFor(sounds: NotificationSounds, kind: AlertKind): string | undefined {
+  return sounds === "off" ? undefined : `telar-${sounds}-${SOUND_EVENT[kind]}`;
+}
+
 export function alertKind(session: SessionSignal, previous: string | undefined, completions: boolean): AlertKind | undefined {
   if (previous === undefined || previous === signalKey(session)) return;
   if (session.activity === "blocked") return "blocked";
@@ -166,8 +175,10 @@ export function notification(record: MobileRegistration, session: SessionSignal,
   const body = ALERT_BODY[kind];
   const approvable = session.activity === "blocked" ? session.approvable : undefined;
   const collapseId = crypto.createHash("sha256").update(session.id).digest("hex");
+  const named = record.sounds && soundFor(record.sounds, kind);
+  const sound = record.sounds === undefined ? "default" : named && `${named}.caf`;
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert", collapseId,
-    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, sound: "default", "thread-id": `${record.hostId}:${session.id}`,
+    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, ...(sound ? { sound } : {}), "thread-id": `${record.hostId}:${session.id}`,
       category: approvable ? CATEGORY_REQUEST : CATEGORY_SESSION }, url: sessionURL(record.hostId, session.id), ...(approvable ? { request: approvable } : {}) } };
 }
 export function activityDelivery(record: MobileRegistration, follow: MobileRegistration["activities"][number], session: SessionSignal | undefined, now: number): Delivery {

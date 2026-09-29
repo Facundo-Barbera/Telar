@@ -5,7 +5,7 @@ import {
   DEFAULT_NOTIFICATION_SOUNDS, DEFAULT_NOTIFY_ON, NOTIFICATION_SOUNDS_VALUES, NOTIFY_ON_VALUES,
   type NotificationSounds, type NotifyOn,
 } from "@telar/engine-client";
-import { pushFile, type AlertKind } from "./push";
+import { pushFile } from "./push";
 
 type Pref<T> = { name: string; key: string; values: readonly T[]; fallback: T };
 const NOTIFY_ON: Pref<NotifyOn> = { name: "notify-on", key: "notifyOn", values: NOTIFY_ON_VALUES, fallback: DEFAULT_NOTIFY_ON };
@@ -34,9 +34,3 @@ export const writeNotifyOn = (value: NotifyOn, file?: string) => writePref(NOTIF
 export const isNotificationSounds = (value: unknown): value is NotificationSounds => NOTIFICATION_SOUNDS_VALUES.includes(value as NotificationSounds);
 export const readSounds = (file?: string) => readPref(SOUNDS, file);
 export const writeSounds = (value: NotificationSounds, file?: string) => writePref(SOUNDS, value, file);
-
-const SOUND_EVENT: Record<AlertKind, string> = { finished: "done", blocked: "needs", failed: "error" };
-
-export function soundFor(sounds: NotificationSounds, kind: AlertKind): string | undefined {
-  return sounds === "off" ? undefined : `telar-${sounds}-${SOUND_EVENT[kind]}`;
-}
