@@ -558,9 +558,6 @@ struct SessionView: View {
                 Button("Panel", systemImage: "sidebar.trailing") {
                     panel.open()
                 }
-                Button("Changes", systemImage: "plus.forwardslash.minus") {
-                    panel.open(.diff)
-                }
                 Button("Rename", systemImage: "pencil") {
                     renameDraft = store.sync.session?.title ?? ""
                     renaming = true
