@@ -1,5 +1,6 @@
 import { defaultInstanceIdForDriver, type Item, type ProviderDriverKind, type TextGenPolicy } from "@telar/engine-client";
 import { EngineStateError } from "../../platform/kernel";
+import { providerProcessEnv } from "./instances";
 import { runStructured, type TextGenDriverInput, type TextGenEffort } from "./textgen-run";
 import { titleContext, titleMessages } from "./title-context";
 import { buildRegenerateTitlePrompt, buildTitlePrompt } from "./title-prompts";
@@ -40,7 +41,7 @@ export async function generateSessionTitle(input: TextGenDriverInput & { message
   return sanitizeTitle(result?.["title"]);
 }
 
-type TextGenInstance = { enabled: boolean; binaryPath?: string; env: { name: string; value: string }[] };
+type TextGenInstance = { enabled: boolean; binaryPath?: string; configDir?: string; env: { name: string; value: string }[] };
 
 type TextGenStore = {
   settings: { textGen(): TextGenPolicy };
@@ -62,8 +63,7 @@ export function cheapModel(ids: readonly string[]): string | undefined {
 function driverInput(store: TextGenStore, policy: TextGenPolicy, model?: string): TextGenDriverInput | undefined {
   const instance = store.providers.resolve(defaultInstanceIdForDriver(policy.driver), policy.driver);
   if (!instance.enabled) return undefined;
-  const env: Record<string, string> = {};
-  for (const variable of instance.env) if (variable.value) env[variable.name] = variable.value;
+  const env = providerProcessEnv({ ...instance, driver: policy.driver });
   const configured = model ?? policy.model;
   const usable = configured && (policy.driver !== "opencode" || configured.includes("/")) ? configured : undefined;
   const chosen = usable ?? cheapModel(store.catalogues?.cachedRows(policy.driver)?.map((row) => row.id) ?? []);
@@ -130,13 +130,7 @@ export async function maybeRetitleSession(
   } catch {
     return;
   }
-  if (policy.renameBranches) {
-    try {
-      await store.lifecycle.refreshWorktreeBranchFromTitle(sessionId);
-    } catch {
-      // The new title stands even when the branch rename fails.
-    }
-  }
+  if (policy.renameBranches) await Promise.resolve().then(() => store.lifecycle.refreshWorktreeBranchFromTitle(sessionId)).catch(() => undefined);
 }
 
 export type RegenerateStore = RetitleStore & { queries: { items(sessionId: string): Item[] } };

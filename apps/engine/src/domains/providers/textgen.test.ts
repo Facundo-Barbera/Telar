@@ -146,14 +146,14 @@ describe("each provider answers one bare call from an empty scratch directory", 
     const binaryPath = path.join(bin, name);
     fs.writeFileSync(
       binaryPath,
-      `#!/bin/sh\n[ "$1" = "--version" ] && echo "${version}" && exit 0\n{ pwd; echo "A=$A"; echo "CONFIG=$OPENCODE_CONFIG_CONTENT"; for a in "$@"; do echo "[$a]"; done; } > "${record}"\ncat > /dev/null\n${answer}\n`,
+      `#!/bin/sh\n[ "$1" = "--version" ] && echo "${version}" && exit 0\n{ pwd; echo "A=$A"; echo "CONFIG=$OPENCODE_CONFIG_CONTENT"; echo "GW=$ANTHROPIC_BASE_URL"; echo "TOKEN=\${ANTHROPIC_AUTH_TOKEN:+set}"; for a in "$@"; do echo "[$a]"; done; } > "${record}"\ncat > /dev/null\n${answer}\n`,
     );
     fs.chmodSync(binaryPath, 0o755);
     return {
       binaryPath,
       recorded: () => {
-        const [cwd, a, config, ...args] = fs.readFileSync(record, "utf8").trim().split("\n");
-        return { cwd: cwd!, env: [a!, config!], args };
+        const [cwd, a, config, gateway, token, ...args] = fs.readFileSync(record, "utf8").trim().split("\n");
+        return { cwd: cwd!, env: [a!, config!, gateway!, token!], args };
       },
     };
   }
@@ -170,6 +170,33 @@ describe("each provider answers one bare call from an empty scratch directory", 
     }
     expect(joined).toContain(`[--settings] [${JSON.stringify({ disableAllHooks: true, alwaysThinkingEnabled: false })}]`);
     expect(args).not.toContain("[--mcp-config]");
+  });
+
+  test("Claude: logs in through the settings file's env even though settings sources are off", async () => {
+    const config = tmp("telar-tg-claude-config-");
+    fs.writeFileSync(path.join(config, "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://gateway.test", ANTHROPIC_AUTH_TOKEN: "t0ken" } }));
+    const cli = fakeCli("claude", `echo '{"structured_output":{"title":"Queue refill race"}}'`);
+    expect(await generateSessionTitle({ driver: "claude", binaryPath: cli.binaryPath, env: { A: "b", CLAUDE_CONFIG_DIR: config }, message: "fix it" })).toBe("Queue refill race");
+    expect(cli.recorded().env.slice(2)).toEqual(["GW=https://gateway.test", "TOKEN=set"]);
+
+    await generateSessionTitle({ driver: "claude", binaryPath: cli.binaryPath, env: { CLAUDE_CONFIG_DIR: config, ANTHROPIC_BASE_URL: "https://instance.test" }, message: "fix it" });
+    expect(cli.recorded().env[2]).toBe("GW=https://instance.test");
+  });
+
+  test("a failed call is logged with its exit and the CLI's words, never a key", async () => {
+    const cli = fakeCli("claude", `echo 'Failed to authenticate: OAuth session expired (sk-ant-oat01-abcdef)' >&2; exit 1`);
+    const logged: string[] = [];
+    const original = console.error;
+    console.error = (line: string) => logged.push(line);
+    try {
+      expect(await generateSessionTitle({ driver: "claude", binaryPath: cli.binaryPath, message: "fix it" })).toBeUndefined();
+    } finally {
+      console.error = original;
+    }
+    const failures = logged.filter((line) => line.includes("text generation failed"));
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toContain("claude text generation failed: exited 1: Failed to authenticate: OAuth session expired");
+    expect(failures[0]).not.toContain("sk-ant");
   });
 
   test("Codex: ephemeral, without the user's config, rules or web search", async () => {
@@ -257,6 +284,22 @@ describe("maybeRetitleSession", () => {
     expect(calls.updates).toEqual([{ title: "A Real Title" }]);
     expect(calls.renamed).toEqual(["session_one"]);
     expect(calls.generate[0]).toMatchObject({ driver: "claude", model: "haiku", env: { A: "b" }, message: "fix the thing" });
+  });
+
+  test("a provider with its own config dir titles as that account, not the ambient one", async () => {
+    const store: RetitleStore = {
+      settings: { textGen: () => ({ titles: true, renameBranches: false, driver: "claude", model: "haiku" }) },
+      records: { get: () => ({ title: "fix the thing", state: "active" }) },
+      providers: { resolve: () => ({ enabled: true, configDir: "/tmp/claude-work", env: [] }) },
+      lifecycle: { updateSession: () => undefined, refreshWorktreeBranchFromTitle: () => undefined },
+    };
+    const asked: { env: Record<string, string | undefined> }[] = [];
+    await maybeRetitleSession(store, "session_one", "fix the thing", ((input: { env: Record<string, string | undefined> }) => {
+      asked.push(input);
+      return Promise.resolve("A Real Title");
+    }) as never);
+    expect(asked[0]!.env["CLAUDE_CONFIG_DIR"]).toBe("/tmp/claude-work");
+    expect("ANTHROPIC_AUTH_TOKEN" in asked[0]!.env && asked[0]!.env["ANTHROPIC_AUTH_TOKEN"] === undefined).toBe(true);
   });
 
   test("OpenCode titles with the cheapest model it lists when the stored one is not an OpenCode id", async () => {

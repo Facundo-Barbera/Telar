@@ -51,7 +51,7 @@ const CREDENTIAL_ENV: ReadonlySet<string> = new Set([
   "OPENAI_API_KEY",
 ]);
 
-function providerInstanceConfigured(instance: Pick<ProviderInstance, "configDir" | "env">): boolean {
+function providerInstanceConfigured(instance: { configDir?: string | undefined; env: readonly unknown[] }): boolean {
   return instance.configDir !== undefined || instance.env.length > 0;
 }
 
@@ -82,7 +82,9 @@ export function stoppedInheriting(input: {
   return inheritedOwnedEnv(input.after.driver, input.ambient ?? process.env).filter((name) => !supplied.has(name));
 }
 
-export function providerProcessEnv(instance: ProviderInstance): Record<string, string | undefined> {
+type EnvSource = { driver: ProviderDriverKind; configDir?: string | undefined; env: readonly { name: string; value: string }[] };
+
+export function providerProcessEnv<T extends EnvSource>(instance: T): Record<string, string | undefined> {
   const configured = providerInstanceConfigured(instance);
   const patch: Record<string, string | undefined> = {};
   if (configured) for (const name of OWNED_ENV[instance.driver]) patch[name] = undefined;
