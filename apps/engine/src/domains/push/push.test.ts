@@ -47,6 +47,20 @@ describe("mobile push delivery", () => {
     expect(notification({ ...registration, completions: false }, { ...done, lastTurnFailed: true }, signalKey(working))).toBeDefined();
     expect(notification({ ...registration, enabled: false }, blocked, signalKey(working))).toBeUndefined();
   });
+  test("the phone's chosen set names the bundled file; an app that sent no choice keeps the default sound", () => {
+    const failed = { ...working, activity: "idle", lastTurnEndedAt: 3000, lastTurnFailed: true };
+    const sound = (patch: Partial<MobileRegistration>, session = blocked) => notification({ ...registration, ...patch }, session, signalKey(working))!.payload.aps.sound;
+    expect(sound({ sounds: "armonico" })).toBe("telar-armonico-needs.caf");
+    expect(sound({ sounds: "felt" }, failed)).toBe("telar-felt-error.caf");
+    expect(sound({})).toBe("default");
+    const off = notification({ ...registration, sounds: "off" }, blocked, signalKey(working))!;
+    expect(off.payload.aps.alert).toBeDefined();
+    expect(off.payload.aps).not.toHaveProperty("sound");
+  });
+  test("a registration carries its sound choice, and refuses one it doesn't know", () => {
+    expect(parseRegistration({ ...registration, sounds: "hilo" }).sounds).toBe("hilo");
+    expect(() => parseRegistration({ ...registration, sounds: "kazoo" })).toThrow();
+  });
   test("failed delivery retries and successful delivery checkpoints", async () => {
     const initial = record(); initial.seen[working.id] = signalKey(working);
     const failed = await deliverRecord(initial, [blocked], async()=>({status:503}), 1000);

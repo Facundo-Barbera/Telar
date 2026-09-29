@@ -10,8 +10,8 @@ import {
   createDesktopStream, desktopAttached, desktopNotices, dismissDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
   type DesktopState, type Presence,
 } from "./desktop";
-import { readNotifyOn, readSounds, soundFor, writeNotifyOn, writeSounds } from "./prefs";
-import { notification, signalKey, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import { readNotifyOn, readSounds, writeNotifyOn, writeSounds } from "./prefs";
+import { notification, signalKey, soundFor, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { pushRoutes } from "./routes";
 import { deliverRecord } from "./worker";
 
