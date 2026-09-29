@@ -3,6 +3,7 @@ import {
   BellIcon,
   BlocksIcon,
   ClockIcon,
+  BoxesIcon,
   CopyIcon,
   DownloadIcon,
   FlaskConicalIcon,
@@ -48,10 +49,10 @@ const WORKTREE_PREPARATION_ROWS: SettingsPageSpec["groups"][number]["rows"] = [
     icon: NetworkIcon,
   },
   {
-    title: "Seed dependencies",
-    hint: "Paths copied from the main checkout into a new worktree that lacks them.",
-    keywords: ["copy", "clone", "dependencies", "seed"],
-    icon: CopyIcon,
+    title: "Dependencies",
+    hint: "Whether a new worktree installs its dependencies, shares the checkout's, or goes without.",
+    keywords: ["node_modules", "venv", "install", "share", "symlink", "disk"],
+    icon: BoxesIcon,
   },
   {
     title: "Artifacts",

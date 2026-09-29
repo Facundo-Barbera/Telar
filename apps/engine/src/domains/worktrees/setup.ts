@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceConfig } from "@telar/engine-client";
 import { atomicWrite } from "../../platform/fs/atomic";
+import { shareDependencies } from "./dependencies";
 import { resolveShell, type RunHandle, type RunLauncher } from "../terminal";
 
 export type SetupState = "running" | "succeeded" | "failed" | "timed-out" | "stopped" | "interrupted";
@@ -109,10 +110,12 @@ export class WorktreeSetups {
   // Resolves once the run has started or was refused; `wait` is for its end.
   async start(
     sessionId: string,
-    input: { worktree: string; config: WorkspaceConfig; env?: Record<string, string> },
+    input: { checkout: string; worktree: string; config: WorkspaceConfig; env?: Record<string, string> },
   ): Promise<SetupStatus | undefined> {
+    const dependencies = input.config.dependencies ?? "install";
+    if (dependencies === "share") shareDependencies(input.checkout, input.worktree);
     const setup = input.config.setup;
-    if (!setup) return undefined;
+    if (!setup || dependencies !== "install") return undefined;
     if (this.live.has(sessionId)) return { ...this.live.get(sessionId)!.status };
 
     const files = this.files(sessionId);
@@ -174,8 +177,7 @@ export class WorktreeSetups {
     if (!run) return false;
     run.stopping ??= why;
     if (why === "timed-out") this.append(sessionId, run, `\n[telar] setup timed out; stopping it\n`);
-    // The handle's close is the polite signal, the grace, then SIGKILL — the
-    // escalation this used to spell out with its own timer.
+    // The handle's close is the polite signal, the grace, then SIGKILL.
     void run.handle?.close().catch(() => {
       /* already gone: its exit is on the way */
     });

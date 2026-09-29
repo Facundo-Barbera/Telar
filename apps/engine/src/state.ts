@@ -429,7 +429,7 @@ export class EngineStore {
       if (!session.projectId) return;
       const project = this.projectRegistry.get(session.projectId);
       const { effective } = await this.workspace.view(project);
-      await this.setups.start(sessionId, { worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
+      await this.setups.start(sessionId, { checkout: project.root, worktree, config: effective, env: { TELAR_WORKTREE: worktree } });
     } catch {
       // A session deleted in the meantime has nothing to set up.
     }

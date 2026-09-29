@@ -79,6 +79,16 @@ test("Custom opens the editor on the project's own value", () => {
   expect(html).toContain("Merges by key: this Mac &lt; the repo&#x27;s .telar/workspace.json &lt; this project.");
 });
 
+test("Dependencies shows the project's choice, or what it inherits, with the side effect behind the ⓘ", () => {
+  const inheriting = renderToStaticMarkup(
+    <ProjectWorkspaceRows view={view({}, {}, { path: "p", config: { dependencies: "share" } })} />,
+  );
+  expect(inheriting).toContain("Inherit (Share)");
+  expect(inheriting).toContain("changes the checkout&#x27;s too");
+  expect(renderToStaticMarkup(<ProjectWorkspaceRows view={view({})} />)).toContain("Inherit (Install)");
+  expect(renderToStaticMarkup(<ProjectWorkspaceRows view={view({ dependencies: "none" })} />)).toMatch(/aria-label="Dependencies"[^]*None/);
+});
+
 test("an unreadable repo file is one row that says why", () => {
   const html = renderToStaticMarkup(<ProjectWorkspaceRows view={view({}, {}, { path: "p", error: "Unexpected token" })} />);
   expect(html).toContain("Repo file");
@@ -110,6 +120,6 @@ test("the text forms parse what they format", () => {
 });
 
 test("search finds the rows on Projects, their one pane", () => {
-  const hits = searchSettings(SETTINGS_SEARCH_INDEX, "seed dependencies");
+  const hits = searchSettings(SETTINGS_SEARCH_INDEX, "node_modules");
   expect(hits.map((hit) => hit.pageId)).toEqual(["projects"]);
 });
