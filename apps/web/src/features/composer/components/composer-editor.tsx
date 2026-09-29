@@ -499,6 +499,8 @@ function useEditorHandle(
   );
 }
 
+const COMPACT_MAX_HEIGHT = "calc(5lh + 1.25rem)";
+
 function EditorPlaceholder({ text, compact }: { text: string; compact: boolean | undefined }) {
   return (
     <span
@@ -536,8 +538,7 @@ export const ComposerEditor = forwardRef<
     /** WHICH COMPOSER THIS IS, ON THE EDITABLE ROOT ITSELF. Stable for
      *  external clients, beside `data-slot`. */
     "data-composer"?: "session";
-    /** One line tall — the composer's reading-back shape. A class swap on the
-     *  same node, so the caret and the undo stack survive the change. */
+    /** Reading-back shape, swapped on the same node so the caret and undo stack survive. */
     compact?: boolean;
     className?: string;
   }
@@ -611,10 +612,11 @@ export const ComposerEditor = forwardRef<
         // the transcript it sits under.
         className={cn(
           "w-full whitespace-pre-wrap break-words px-3 text-[0.9375rem] leading-6 outline-none",
-          compact ? "max-h-11 overflow-hidden py-2.5" : "max-h-48 min-h-[76px] overflow-y-auto pt-3 pb-2",
+          compact ? "overflow-y-auto py-2.5" : "max-h-48 min-h-[76px] overflow-y-auto pt-3 pb-2",
           "data-dictating:caret-primary",
           disabled && "opacity-60",
         )}
+        style={compact ? { maxHeight: COMPACT_MAX_HEIGHT } : undefined}
         onInput={() => {
           const box = root.current;
           if (!box) return;

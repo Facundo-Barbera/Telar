@@ -1,6 +1,7 @@
 "use client";
 
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
+import { Maximize2Icon } from "lucide-react";
 import { InputGroup, InputGroupAddon } from "@/ui/input-group";
 import { cn } from "@/ui/utils";
 import type { ComposerCompletions } from "../hooks/use-composer-completions";
@@ -40,7 +41,8 @@ export function ComposerCard({
   onEdit,
   onSelectionChange,
   onKeyDown,
-  onFocusChange,
+  onFocus,
+  onExpand,
   stash,
   menu,
   pick,
@@ -63,7 +65,8 @@ export function ComposerCard({
   onEdit: (text: string) => void;
   onSelectionChange: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
-  onFocusChange: (focused: boolean) => void;
+  onFocus: () => void;
+  onExpand: () => void;
   stash: ComposerStash;
   menu: ComposerCompletions;
   pick: (completion: Completion) => void;
@@ -124,8 +127,7 @@ export function ComposerCard({
               onSelectionChange={onSelectionChange}
               onKeyDown={onKeyDown}
               onPasteFiles={addFiles}
-              onFocus={() => onFocusChange(true)}
-              onBlur={() => onFocusChange(false)}
+              onFocus={onFocus}
               compact={compact}
               {...(compact ? { className: "min-w-0 flex-1" } : {})}
             />
@@ -144,6 +146,15 @@ export function ComposerCard({
           )}
           {compact ? (
             <InputGroupAddon align="inline-end" className="gap-1 self-end py-1.5 pr-1.5">
+              <button
+                type="button"
+                aria-label="Open the full composer"
+                title="Open the full composer"
+                onClick={onExpand}
+                className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <Maximize2Icon className="size-3.5" />
+              </button>
               <AddContextMenu onPick={addFiles} />
               {trailing}
             </InputGroupAddon>

@@ -23,13 +23,14 @@ type BoxProps = {
   initial?: string;
   files?: File[];
   busy?: boolean;
+  compact?: boolean;
   projectId?: string;
   session?: Session;
   onSubmit?: () => void;
   onStop?: () => void;
 };
 
-function Box({ initial = "", files = [], busy = false, projectId, session, onSubmit = () => {}, onStop = () => {} }: BoxProps) {
+function Box({ initial = "", files = [], busy = false, compact = false, projectId, session, onSubmit = () => {}, onStop = () => {} }: BoxProps) {
   const [draft, setDraft] = useState(initial);
   return (
     <>
@@ -40,6 +41,7 @@ function Box({ initial = "", files = [], busy = false, projectId, session, onSub
         attachments={files}
         onAttach={() => {}}
         busy={busy}
+        compact={compact}
         sending={false}
         backgroundTasks={0}
         onDraftChange={setDraft}
@@ -230,5 +232,39 @@ describe("the corner button is Stop only while a running turn has nothing typed"
     const { host } = await composer({ onSubmit: () => sends++ });
     await click(corner(host));
     expect(sends).toBe(0);
+  });
+});
+
+describe("the compact composer, while reading back", () => {
+  const expand = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('button[aria-label="Open the full composer"]');
+
+  test("focusing and clicking the box keeps it compact", async () => {
+    const { host, editor } = await composer({ compact: true });
+    await click(editor);
+    await type(editor, "hello");
+    expect(expand(host)).not.toBeNull();
+    expect(editor.style.maxHeight).toBe("calc(5lh + 1.25rem)");
+  });
+
+  test("typing and Enter sends from the compact box, steering a running turn too", async () => {
+    let sends = 0;
+    const { host, editor } = await composer({ compact: true, busy: true, onSubmit: () => sends++ });
+    await type(editor, "steer left");
+    key(editor, { key: "Enter" });
+    await flush();
+    expect(sends).toBe(1);
+    expect(expand(host)).not.toBeNull();
+  });
+
+  test("its height is capped, then it scrolls", async () => {
+    const { editor } = await composer({ compact: true, initial: "one\ntwo\nthree\nfour\nfive\nsix\nseven" });
+    expect(editor.style.maxHeight).toBe("calc(5lh + 1.25rem)");
+  });
+
+  test("the expand button opens the full composer", async () => {
+    const { host, editor } = await composer({ compact: true });
+    await click(expand(host)!);
+    expect(expand(host)).toBeNull();
+    expect(editor.style.maxHeight).toBe("");
   });
 });
