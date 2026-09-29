@@ -19,5 +19,6 @@ export {
   type WorktreeQueue,
 } from "./session-worktree";
 export { defaultWorktreesRoot, readWorktreesRoot, rootOf, writeWorktreesRoot } from "./location";
+export { pruneBuildOutputs } from "./dependencies";
 export { SETUP_STOP_GRACE_MS, WorktreeSetups } from "./setup";
 export { WorktreeMaintenance } from "./maintenance";

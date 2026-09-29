@@ -191,10 +191,13 @@ test("an open terminal: the unchanged sweep skips the session's checkout, and th
   expect(store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", live: true })]);
 });
 
-test("archiving keeps the checkout unless the switch is on", async () => {
+test("archiving keeps the checkout unless the switch is on, and a kept one drops its build output", async () => {
   const off = await setup();
+  fs.appendFileSync(path.join(off.root, ".git/info/exclude"), ".next/\n");
+  fs.mkdirSync(path.join(off.checkout, "web/.next/cache"), { recursive: true });
   off.store.lifecycle.archiveSession("session_one");
-  expect(fs.existsSync(off.checkout)).toBe(true);
+  await until("the build output is gone", () => !fs.existsSync(path.join(off.checkout, "web/.next")));
+  expect(fs.existsSync(path.join(off.checkout, "README.md"))).toBe(true);
 
   const on = await setup();
   on.store.cleanup.setPolicy({ archived: true });

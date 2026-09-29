@@ -1,8 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { AsyncGitRunner } from "../../platform/git/runner";
 
 const DEPENDENCY_DIRS = new Set(["node_modules", ".venv"]);
-const SKIP_DIRS = new Set([".git", ...DEPENDENCY_DIRS]);
+const BUILD_OUTPUT_DIRS = new Set([".next", "dist", ".turbo"]);
+const SKIP_DIRS = new Set([".git", ...DEPENDENCY_DIRS, ...BUILD_OUTPUT_DIRS]);
 const MAX_DEPTH = 4;
 
 function find(root: string, names: Set<string>): string[] {
@@ -71,4 +73,16 @@ export function shareDependencies(checkout: string, worktree: string): string[] 
     }
   }
   return shared;
+}
+
+/** Deletes the worktree's ignored .next, dist and .turbo directories; a tracked one stays. */
+export async function pruneBuildOutputs(git: AsyncGitRunner, worktree: string): Promise<string[]> {
+  if (!fs.existsSync(worktree)) return [];
+  const candidates = find(worktree, BUILD_OUTPUT_DIRS);
+  if (candidates.length === 0) return [];
+  const ignored = await git(worktree, ["check-ignore", "--", ...candidates]);
+  if (ignored.timedOut || (ignored.status !== 0 && ignored.status !== 1)) return [];
+  const pruned = ignored.stdout.split("\n").filter((line) => candidates.includes(line));
+  for (const relative of pruned) fs.rmSync(path.join(worktree, relative), { recursive: true, force: true });
+  return pruned;
 }

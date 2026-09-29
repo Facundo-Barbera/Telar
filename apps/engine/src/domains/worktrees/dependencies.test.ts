@@ -3,7 +3,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { shareDependencies } from "./dependencies";
+import { defaultWorktreeGitRunner } from "./checkout";
+import { pruneBuildOutputs, shareDependencies } from "./dependencies";
 import { WorktreeSetups } from "./setup";
 import type { RunLauncher } from "../terminal";
 
@@ -71,6 +72,22 @@ test("share leaves dependencies the worktree already has", () => {
 
   expect(shareDependencies(checkout, worktree)).not.toContain("node_modules");
   expect(fs.readdirSync(path.join(worktree, "node_modules"))).toEqual(["own"]);
+});
+
+test("pruning removes ignored build output and keeps tracked output and the checkout's files", async () => {
+  const { checkout, worktree } = fixture();
+  shareDependencies(checkout, worktree);
+  write(worktree, "apps/web/.next/cache/big", "cache");
+  write(worktree, "dist/bundle.js", "bundle");
+  write(checkout, "node_modules/left-pad/dist/index.js", "shipped by the package");
+
+  const pruned = await pruneBuildOutputs(defaultWorktreeGitRunner, worktree);
+
+  expect(pruned.sort()).toEqual([path.join("apps/web/.next"), "dist"]);
+  expect(fs.existsSync(path.join(worktree, "apps/web/.next"))).toBe(false);
+  expect(fs.existsSync(path.join(worktree, "dist"))).toBe(false);
+  expect(read(path.join(worktree, "shipped/dist/keep.js"))).toBe("tracked");
+  expect(read(path.join(checkout, "node_modules/left-pad/dist/index.js"))).toBe("shipped by the package");
 });
 
 test("setup runs the command only when dependencies are installed", async () => {
