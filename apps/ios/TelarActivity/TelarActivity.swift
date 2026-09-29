@@ -11,7 +11,7 @@ struct SessionLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SessionActivityAttributes.self) { context in
             HStack(alignment: .top, spacing: 12) {
-                TelarMark(color: color(context.state)).frame(width: 28, height: 28)
+                TelarLogo(size: 28)
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
                         Text("TELAR").font(.caption2.weight(.semibold))
@@ -36,7 +36,7 @@ struct SessionLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label("Telar", systemImage: "point.3.connected.trianglepath.dotted").font(.caption).foregroundStyle(color(context.state))
+                    Label { Text("Telar") } icon: { TelarLogo(size: 16) }.font(.caption).foregroundStyle(color(context.state))
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if !context.state.ended && !context.isStale { Text(context.state.startedAt, style: .timer).font(.caption.monospacedDigit()) }
@@ -48,7 +48,7 @@ struct SessionLiveActivity: Widget {
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             } compactLeading: {
-                TelarMark(color: color(context.state)).frame(width: 20, height: 20)
+                TelarLogo(size: 20)
             } compactTrailing: {
                 if let count = context.state.activeCount, count > 1 { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(color(context.state)) }
                 else { Image(systemName: symbol(context.state, stale: context.isStale)).foregroundStyle(color(context.state)) }

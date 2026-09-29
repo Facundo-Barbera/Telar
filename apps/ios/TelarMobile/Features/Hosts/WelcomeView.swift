@@ -17,8 +17,7 @@ struct WelcomeView: View {
         VStack(spacing: 0) {
             Spacer()
 
-            TelarMark(color: Theme.accent)
-                .frame(width: mark, height: mark)
+            TelarLogo(size: mark)
                 .padding(.bottom, 28)
 
             Text("Telar")

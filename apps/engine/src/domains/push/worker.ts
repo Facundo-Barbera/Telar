@@ -2,9 +2,7 @@ import type { EngineClient, LiveSessionRow, SessionAssignment } from "@telar/eng
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
 import { desktopAttached, macTookAlert, notifyDesktop } from "./desktop";
 import { collectReads, noteAlert, READ_SYNC_BATCH, readSyncDelivery, readSyncDue, readSyncWanted } from "./read-sync";
-import { ACTIVITY_REFRESH_S, AUTOMATIC_ACTIVITY, AUTOMATIC_START_ATTEMPTS, tokenFingerprint, automaticSessions, automaticActivityDelivery, activityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, turnIsOver, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
-
-const AUTOMATIC_START_STALE = 300;
+import { ACTIVITY_REFRESH_S, CARD_LINGER_S, tokenFingerprint, automaticSessions, automaticActivityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
 
 const RETRY_FLOOR = 30;
 const RETRY_CEILING = 3600;
@@ -35,7 +33,7 @@ export async function deliverRecord(
     else if (!isDeadToken(result)) failed = true;
     return result;
   };
-  const next: PushRecord = { ...record, seen: { ...record.seen }, activitySent: { ...record.activitySent }, activities: [...record.activities] };
+  const next: PushRecord = { ...record, seen: { ...record.seen }, activitySent: { ...record.activitySent } };
   for (const session of sessions) {
     if (options.changed && !options.changed.has(session.id) && session.id in record.seen) continue;
     const payload = notification(record, session, record.seen[session.id] ?? (record.baselined ? "new:0:0:false" : undefined));
@@ -49,38 +47,7 @@ export async function deliverRecord(
   }
   const ids = new Set(sessions.map(s => s.id));
   for (const id of Object.keys(next.seen)) if (!ids.has(id)) delete next.seen[id];
-  const active = automaticSessions(sessions);
-  const automatic = record.activities.filter(a => a.sessionId === AUTOMATIC_ACTIVITY);
-  const aggregateSignal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)])]);
-  const staleStart = record.automaticStartedAt !== undefined && !automatic.length && now - record.automaticStartedAt >= AUTOMATIC_START_STALE;
-  if (!active.length) { next.automaticStartedAt = undefined; next.automaticStarts = undefined; }
-  if (record.liveActivities && active.length && !automatic.length && (!record.automaticStartedAt || staleStart)
-      && record.pushToStartToken && (record.automaticStarts ?? 0) < AUTOMATIC_START_ATTEMPTS) {
-    const result = await safeSend(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, true));
-    next.automaticStart = { at: now, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.relay ? { relay: true as const } : {}), token: tokenFingerprint(record.pushToStartToken) };
-    if (result.status === 200) { next.automaticStartedAt = now; next.automaticStarts = (record.automaticStarts ?? 0) + 1; }
-    if (isDeadToken(result)) next.pushToStartToken = undefined;
-  }
-  for (const follow of automatic) {
-    if (active.length && record.liveActivities) { next.automaticStartedAt = follow.startedAt; next.automaticStarts = undefined; }
-    const moved = aggregateSignal !== record.automaticSignal;
-    if (!moved && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
-    const result = await safeSend(urgentActivity(automaticActivityDelivery(record, sessions, follow.token, follow.startedAt, now), moved && active[0]?.activity === "blocked"));
-    if (isDeadToken(result) || (result.status === 200 && (!active.length || !record.liveActivities))) {
-      next.activities = next.activities.filter(a => a.token !== follow.token);
-      delete next.activitySent[follow.token];
-    } else if (result.status === 200) { next.activitySent[follow.token] = now; next.automaticSignal = aggregateSignal; }
-  }
-  for (const follow of record.activities.filter(a => a.sessionId !== AUTOMATIC_ACTIVITY)) {
-    const session = sessions.find(s => s.id === follow.sessionId);
-    const changed = session && record.seen[session.id] !== signalKey(session);
-    if (!changed && now - (record.activitySent[follow.token] ?? 0) < ACTIVITY_REFRESH_S) continue;
-    const result = await safeSend(urgentActivity(activityDelivery(record, follow, session, now), !!changed && session?.activity === "blocked"));
-    if (isDeadToken(result) || (result.status === 200 && (!session || turnIsOver(session.activity)))) {
-      next.activities = next.activities.filter(a => a.token !== follow.token);
-      delete next.activitySent[follow.token];
-    } else if (result.status === 200) next.activitySent[follow.token] = now;
-  }
+  await deliverCard(record, next, sessions, safeSend, now);
   if (options.readSync && next.readSync) {
     next.readSync = collectReads(next.readSync, sessions);
     if (readSyncDue(next.readSync, now)) {
@@ -102,6 +69,33 @@ export async function deliverRecord(
   }
   next.baselined = true;
   return next;
+}
+
+async function deliverCard(record: PushRecord, next: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<DeliveryResult>, now: number): Promise<void> {
+  const active = record.liveActivities ? automaticSessions(sessions) : [];
+  const card = record.card;
+  if (!active.length) next.automaticStartedAt = undefined;
+  if (active.length && !card && record.automaticStartedAt === undefined && record.pushToStartToken) {
+    const result = await send(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, "start"));
+    next.automaticStart = { at: now, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.relay ? { relay: true as const } : {}), token: tokenFingerprint(record.pushToStartToken) };
+    if (result.status === 200) next.automaticStartedAt = now;
+    if (isDeadToken(result)) next.pushToStartToken = undefined;
+  }
+  if (!card) return;
+  if (active.length) { next.automaticStartedAt = card.startedAt; delete next.cardFinishedAt; }
+  const signal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)])]);
+  const moved = signal !== record.automaticSignal;
+  const close = !record.liveActivities || (!active.length && record.cardFinishedAt !== undefined && now - record.cardFinishedAt >= CARD_LINGER_S);
+  const beat = active.length > 0 && now - (record.activitySent[card.token] ?? 0) >= ACTIVITY_REFRESH_S;
+  if (!close && !moved && !beat) return;
+  const result = await send(urgentActivity(automaticActivityDelivery(record, sessions, card.token, card.startedAt, now, close ? "end" : "update"), moved && active[0]?.activity === "blocked"));
+  if (isDeadToken(result) || (result.status === 200 && close)) {
+    delete next.card; delete next.cardFinishedAt;
+    delete next.activitySent[card.token];
+  } else if (result.status === 200) {
+    next.activitySent[card.token] = now; next.automaticSignal = signal;
+    if (!active.length) next.cardFinishedAt = record.cardFinishedAt ?? now;
+  }
 }
 
 const POLL_INTERVAL = 10_000;
@@ -199,7 +193,7 @@ export function signals(sessions: readonly LiveSessionRow[], assignments: Record
 }
 
 export function heartbeatWanted(records: PushRecord[], sessions: SessionSignal[]): boolean {
-  return records.some(record => record.activities.length > 0) && automaticSessions(sessions).length > 0;
+  return records.some(record => record.card !== undefined && (record.cardFinishedAt !== undefined || automaticSessions(sessions).length > 0));
 }
 export function readSyncPass(records: PushRecord[], sessions: SessionSignal[], now: number): { due: boolean; waiting: boolean } {
   return {
@@ -351,11 +345,9 @@ export function startMobilePushWorker(given?: PushWorkerDeps): void {
           if (result) current[index] = result; else current.splice(index, 1);
           writePushRecords(current);
         } else if (result?.automaticStartedAt) {
-          const refreshed = current.find(r => r.deviceId === record.deviceId && r.topic === record.topic
-            && r.liveActivities && r.pushToStartToken === record.pushToStartToken);
+          const refreshed = current.find(r => r.deviceId === record.deviceId && r.topic === record.topic && r.liveActivities);
           if (refreshed && !refreshed.automaticStartedAt) {
             refreshed.automaticStartedAt = result.automaticStartedAt;
-            refreshed.automaticStarts = result.automaticStarts;
             writePushRecords(current);
           }
         }

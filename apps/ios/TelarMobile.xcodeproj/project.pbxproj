@@ -151,7 +151,7 @@
 			productReference = A100000000000000000000AF /* TelarMobileTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
-        B20000000000000000000004 = {isa = PBXNativeTarget; buildConfigurationList = B20000000000000000000005; buildPhases = (B20000000000000000000006,); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (B20000000000000000000002, B20000000000000000000003,); name = TelarActivity; productName = TelarActivity; productReference = B20000000000000000000001; productType = "com.apple.product-type.app-extension"; };
+        B20000000000000000000004 = {isa = PBXNativeTarget; buildConfigurationList = B20000000000000000000005; buildPhases = (B20000000000000000000006, B20000000000000000000012,); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (B20000000000000000000002, B20000000000000000000003,); name = TelarActivity; productName = TelarActivity; productReference = B20000000000000000000001; productType = "com.apple.product-type.app-extension"; };
         C30000000000000000000004 = {isa = PBXNativeTarget; buildConfigurationList = C30000000000000000000005; buildPhases = (C30000000000000000000006,); buildRules = (); dependencies = (A100000000000000000000B9,); fileSystemSynchronizedGroups = (C30000000000000000000002,); name = TelarMobileUITests; productName = TelarMobileUITests; productReference = C30000000000000000000001; productType = "com.apple.product-type.bundle.ui-testing"; };
 /* End PBXNativeTarget section */
 
@@ -213,6 +213,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+        B20000000000000000000012 = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -313,7 +314,8 @@
 		A100000000000000000000C3 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "$(TELAR_APP_ICON)";
+				TELAR_APP_ICON = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
@@ -343,7 +345,8 @@
 		A100000000000000000000C4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "$(TELAR_APP_ICON)";
+				TELAR_APP_ICON = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;

@@ -37,7 +37,6 @@ struct PushStatus: Decodable {
     var status = "Notifications are off"
     var readiness = PushReadiness()
     var activityError: String?
-    var followed: Set<ScopedSessionID> = []
     var activityReports: [HostID: ActivityReport] = [:]
     private var resyncedForStartAt: Double = 0
     private var token: String? = UserDefaults.standard.string(forKey: "telar.apns.token")
@@ -76,7 +75,6 @@ struct PushStatus: Decodable {
                 await self?.syncRegistrations()
             }
         }
-        restoreActivities()
         Task { await syncRegistrations() }
         Task { await ReadSync.reconcile(settings: settings) }
     }
@@ -148,9 +146,12 @@ struct PushStatus: Decodable {
         synchronizing = false
     }
     private func performRegistrationSync() async {
-        restoreActivities()
+        await endDuplicateCards()
+        for activity in Activity<SessionActivityAttributes>.activities where activity.activityState == .active || activity.activityState == .stale {
+            watch(activity)
+        }
         guard let settings else { return }
-        if (enabled || liveActivities || !followed.isEmpty) && !attemptedRegistration {
+        if (enabled || liveActivities) && !attemptedRegistration {
             attemptedRegistration = true
             UIApplication.shared.registerForRemoteNotifications()
         }
@@ -248,7 +249,7 @@ struct PushStatus: Decodable {
     func refreshActivityPrivacy() async {
         for activity in Activity<SessionActivityAttributes>.activities {
             var state = activity.content.state
-            if !previews { state.title = activity.attributes.sessionId == "__automatic__" ? "Telar work" : "Telar session" }
+            if !previews { state.title = "Telar work" }
             else if let host = UUID(uuidString: activity.attributes.hostId),
                     let snapshot = try? await settings?.api(for: host)?.session(state.sessionId ?? activity.attributes.sessionId, window: SnapshotWindow(turns: 1)) {
                 state.title = snapshot.session.title
@@ -264,9 +265,13 @@ struct PushStatus: Decodable {
         let carded = Set(Activity<SessionActivityAttributes>.activities
             .filter { $0.attributes.sessionId == AutomaticCard.sessionId && ($0.activityState == .active || $0.activityState == .stale) }
             .compactMap { UUID(uuidString: $0.attributes.hostId) })
+        let engineStarts = Set(activityReports.filter { AutomaticCard.engineStarts($0.value) }.keys)
         let hosts = AutomaticCard.hostsToStart(enabled: liveActivities && ActivityAuthorizationInfo().areActivitiesEnabled,
-                                               working: working, carded: carded, dismissed: dismissedCards)
+                                               working: working, carded: carded, dismissed: dismissedCards, engineStarts: engineStarts)
         for host in hosts {
+            for ended in Activity<SessionActivityAttributes>.activities where ended.attributes.hostId == host.uuidString {
+                Task { await ended.end(nil, dismissalPolicy: .immediate) }
+            }
             let now = Date()
             let state = AutomaticCard.initialState(active.filter { $0.hostId == host }.map(\.session), previews: previews, now: now)
             let attributes = SessionActivityAttributes(hostId: host.uuidString, sessionId: AutomaticCard.sessionId, hostName: settings?.host(host)?.name ?? "Mac")
@@ -296,41 +301,16 @@ struct PushStatus: Decodable {
                 enabled: false, completions: false, previews: false, mutedSessions: [], activities: []))
         }
         await PushRelayClient.shared.revoke(host: host.uuidString)
-
-        for ref in followed where ref.hostId == host { await unfollow(ref) }
-    }
-    func unfollow(_ ref: ScopedSessionID) async {
-        for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.hostId == ref.hostId.uuidString && activity.attributes.sessionId == ref.sessionId {
+        for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.hostId == host.uuidString {
             await activity.end(nil, dismissalPolicy: .immediate)
-            watchers.removeValue(forKey: activity.id)?.cancel()
-            activityTokens[activity.id] = nil
-        }
-        followed.remove(ref)
-        await syncRegistrations()
-    }
-    func update(_ session: Session, hostId: HostID) async {
-        for activity in Activity<SessionActivityAttributes>.activities where activity.attributes.hostId == hostId.uuidString && activity.attributes.sessionId == session.id {
-            let ended = session.activity == .idle
-            let state = SessionActivityAttributes.ContentState(title: previews ? session.title : "Telar session", status: label(session), updatedAt: Date(), startedAt: activity.content.state.startedAt, ended: ended)
-            let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(Self.activityStale))
-            if ended { await activity.end(content, dismissalPolicy: .after(Date().addingTimeInterval(300))) }
-            else { await activity.update(content) }
         }
     }
-    private func label(_ session: Session) -> String {
-        switch session.activity {
-        case .blocked: "Needs you"
-        case .working: "Working"
-        case .queued: "Queued"
-        case .monitoring: "Monitoring"
-        case .idle: session.lastTurnFailed == true ? "Failed" : "Finished"
-        }
-    }
-    private func restoreActivities() {
-        followed = []
-        for activity in Activity<SessionActivityAttributes>.activities where activity.activityState == .active || activity.activityState == .stale {
-            watch(activity)
-        }
+    private func endDuplicateCards() async {
+        let shown = Activity<SessionActivityAttributes>.activities
+        let extra = AutomaticCard.duplicates(shown.map {
+            .init(id: $0.id, hostId: $0.attributes.hostId, sessionId: $0.attributes.sessionId, startedAt: $0.content.state.startedAt)
+        })
+        for activity in shown where extra.contains(activity.id) { await activity.end(nil, dismissalPolicy: .immediate) }
     }
     private func watch(_ activity: Activity<SessionActivityAttributes>) {
         if activity.attributes.sessionId == "__automatic__" && !liveActivities {
@@ -338,14 +318,12 @@ struct PushStatus: Decodable {
             return
         }
         guard let host = UUID(uuidString: activity.attributes.hostId) else { return }
-        followed.insert(.init(hostId: host, sessionId: activity.attributes.sessionId))
         if let data = activity.pushToken { activityTokens[activity.id] = data.map { String(format: "%02x", $0) }.joined() }
         guard watchers[activity.id] == nil else { return }
         stateWatchers[activity.id] = Task { [weak self] in
             for await state in activity.activityStateUpdates {
                 if state == .dismissed && activity.attributes.sessionId == AutomaticCard.sessionId { self?.dismissedCards.insert(host) }
                 if state == .ended || state == .dismissed {
-                    self?.followed.remove(.init(hostId: host, sessionId: activity.attributes.sessionId))
                     self?.activityTokens[activity.id] = nil
                     self?.watchers.removeValue(forKey: activity.id)?.cancel()
                     self?.stateWatchers[activity.id] = nil

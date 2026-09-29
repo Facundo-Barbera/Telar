@@ -4,7 +4,7 @@ import { markApprovable } from "./worker";
 
 const record: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
-  enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
+  enabled: true, completions: true, previews: false, mutedSessions: [],
 };
 const blocked = (patch: Partial<SessionSignal> = {}): SessionSignal => ({ id: "session_1", title: "Deploy", activity: "blocked", ...patch });
 const request = (id: string, kind: string, state = "open") => ({ id, state, detail: { kind } });

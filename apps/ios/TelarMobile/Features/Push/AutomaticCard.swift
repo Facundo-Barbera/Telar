@@ -3,8 +3,28 @@ import Foundation
 enum AutomaticCard {
     static let sessionId = "__automatic__"
 
-    static func hostsToStart(enabled: Bool, working: Set<HostID>, carded: Set<HostID>, dismissed: Set<HostID>) -> Set<HostID> {
-        enabled ? working.subtracting(carded).subtracting(dismissed) : []
+    struct Shown {
+        var id: String
+        var hostId: String
+        var sessionId: String
+        var startedAt: Date
+    }
+
+    static func hostsToStart(enabled: Bool, working: Set<HostID>, carded: Set<HostID>, dismissed: Set<HostID>, engineStarts: Set<HostID>) -> Set<HostID> {
+        enabled ? working.subtracting(carded).subtracting(dismissed).subtracting(engineStarts) : []
+    }
+
+    static func engineStarts(_ report: ActivityReport) -> Bool {
+        report.blocker == nil && (report.lastStart.map { $0.status == 200 } ?? true)
+    }
+
+    static func duplicates(_ cards: [Shown]) -> Set<String> {
+        var newest: [String: Shown] = [:]
+        for card in cards where card.sessionId == sessionId {
+            if let kept = newest[card.hostId], (kept.startedAt, kept.id) >= (card.startedAt, card.id) { continue }
+            newest[card.hostId] = card
+        }
+        return Set(cards.map(\.id)).subtracting(newest.values.map(\.id))
     }
 
     static func dismissedStillIdle(_ dismissed: Set<HostID>, working: Set<HostID>) -> Set<HostID> {

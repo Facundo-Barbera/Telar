@@ -47,7 +47,7 @@ const registration: MobileRegistration = {
   completions: true,
   previews: false,
   mutedSessions: [],
-  activities: [],
+ 
 };
 const working: SessionSignal = { id: "session_a", title: "Private repository task", activity: "working", activityAt: 1000 };
 

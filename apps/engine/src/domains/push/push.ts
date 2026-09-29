@@ -19,9 +19,10 @@ export interface MobileRegistration {
   previews: boolean;
   sounds?: NotificationSounds;
   mutedSessions: string[];
-  activities: { sessionId: string; token: string; startedAt: number }[];
+  card?: HostCard;
   relay?: RelayCredential;
 }
+type HostCard = { token: string; startedAt: number };
 export type RelayCredential = { handle: string; keyId: string; sendKey: string };
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
@@ -36,7 +37,7 @@ export interface PushRecord extends MobileRegistration {
   revision: string;
   baselined?: boolean;
   automaticStartedAt?: number;
-  automaticStarts?: number;
+  cardFinishedAt?: number;
   automaticSignal?: string;
   failures?: number;
   retryAt?: number;
@@ -84,24 +85,27 @@ export function parseRegistration(input: unknown): MobileRegistration {
       || !MOBILE_TOPICS.has(String(x.topic))
       || ["sandbox", "enabled", "completions", "previews"].some(k => typeof x[k] !== "boolean")
       || !Array.isArray(x.mutedSessions) || x.mutedSessions.length > 1000 || !x.mutedSessions.every(v => typeof v === "string" && v.length > 0 && v.length <= 256)
-      || !Array.isArray(x.activities) || x.activities.length > 8) throw new PushInputError("Invalid registration");
+      || (x.activities !== undefined && (!Array.isArray(x.activities) || x.activities.length > 8))) throw new PushInputError("Invalid registration");
   if ((x.liveActivities !== undefined && typeof x.liveActivities !== "boolean")
     || (x.pushToStartToken !== undefined && (typeof x.pushToStartToken !== "string" || !hex.test(x.pushToStartToken)))
     || (x.hostName !== undefined && (typeof x.hostName !== "string" || x.hostName.length > 160))) throw new PushInputError("Invalid automatic activity registration");
   if (x.sounds !== undefined && !NOTIFICATION_SOUNDS_VALUES.includes(x.sounds as NotificationSounds)) throw new PushInputError("Invalid sounds");
-  for (const a of x.activities) {
+  const activities = (x.activities ?? []) as (HostCard & { sessionId: string })[];
+  for (const a of activities) {
     if (!a || typeof a.sessionId !== "string" || !a.sessionId || a.sessionId.length > 256 || typeof a.token !== "string" || !hex.test(a.token)
       || typeof a.startedAt !== "number" || !Number.isFinite(a.startedAt) || a.startedAt <= 0) throw new PushInputError("Invalid activity");
   }
+  const card = activities.find(a => a.sessionId === AUTOMATIC_ACTIVITY);
   const relay = parseRelayCredential(x.relay);
   return { ...(x.liveActivities === undefined ? {} : { liveActivities: x.liveActivities as boolean }),
     ...(relay === undefined ? {} : { relay }),
     ...(x.pushToStartToken === undefined ? {} : { pushToStartToken: x.pushToStartToken as string }),
     ...(x.hostName === undefined ? {} : { hostName: x.hostName as string }),
     ...(x.sounds === undefined ? {} : { sounds: x.sounds as NotificationSounds }),
+    ...(card === undefined ? {} : { card: { token: card.token, startedAt: card.startedAt } }),
     hostId: x.hostId, token: x.token, topic: x.topic as string, sandbox: x.sandbox as boolean,
     enabled: x.enabled as boolean, completions: x.completions as boolean, previews: x.previews as boolean,
-    mutedSessions: [...x.mutedSessions], activities: x.activities.map(a => ({sessionId: a.sessionId, token: a.token, startedAt: a.startedAt})) };
+    mutedSessions: [...x.mutedSessions] };
 }
 
 let configuredHome: string | undefined;
@@ -135,12 +139,11 @@ export function writePushRecords(records: PushRecord[], file = pushFile()): void
 export function saveRegistration(deviceId: string, registration: MobileRegistration, file?: string): void {
   const records = readPushRecords(file);
   const old = records.find(r => r.deviceId === deviceId && r.topic === registration.topic);
-  const keepStart = registration.liveActivities === true && old?.liveActivities === true
-    && registration.pushToStartToken !== undefined && registration.pushToStartToken === old.pushToStartToken;
-  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: keepStart ? old?.automaticStartedAt : undefined, automaticStarts: keepStart ? old?.automaticStarts : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, readSync: old?.readSync, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
+  const sameCard = registration.card !== undefined && registration.card.token === old?.card?.token;
+  const next: PushRecord = { ...registration, deviceId, revision: crypto.randomUUID(), updatedAt: Date.now(), automaticStartedAt: old?.automaticStartedAt, cardFinishedAt: sameCard ? old?.cardFinishedAt : undefined, automaticSignal: old?.automaticSignal, lastDeliveryAt: old?.lastDeliveryAt, lastStatus: old?.lastStatus, lastReason: old?.lastReason, relayTest: old?.relayTest, automaticStart: old?.automaticStart, readSync: old?.readSync, seen: old?.seen ?? {}, baselined: old?.baselined ?? false, activitySent: old?.activitySent ?? {} };
   writePushRecords([...records.filter(r => r.deviceId !== deviceId || r.topic !== registration.topic), next], file);
 }
-export function turnIsOver(activity: SessionSignal["activity"]): boolean {
+function turnIsOver(activity: SessionSignal["activity"]): boolean {
   return activity === "idle" || activity === "waiting" || activity === "scheduled";
 }
 export function signalKey(session: SessionSignal): string {
@@ -185,17 +188,6 @@ export function notification(record: MobileRegistration, session: SessionSignal,
     payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, ...(sound ? { sound } : {}), "thread-id": `${record.hostId}:${session.id}`,
       category: approvable ? CATEGORY_REQUEST : CATEGORY_SESSION }, url: sessionURL(record.hostId, session.id), ...(approvable ? { request: approvable } : {}) } };
 }
-export function activityDelivery(record: MobileRegistration, follow: MobileRegistration["activities"][number], session: SessionSignal | undefined, now: number): Delivery {
-  const ended = !session || turnIsOver(session.activity);
-  const status = !session ? "Session unavailable" : session.activity === "blocked" ? "Needs you" : ended ? session.lastTurnFailed ? "Failed" : "Finished" : session.activity === "queued" ? "Queued" : session.activity === "monitoring" ? "Background" : "Working";
-  return { token: follow.token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", activityId: follow.sessionId,
-    collapseId: crypto.createHash("sha256").update(follow.token).digest("hex"), payload: { aps: {
-      timestamp: Math.floor(now), event: ended ? "end" : "update", "stale-date": Math.floor(now + ACTIVITY_STALE_S),
-      ...(ended ? { "dismissal-date": Math.floor(now + 300) } : {}),
-      "content-state": { title: record.previews ? (session?.title ?? "Telar session").slice(0, 160) : "Telar session", status, updatedAt: now - 978307200, startedAt: follow.startedAt - 978307200, ended },
-    } } };
-}
-
 export function pushConfigured(): boolean {
   if (!process.env.TELAR_APNS_KEY_ID || !process.env.TELAR_APNS_TEAM_ID || !process.env.TELAR_APNS_KEY_PATH) return false;
   try {
@@ -256,15 +248,14 @@ export async function sendAPNs(delivery: Delivery): Promise<DeliveryResult> {
 
 export const AUTOMATIC_ACTIVITY = "__automatic__";
 export const ACTIVITY_REFRESH_S = 120;
-export const AUTOMATIC_START_ATTEMPTS = 3;
+export const CARD_LINGER_S = 300;
 
 export function tokenFingerprint(token: string): string {
   return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
 }
 export function activityReport(record: PushRecord): ActivityReport {
-  const card = record.activities.some(activity => activity.sessionId === AUTOMATIC_ACTIVITY);
-  const blocker = !record.liveActivities ? "off" : !record.pushToStartToken ? "no-start-token"
-    : !card && (record.automaticStarts ?? 0) >= AUTOMATIC_START_ATTEMPTS ? "gave-up" : undefined;
+  const card = record.card !== undefined;
+  const blocker = !record.liveActivities ? "off" : !record.pushToStartToken ? "no-start-token" : undefined;
   const start = record.automaticStart;
   return { card, ...(blocker ? { blocker } : {}),
     ...(start ? { lastStart: { at: start.at, status: start.status, ...(start.reason ? { reason: start.reason } : {}), relay: start.relay === true, ...(start.token ? { token: start.token } : {}) } } : {}) };
@@ -274,7 +265,9 @@ export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
   const rank: Record<string, number> = { blocked: 0, working: 1, queued: 2, monitoring: 3 };
   return sessions.filter(s => s.activity in rank).sort((a,b) => rank[a.activity]! - rank[b.activity]! || a.id.localeCompare(b.id));
 }
-export function automaticActivityDelivery(record: MobileRegistration, sessions: SessionSignal[], token: string, startedAt: number, now: number, start = false): Delivery {
+export type CardEvent = "start" | "update" | "end";
+export function automaticActivityDelivery(record: MobileRegistration, sessions: SessionSignal[], token: string, startedAt: number, now: number, event: CardEvent = "update"): Delivery {
+  const start = event === "start";
   const active = record.liveActivities ? automaticSessions(sessions) : [];
   const focus = active[0];
   const ended = !focus;
@@ -286,8 +279,8 @@ export function automaticActivityDelivery(record: MobileRegistration, sessions: 
   };
   return { token, topic: `${record.topic}.push-type.liveactivity`, sandbox: record.sandbox, kind: "liveactivity", ...(start ? {} : { activityId: AUTOMATIC_ACTIVITY }),
     collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
-    payload: { aps: { timestamp: Math.floor(now), event: start ? "start" : ended ? "end" : "update", "content-state": state,
-      "stale-date": Math.floor(now + ACTIVITY_STALE_S), ...(ended ? {"dismissal-date":Math.floor(now + 300)} : {}),
+    payload: { aps: { timestamp: Math.floor(now), event, "content-state": state,
+      "stale-date": Math.floor(now + ACTIVITY_STALE_S + (ended ? CARD_LINGER_S : 0)), ...(event === "end" ? {"dismissal-date":Math.floor(now)} : {}),
       ...(start ? { "attributes-type":"SessionActivityAttributes", attributes:{hostId:record.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:record.hostName ?? "Mac"},
         "input-push-token":1, alert:{title:"Telar",body:"Agent work in progress"} } : {}),
     } } };

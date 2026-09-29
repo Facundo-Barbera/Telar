@@ -45,7 +45,6 @@ enum LiveActivityDiagnosis {
         switch report.blocker {
         case "off": return "sees Live Activities as off on this phone."
         case "no-start-token": return "has no push-to-start token from this phone yet."
-        case "gave-up": return "tried 3 starts and no card appeared; it tries again when work next starts."
         default: break
         }
         guard let start = report.lastStart else { return "waiting for active work to start a card." }

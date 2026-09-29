@@ -7,7 +7,7 @@ import path from "node:path";
 import type { EngineClient } from "@telar/engine-client";
 import { matchRoute } from "../../platform/http/router";
 import type { Route } from "../../platform/http/route";
-import { activityDelivery, automaticActivityDelivery, notification, parseRegistration, pushAvailable, readPushRecords, saveRegistration, type Delivery, type MobileRegistration } from "./push";
+import { automaticActivityDelivery, notification, parseRegistration, pushAvailable, readPushRecords, saveRegistration, type Delivery, type MobileRegistration } from "./push";
 import { nextStamp, parseRelayCredential, RELAY_V2_URL, relayV2Delivery } from "./relay-v2";
 import { pushRoutes } from "./routes";
 import { sendRelayTest } from "./worker";
@@ -40,7 +40,7 @@ const credential = { handle: "h".repeat(43), keyId: "k".repeat(22), sendKey: cry
 const registration: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, completions: true, previews: false, mutedSessions: [],
-  activities: [{ sessionId: "session_1", token: "c".repeat(64), startedAt: 1 }], relay: credential,
+  relay: credential,
 };
 const wire = { ...registration, relay: { url: "https://elsewhere.example", ...credential } };
 
@@ -83,14 +83,12 @@ describe("a send", () => {
     expect(String(init.body)).not.toContain(registration.token);
   });
 
-  test("a Live Activity is named by its session, a start by being one", async () => {
+  test("the host card is named by its id, a start by being one", async () => {
     const { calls, fetchImpl } = relay();
-    await relayV2Delivery(credential, activityDelivery(registration, registration.activities[0], undefined, 100), fetchImpl);
-    await relayV2Delivery(credential, automaticActivityDelivery({ ...registration, liveActivities: true }, [], "b".repeat(64), 1, 100, true), fetchImpl);
+    await relayV2Delivery(credential, automaticActivityDelivery({ ...registration, liveActivities: true }, [], "b".repeat(64), 1, 100, "start"), fetchImpl);
     await relayV2Delivery(credential, automaticActivityDelivery({ ...registration, liveActivities: true }, [], "d".repeat(64), 1, 100), fetchImpl);
     const bodies = calls.map(call => JSON.parse(String(call.init.body)));
     expect(bodies.map(b => [b.kind, b.activity, b.start])).toEqual([
-      ["liveactivity", "session_1", undefined],
       ["liveactivity", undefined, true],
       ["liveactivity", "__automatic__", undefined],
     ]);
@@ -99,7 +97,7 @@ describe("a send", () => {
 
   test("an activity with no name is refused here, without a request", async () => {
     const { calls, fetchImpl } = relay();
-    const nameless: Delivery = { ...activityDelivery(registration, registration.activities[0], undefined, 100), activityId: undefined };
+    const nameless: Delivery = { ...automaticActivityDelivery(registration, [], "c".repeat(64), 1, 100), activityId: undefined };
     expect(await relayV2Delivery(credential, nameless, fetchImpl)).toEqual({ status: 400, relay: true });
     expect(calls).toEqual([]);
   });

@@ -46,7 +46,6 @@ export function testLine(test: NonNullable<PushRelayStatus["devices"][number]["t
 function activityLine(report: ActivityReport): string | undefined {
   if (report.card) return "card running";
   if (report.blocker === "no-start-token") return "no push-to-start token from this phone yet";
-  if (report.blocker === "gave-up") return "gave up after 3 starts that never appeared; retries when work next starts";
   const start = report.lastStart;
   if (!start) return undefined;
   if (start.status === 200 && !start.relay) return "the last start was accepted, but no card appeared on the phone";

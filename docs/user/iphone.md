@@ -42,7 +42,7 @@ Notifications need a real iPhone that passes Apple's app check. If the app says 
 
 ## Live Activity
 
-When a Mac has agents working, a Live Activity appears on the Lock Screen and in the Dynamic Island. It starts on its own, even with the app in the background. Each Mac shows one card that covers all its active sessions, with anything that needs you shown first. It ends when that Mac has no more active work.
+When a Mac has agents working, a Live Activity appears on the Lock Screen and in the Dynamic Island. It starts on its own, even with the app in the background. Each Mac shows one card that covers all its active sessions, with anything that needs you shown first. When the work finishes, the card shows Finished for five minutes and then leaves; work that starts again in that time reuses the same card.
 
 You can turn it off with **Automatic Live Activities** in Settings → Notifications & activities. That screen also explains why a card isn't showing.
 

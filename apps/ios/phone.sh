@@ -23,7 +23,7 @@ xcodebuild \
   DEVELOPMENT_TEAM="$TEAM" \
   TELAR_APP_BUNDLE_ID="$BUNDLE" \
   INFOPLIST_KEY_CFBundleDisplayName="$NAME" \
-  ASSETCATALOG_COMPILER_APPICON_NAME="$ICON" \
+  TELAR_APP_ICON="$ICON" \
   build
 
 APP="$DIR/DerivedData-$MODE/Build/Products/$CONFIG-iphoneos/TelarMobile.app"
