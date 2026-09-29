@@ -183,9 +183,10 @@ export function notification(record: MobileRegistration, session: SessionSignal,
   const approvable = session.activity === "blocked" ? session.approvable : undefined;
   const collapseId = crypto.createHash("sha256").update(session.id).digest("hex");
   const named = record.sounds && soundFor(record.sounds, kind);
-  const sound = record.sounds === undefined ? "default" : named && `${named}.caf`;
+  const sound = kind !== "blocked" ? undefined : record.sounds === undefined ? "default" : named && `${named}.caf`;
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert", collapseId,
-    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, ...(sound ? { sound } : {}), "thread-id": `${record.hostId}:${session.id}`,
+    payload: { aps: { alert: { title: record.previews ? session.title.slice(0, 160) : "Telar", body }, ...(sound ? { sound } : {}),
+      "interruption-level": kind === "finished" ? "passive" : "active", "thread-id": `${record.hostId}:${session.id}`,
       category: approvable ? CATEGORY_REQUEST : CATEGORY_SESSION }, url: sessionURL(record.hostId, session.id), ...(approvable ? { request: approvable } : {}) } };
 }
 export function pushConfigured(): boolean {
