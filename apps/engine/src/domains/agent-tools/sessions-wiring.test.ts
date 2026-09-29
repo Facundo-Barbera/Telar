@@ -122,6 +122,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
       throw new Error("this test does not send");
     },
     read: async () => [],
+    capabilities: async () => ({ defaults: { envMode: "local" }, providers: [] }),
     status: async () => {
       throw new Error("this test does not read status");
     },
@@ -185,6 +186,7 @@ test("the sessions toolkit registers under the SAME one server, and only when th
     "sessions_resolve_request",
     // #543, appended at the END so the wall GROWS rather than reorders.
     "sessions_schedule",
+    "sessions_capabilities",
   ]);
   // #877 retired `warp`, which was the one name on this wall that was not a
   // sessions verb and the one registered whether or not the turn carried a
@@ -193,9 +195,9 @@ test("the sessions toolkit registers under the SAME one server, and only when th
 
   // …and without one the sessions tools are GONE, and nothing is left to
   // register: the server itself does not appear. Anti-vacuity for the list
-  // above is the COUNT — eleven names, not zero — rather than a tool that
+  // above is the COUNT — twelve names, not zero — rather than a tool that
   // happened to be unconditional.
-  expect(names.length).toBe(11);
+  expect(names.length).toBe(12);
   names.length = 0;
   await claudeDriver(sdk).run({
     prompt: "prompt",
@@ -376,7 +378,7 @@ test("the worker cannot archive, delete or accept anything — the client it hol
     // `subscribeCohort` and `cohorts` are a subscription to several sessions at
     // once, and its list: the same reach `subscribe` already has.
     expect(surface).toEqual([
-      "cohorts", "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "turn", "unsubscribe",
+      "capabilities", "cohorts", "create", "cursor", "diff", "list", "query", "read", "requests", "resolveRequest", "self", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "turn", "unsubscribe",
     ]);
     expect(Object.keys(sessions.query).sort()).toEqual(["answer", "find", "grep", "outline", "step", "steps"]);
     for (const forbidden of ["archive", "delete", "accept", "merge", "commit"]) {

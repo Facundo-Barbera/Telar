@@ -1,9 +1,15 @@
-import { AgentTurnInput } from "@telar/engine-client";
+import { AgentModelChoice, AgentTurnInput } from "@telar/engine-client";
 import { HttpError, matchesETag } from "../../platform/http/http";
 import { positiveParam, stringValue } from "../../platform/http/params";
 import { notModified, ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { sessionsStreamRoute, type OpenStream } from "./stream";
+
+function modelChoice(value: unknown): AgentModelChoice {
+  const parsed = AgentModelChoice.safeParse(value);
+  if (!parsed.success) throw new HttpError(400, "invalid_request", "model must be { model?, effort? }");
+  return parsed.data;
+}
 
 function senderProof(value: unknown): AgentTurnInput["proof"] {
   if (value === undefined) return undefined;
@@ -75,6 +81,12 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
     // Behind the engine bearer: the card reveals the sessions socket's own secret.
     { method: "GET", path: "/v2/sessions/mcp-info", auth: "engine", handle: () => ok({ mcp: mcpInfo() }) },
     {
+      method: "GET",
+      path: "/v2/sessions/capabilities",
+      auth: "engine",
+      handle: ({ query }) => ok(store.sessionCapabilities(query.get("caller") ?? undefined)),
+    },
+    {
       method: "POST",
       path: "/v2/sessions",
       auth: "engine",
@@ -96,6 +108,7 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
             ...(typeof body.providerInstanceId === "string" ? { providerInstanceId: body.providerInstanceId } : {}),
             ...(body.origin === "session" ? { origin: "session" as const } : {}),
             ...(typeof body.ceilingFrom === "string" ? { ceilingFrom: body.ceilingFrom } : {}),
+            ...(body.model === undefined ? {} : { model: modelChoice(body.model) }),
           }, senderProof(body.proof)),
         },
       }),

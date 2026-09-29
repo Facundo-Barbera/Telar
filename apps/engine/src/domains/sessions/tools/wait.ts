@@ -59,6 +59,7 @@ export function delegationAnswer(delegation: Delegation): Record<string, unknown
       ...(member.excerpt ? { excerpt: member.excerpt } : {}),
       ...(member.chars ? { chars: member.chars } : {}),
       ...(member.fetch ? { fetch: member.fetch } : {}),
+      ...(member.spent ? { spent: member.spent } : {}),
       note: "Done. Its answer is above; nothing else will wake you for it. Read the rest with sessions_read(fetch) if chars exceeds the excerpt.",
     };
   }

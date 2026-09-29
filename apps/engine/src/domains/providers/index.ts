@@ -6,6 +6,7 @@ export {
   legacyLongSpelling,
   type ModelManifest,
 } from "./manifest";
+export { chosenModel, sessionCapabilities, turnModelChoice } from "./model-choices";
 export { loadClaudeModelSdk, readClaudeModels, readModelCatalogue } from "./models";
 export {
   CLI_TEST_REFUSAL,

@@ -4,7 +4,16 @@ import type { Session } from "@telar/engine-client";
 import { err, failure, fillWithin, json, type ToolFactory } from "../../agent-tools";
 import { delegationAnswer, WAIT, waitForDelegation } from "./wait";
 import { FIND_LIMIT_DEFAULT, findView } from "./query";
-import { CREATE, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
+import { CREATE, EFFORT, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, MODEL, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
+
+const modelChoice = (args: Record<string, unknown>): { model?: { model?: string; effort?: string } } => {
+  const model = typeof args.model === "string" && args.model.trim() ? args.model.trim() : undefined;
+  const effort = typeof args.effort === "string" && args.effort.trim() ? args.effort.trim() : undefined;
+  return model || effort ? { model: { ...(model ? { model } : {}), ...(effort ? { effort } : {}) } } : {};
+};
+
+const runsOn = (session: Session): Record<string, string> =>
+  session.model?.model ? { model: `${session.model.model}${session.model.effort ? ` at ${session.model.effort}` : ""}` } : {};
 
 const runIdFor = (tool: string, toolCallId: string | undefined): string =>
   toolCallId
@@ -94,6 +103,8 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
         intent: z.enum(["task", "report", "result", "blocker"]).optional().describe("report (default, passive), task (assigns work), result (your final answer, sent last), blocker (needs a decision)."),
         input: z.string().min(1).describe("The whole message; it cannot see this conversation."),
         corrects: z.string().min(1).optional().describe("runId of your earlier message this corrects; replaced if still unread."),
+        model: z.string().min(1).optional().describe(`With intent task, this turn only. ${MODEL}`),
+        effort: z.string().min(1).optional().describe(EFFORT),
         wait: WAIT,
       },
       async (args, context) => {
@@ -104,8 +115,10 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
         const runId = runIdFor("sessions_send", context?.toolCallId);
         const wait = typeof args.wait === "number" ? args.wait : undefined;
         if (wait !== undefined && intent !== "task") return err("wait applies only to intent: task — the one that asks for a result.");
+        const chosen = modelChoice(args);
+        if (chosen.model && intent !== "task") return err("model and effort apply only to intent: task — the message that runs something.");
         try {
-          const { turn } = await capability.send(sessionId, { runId, input: text, intent, ...(corrects ? { corrects } : {}) });
+          const { turn } = await capability.send(sessionId, { runId, input: text, intent, ...(corrects ? { corrects } : {}), ...chosen });
           if (wait !== undefined) {
             return json({ sessionId, runId: turn.runId, ...delegationAnswer(await waitForDelegation(capability, sessionId, wait)) });
           }
@@ -148,6 +161,8 @@ function createTool(tool: ToolFactory, capability: SessionsCapability): unknown 
         .enum(["claude", "codex"])
         .optional()
         .describe("Omit unless the user asked."),
+      model: z.string().min(1).optional().describe(MODEL),
+      effort: z.string().min(1).optional().describe(EFFORT),
       task: z.string().min(1).optional().describe("A self-contained brief; it cannot see this conversation."),
       wait: WAIT,
     },
@@ -162,6 +177,7 @@ function createTool(tool: ToolFactory, capability: SessionsCapability): unknown 
           ...(typeof args.title === "string" && args.title.trim() ? { title: args.title } : {}),
           envMode,
           ...(args.driver === "claude" || args.driver === "codex" ? { driver: args.driver } : {}),
+          ...modelChoice(args),
         });
       } catch (error) {
         return err(`Could not create a session on "${projectId}": ${failure(error)}`);
@@ -171,6 +187,7 @@ function createTool(tool: ToolFactory, capability: SessionsCapability): unknown 
         : "Created against the project's own checkout, which it shares with anything else working there.";
       const answer = {
         ...summariseOne(session, new Map<string, string>()),
+        ...runsOn(session),
         note: `${where} Nothing is queued and nothing has started — send it a message with intent: task to give it work.`,
         note2: "It is filed under you, but it reports back only when you task it.",
         access: `${session.runtimeMode} — never wider than your own, so if you have to ask about something, so does it.`,

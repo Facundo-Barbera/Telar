@@ -376,6 +376,7 @@ export const CohortMember = z.object({
   firstLine: z.string().max(400).optional(),
   excerpt: z.string().max(1_600).optional(),
   chars: z.number().int().nonnegative().optional(),
+  spent: z.string().max(300).optional(),
   at: Timestamp.optional(),
 });
 export type CohortMember = z.infer<typeof CohortMember>;

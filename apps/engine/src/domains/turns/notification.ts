@@ -169,7 +169,8 @@ function soloExcerpt(member: CohortMember): string[] {
 
 function memberLine(member: CohortMember): string {
   const who = `${member.sessionId}${member.title ? ` "${member.title}"` : ""}`;
-  const state = member.outcome ? OUTCOME_PHRASE[member.outcome] : `STILL PENDING${member.blocked ? " (its blocker is unanswered)" : " (no result sent)"}`;
+  const ended = member.outcome ? OUTCOME_PHRASE[member.outcome] : `STILL PENDING${member.blocked ? " (its blocker is unanswered)" : " (no result sent)"}`;
+  const state = member.spent ? `${ended} (${member.spent})` : ended;
   const said = member.firstLine ? `: ${member.firstLine}` : "";
   const read = member.fetch ? ` · sessions_read(sessionId: "${member.fetch.sessionId}", runId: "${member.fetch.runId}")` : "";
   return `${who} — ${state}${said}${read}`;

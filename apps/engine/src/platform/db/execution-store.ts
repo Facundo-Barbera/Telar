@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import path from "node:path";
-import type { EngineEvent } from "@telar/engine-client";
+import type { EngineEvent, TokenUsage } from "@telar/engine-client";
 import type { TurnSummary } from "../../domains/turns";
 import { atomicWrite } from "../fs/atomic";
 import { statePaths } from "../fs/state-paths";
@@ -194,6 +194,7 @@ export class ExecutionStore {
   writeTurnSummary(row: TurnSummary): void { tables.writeTurnSummary(this, row); }
   deleteTurnSummary(sessionId: string, runId: string): void { tables.deleteTurnSummary(this, sessionId, runId); }
   outlineRows(sessionId: string, before: number | undefined, limit: number): TurnSummary[] { return tables.outlineRows(this, sessionId, before, limit); }
+  runTokens(sessionId: string, runId: string): TokenUsage | undefined { return tables.runTokens(this, sessionId, runId); }
   turnSummary(sessionId: string, runId: string): TurnSummary | undefined { return tables.turnSummary(this, sessionId, runId); }
   latestAnsweredTurn(sessionId: string): TurnSummary | undefined { return tables.latestAnsweredTurn(this, sessionId); }
   turnSummaryCount(sessionId: string): number { return tables.turnSummaryCount(this, sessionId); }

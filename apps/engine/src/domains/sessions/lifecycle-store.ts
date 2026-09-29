@@ -6,6 +6,7 @@ import {
   defaultInstanceIdForDriver,
   ModelSelection,
   narrowerRuntimeMode,
+  type AgentModelChoice,
   type EngineEvent,
   type EnvMode,
   type ModelCatalogue,
@@ -56,6 +57,7 @@ export type CreateSessionInput = {
   workspace?: { path: string; branch: string; baseRef?: string };
   /** Provenance only: `"session"` means the `sessions` toolkit asked. Set by the caller's code, never by a model argument. */
   origin?: SessionOrigin;
+  model?: AgentModelChoice;
 };
 
 /** What the session lifecycle still asks of the store around it. */
@@ -70,6 +72,7 @@ type LifecycleHost = {
   sessionDefaults(): { envMode?: EnvMode; runtimeMode?: RuntimeMode };
   requireInstance(instanceId: string): ProviderInstance;
   cachedModels(driver: ProviderDriverKind): ModelCatalogue["models"] | undefined;
+  chooseModel(driver: ProviderDriverKind, instanceId: string, choice: AgentModelChoice): ModelSelectionValue | undefined;
   readQueue(sessionId: string): SessionQueue;
   writeQueue(sessionId: string, queue: SessionQueue): void;
   appendEvent(sessionId: string, event: JournalEntry, runId?: string): EngineEvent;
@@ -125,6 +128,8 @@ export class SessionLifecycle {
         throw new EngineStateError("invalid_request", "unknown provider driver");
       }
       if (chosen && !chosen.enabled) throw new EngineStateError("conflict", "that provider instance is switched off");
+      const instanceId = chosen?.id ?? defaultInstanceIdForDriver(driver);
+      const picked = input.model ? this.host.chooseModel(driver, instanceId, input.model) : undefined;
       const cut =
         envMode === "worktree" && !input.draft && project !== undefined
           ? (() => {
@@ -174,10 +179,11 @@ export class SessionLifecycle {
           : {}),
         createdAt: at,
         updatedAt: at,
-        providerInstanceId: chosen?.id ?? defaultInstanceIdForDriver(driver),
+        providerInstanceId: instanceId,
         driver,
         ...(() => {
-          if (!project?.defaultModel || project.defaultModel.instanceId !== (chosen?.id ?? defaultInstanceIdForDriver(driver))) return {};
+          if (picked) return { model: picked };
+          if (!project?.defaultModel || project.defaultModel.instanceId !== instanceId) return {};
           const model = this.supportedOptions(driver, project.defaultModel);
           return model ? { model } : {};
         })(),
