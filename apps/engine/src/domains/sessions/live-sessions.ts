@@ -28,6 +28,7 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.activityAt === undefined ? {} : { activityAt: session.activityAt }),
   ...(session.lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt: session.lastTurnEndedAt }),
   ...(session.lastTurnFailed === undefined ? {} : { lastTurnFailed: session.lastTurnFailed }),
+  ...(session.lastTurnOrigin === undefined ? {} : { lastTurnOrigin: session.lastTurnOrigin }),
   ...(session.lastTurnSequence === undefined ? {} : { lastTurnSequence: session.lastTurnSequence }),
   ...(session.lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence: session.lastReadTurnSequence }),
   ...(session.readAt === undefined ? {} : { readAt: session.readAt }),

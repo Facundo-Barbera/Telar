@@ -1,4 +1,4 @@
-import type { EngineClient } from "@telar/engine-client";
+import type { EngineClient, LiveSessionRow, SessionAssignment } from "@telar/engine-client";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
 import { desktopAttached, macTookAlert, notifyDesktop } from "./desktop";
 import { collectReads, noteAlert, READ_SYNC_BATCH, readSyncDelivery, readSyncDue, readSyncWanted } from "./read-sync";
@@ -184,9 +184,11 @@ export async function markApprovable(
   }
 }
 
-function signals(sessions: readonly SessionSignal[]): SessionSignal[] {
-  return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, projectId, lastTurnSequence, lastReadTurnSequence }) => ({
+export function signals(sessions: readonly LiveSessionRow[], assignments: Record<string, SessionAssignment[]> = {}): SessionSignal[] {
+  return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, lastTurnOrigin, startedFrom, projectId, lastTurnSequence, lastReadTurnSequence }) => ({
     id, title, activity,
+    ...(startedFrom !== undefined || assignments[id]?.some(task => task.outcome !== "detached") ? { hasParent: true } : {}),
+    ...(lastTurnOrigin === undefined ? {} : { lastTurnOrigin }),
     ...(projectId === undefined ? {} : { projectId }),
     ...(activityAt === undefined ? {} : { activityAt }),
     ...(lastTurnSequence === undefined ? {} : { lastTurnSequence }),
@@ -320,7 +322,7 @@ export function startMobilePushWorker(given?: PushWorkerDeps): void {
         if (!heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs) && !reads.due) return;
         changed = new Set<string>();
       } else {
-        sessions = signals(answer.sessions);
+        sessions = signals(answer.sessions, answer.assignments);
         if (answer.etag !== undefined) workerGlobal.telarMobilePushETag = answer.etag;
         changed = reconcile ? undefined : changedSessions(sessions, workerGlobal.telarMobilePushSnapshot);
         workerGlobal.telarMobilePushSnapshot = sessions;

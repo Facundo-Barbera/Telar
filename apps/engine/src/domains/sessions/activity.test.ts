@@ -259,3 +259,18 @@ test("a session with live background work is not idle, and says which kind", () 
   expect(store.records.get("session_one").activity).toBe("idle");
   expect(store.records.get("session_one").activityAt).toBeUndefined();
 });
+
+test("a session says who started its last ended turn, so an alert can tell the person's work from a wake", () => {
+  const { store } = readyStore();
+  const run = (runId: string, input: Omit<Parameters<typeof store.intake.submitTurn>[1], "runId">) => {
+    store.intake.submitTurn("session_one", { ...input, runId });
+    const claim = store.claims.claimNextTurn("worker_one")!;
+    store.turnLifecycle.markRunning("session_one", runId, claim.turn.claim!.token);
+    store.turnLifecycle.completeTurn("session_one", runId, claim.turn.claim!.token, { text: "Done" });
+  };
+  run("run_one", { input: "Hello" });
+  expect(store.records.get("session_one").lastTurnOrigin).toBeUndefined();
+
+  run("run_two", { input: "Woken", origin: "session", wakeReason: { kind: "turn_completed", sessionId: "session_two", runId: "run_x" } });
+  expect(store.records.get("session_one").lastTurnOrigin).toBe("session");
+});

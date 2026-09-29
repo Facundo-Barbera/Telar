@@ -62,6 +62,8 @@ export type SessionState = z.infer<typeof SessionState>;
 export const SessionOrigin = z.enum(["human", "session"]);
 export type SessionOrigin = z.infer<typeof SessionOrigin>;
 
+const TurnOrigin = z.enum(["user", "provider", "session", "schedule", "restart"]);
+
 export const SessionActivity = z.enum(["blocked", "working", "queued", "monitoring", "idle", "waiting", "scheduled"]);
 export type SessionActivity = z.infer<typeof SessionActivity>;
 
@@ -205,6 +207,7 @@ export const Session = z.object({
    *  session is a fact about the reader, not work the session did. */
   readAt: Timestamp.optional(),
   lastTurnFailed: z.boolean().optional(),
+  lastTurnOrigin: TurnOrigin.optional(),
 
   settledOverride: z.enum(["settled", "active"]).optional(),
   settledAt: Timestamp.optional(),
@@ -442,7 +445,7 @@ export const Turn = z.object({
   /** What the human asked for. */
   input: z.string(),
   kind: z.enum(["message", "compact", "import"]).optional(),
-  origin: z.enum(["user", "provider", "session", "schedule", "restart"]).optional(),
+  origin: TurnOrigin.optional(),
   scheduleOrigin: z.object({ scheduleId: Id, dueAt: Timestamp }).optional(),
   restartOrigin: z
     .object({

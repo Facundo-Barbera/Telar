@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { NOTIFICATION_SOUNDS_VALUES, type ActivityReport, type NotificationSounds } from "@telar/engine-client";
+import { NOTIFICATION_SOUNDS_VALUES, type ActivityReport, type NotificationSounds, type Turn } from "@telar/engine-client";
 import fs from "node:fs";
 import path from "node:path";
 import http2 from "node:http2";
@@ -25,7 +25,8 @@ export interface MobileRegistration {
 export type RelayCredential = { handle: string; keyId: string; sendKey: string };
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
-  lastTurnEndedAt?: number; lastTurnFailed?: boolean;
+  lastTurnEndedAt?: number; lastTurnFailed?: boolean; lastTurnOrigin?: Turn["origin"];
+  hasParent?: boolean;
   projectId?: string;
   lastTurnSequence?: number; lastReadTurnSequence?: number;
   approvable?: string;
@@ -160,9 +161,12 @@ export function soundFor(sounds: NotificationSounds, kind: AlertKind): string | 
   return sounds === "off" ? undefined : `telar-${sounds}-${SOUND_EVENT[kind]}`;
 }
 
+const PERSON_ORIGINS = new Set<Turn["origin"]>([undefined, "user", "schedule"]);
+
 export function alertKind(session: SessionSignal, previous: string | undefined, completions: boolean): AlertKind | undefined {
   if (previous === undefined || previous === signalKey(session)) return;
   if (session.activity === "blocked") return "blocked";
+  if (session.hasParent || !PERSON_ORIGINS.has(session.lastTurnOrigin)) return;
   if (turnIsOver(session.activity) && session.lastTurnEndedAt && String(session.lastTurnEndedAt) !== previous.split(":")[2]) {
     if (session.lastTurnFailed) return "failed";
     if (completions) return "finished";

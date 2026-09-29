@@ -72,6 +72,7 @@ export class SessionActivity {
       ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
       ...(result === undefined ? {} : { lastTurnSequence: result.sequence }),
       ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
+      ...(ended?.origin === undefined ? {} : { lastTurnOrigin: ended.origin }),
     };
     const settledRuns = new Set(turns.filter((turn) => turn.state === "completed" || turn.state === "failed" || turn.state === "stopped" || turn.state === "discarded").map((turn) => turn.runId));
     const open = [...this.deps.liveRequests(session.id).values()].filter((request) => request.state === "open" && !settledRuns.has(request.runId));
