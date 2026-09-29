@@ -143,13 +143,13 @@ export function PluginsPage() {
     const allowed = machineAllows(machine, status.meta.id);
     const failed = status.state === "failed";
     const hint = failed ? (status.error ?? "This plugin did not start.") : status.meta.blurb;
-    const control = (label: string) => (
+    const control = (
       <Switch
         checked={allowed && !failed}
         disabled={busy === status.meta.id || failed}
         onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
         title="Each project keeps its own setting, and running work finishes before anything is released."
-        aria-label={label}
+        aria-label={`${status.meta.name} enabled on this Mac`}
       />
     );
     const Icon = pluginIcon(status.meta.icon);
@@ -158,12 +158,10 @@ export function PluginsPage() {
       label: status.meta.name,
       icon: <Icon className="size-4" />,
       description: hint,
-      control: control(`${status.meta.name} enabled on this Mac`),
+      control,
       detail: (
         <MachinePluginPage
           status={status}
-          hint={hint}
-          control={control(`${status.meta.name} on this Mac`)}
           {...(status.installed
             ? {
                 remove: (
@@ -213,40 +211,22 @@ function AddPluginRow({ notice, disabled, onAdd }: { notice?: string; disabled: 
   );
 }
 
-function MachinePluginPage({
-  status,
-  hint,
-  control,
-  remove,
-  settings,
-}: {
-  status: PluginStatus;
-  hint: ReactNode;
-  control: ReactNode;
-  remove?: ReactNode;
-  settings?: ReactNode;
-}) {
+function MachinePluginPage({ status, remove, settings }: { status: PluginStatus; remove?: ReactNode; settings?: ReactNode }) {
   return (
     <>
-      <SettingsGroup title={status.meta.name} description={hint}>
-        <Row
-          icon={pluginIcon(status.meta.icon)}
-          label={`${status.meta.name} on this Mac`}
-          hint="Turning it off makes it unavailable in every project on this Mac."
-          control={
-            <div className="flex items-center gap-2">
-              {remove}
-              {control}
-            </div>
-          }
-        />
-        {!settings && (
-          <NothingToConfigure
-            hint={hasMachineSettings(status) ? "Its Mac-wide defaults show once it is on." : "This plugin has no Mac-wide settings."}
+      {remove && (
+        <SettingsGroup>
+          <Row
+            icon={FolderPlusIcon}
+            label={status.installed?.linked ? "Linked from a folder" : "Copied from a folder"}
+            hint={status.installed?.linked ? "Removing it drops the link; the folder stays." : "Removing it deletes Telar's copy."}
+            control={remove}
           />
-        )}
-      </SettingsGroup>
-      {settings}
+        </SettingsGroup>
+      )}
+      {settings ?? (
+        <NothingToConfigure hint={hasMachineSettings(status) ? "Its Mac-wide defaults show once it is on." : "This plugin has no Mac-wide settings."} />
+      )}
     </>
   );
 }

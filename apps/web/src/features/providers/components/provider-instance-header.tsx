@@ -25,12 +25,10 @@ export function ProviderInstanceHeader({
   const advisory = updateAdvisory(probe, DRIVER_LABEL[instance.driver]);
 
   return (
-    <div className="px-3 py-3 sm:px-4">
+    <div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <ProviderMark instance={instance} status={status} />
-            <h3 className="truncate text-sm font-medium text-foreground">{title}</h3>
             {title !== instance.id && (
               <code className="truncate rounded bg-muted/60 px-1 py-0.5 text-3xs text-muted-foreground">{instance.id}</code>
             )}

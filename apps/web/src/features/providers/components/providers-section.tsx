@@ -252,7 +252,6 @@ export function ProvidersSection() {
         title="Logins"
         description="Each row is one configured login."
         param="provider"
-        bounded
         {...(added ? { select: added } : {})}
         items={items}
         empty={

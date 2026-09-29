@@ -46,9 +46,9 @@ export function ProviderInstanceCard({
   const [tab, setTab] = useState<ProviderTab>("configuration");
 
   return (
-    <div className={cn("rounded-xl border border-border bg-card shadow-1", !instance.enabled && "opacity-80")}>
+    <div className={cn("space-y-4", !instance.enabled && "opacity-80")}>
       <ProviderInstanceHeader instance={instance} probe={probe} onRemove={onRemove} />
-      <div className="space-y-4 border-t border-border/60 px-3 pb-4 pt-3 sm:px-4">
+      <div className="space-y-4">
         {inheritance && <InheritanceNotice driver={instance.driver} {...inheritance} />}
         <Tabs<ProviderTab>
           value={tab}
