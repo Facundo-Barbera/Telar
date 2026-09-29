@@ -10,7 +10,7 @@ export type TextGenEffort = "low" | "medium" | "high";
 export type TextGenDriverInput = {
   driver: ProviderDriverKind;
   binaryPath?: string;
-  env?: Record<string, string>;
+  env?: Record<string, string | undefined>;
   model?: string;
   effort?: TextGenEffort;
   signal?: AbortSignal;
@@ -29,7 +29,8 @@ export async function runStructured(input: TextGenDriverInput, prompt: string, s
     if (input.driver === "claude") return await runClaude(input, scratch, prompt, schema);
     if (input.driver === "codex") return await runCodex(input, scratch, prompt, schema);
     return await runOpenCode(input, scratch, prompt, schema);
-  } catch {
+  } catch (error) {
+    console.error(`[engine] ${input.driver} text generation failed: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
@@ -64,11 +65,31 @@ function claudeTextGenArgs(input: Pick<TextGenDriverInput, "model" | "effort">, 
   ];
 }
 
+// `--setting-sources ""` also drops the settings file's `env`, which is where a gateway login lives.
+function claudeSettingsEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const dir = env["CLAUDE_CONFIG_DIR"] || path.join(os.homedir(), ".claude");
+  const settings = parseJson(readOrEmpty(path.join(dir, "settings.json")))?.["env"];
+  if (typeof settings !== "object" || settings === null) return {};
+  return Object.fromEntries(Object.entries(settings).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
+function readOrEmpty(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 async function runClaude(input: TextGenDriverInput, scratch: string, prompt: string, schema: object): Promise<Structured | undefined> {
   const executable = requireCli("claude", input.binaryPath ? { binaryPath: input.binaryPath } : {});
-  const stdout = await runToCompletion(executable, claudeTextGenArgs(input, schema), scratch, input, prompt);
-  const structured = stdout === undefined ? undefined : parseJson(stdout)?.["structured_output"];
-  return typeof structured === "object" && structured !== null ? (structured as Structured) : undefined;
+  const env = { ...claudeSettingsEnv({ ...process.env, ...input.env }), ...input.env };
+  const stdout = await runToCompletion(executable, claudeTextGenArgs(input, schema), scratch, { ...input, env }, prompt);
+  if (stdout === undefined) return undefined;
+  const answer = parseJson(stdout);
+  const structured = answer?.["structured_output"];
+  if (typeof structured === "object" && structured !== null) return structured as Structured;
+  throw new TextGenFailure(`no structured output (${String(answer?.["subtype"] ?? "unparsable answer")})`);
 }
 
 function codexTextGenArgs(input: Pick<TextGenDriverInput, "model" | "effort">, schemaPath: string, outputPath: string): string[] {
@@ -138,44 +159,67 @@ function parseOpenCodeAnswer(stdout: string): Structured | undefined {
   return start >= 0 && end > start ? parseJson(text.slice(start, end + 1)) : undefined;
 }
 
+class TextGenFailure extends Error {}
+
+function redactedTail(text: string, max = 300): string {
+  return text.replace(/\b(sk-[\w-]+|[A-Za-z0-9_-]{32,})/g, "[redacted]").replace(/\s+/g, " ").trim().slice(-max);
+}
+
 function runToCompletion(executable: string, args: string[], cwd: string, input: TextGenDriverInput, prompt: string): Promise<string | undefined> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (input.signal?.aborted) {
       resolve(undefined);
       return;
     }
     const child = spawn(executable, args, {
       cwd,
-      env: { ...process.env, ...input.env },
+      env: spawnEnv(input.env),
       stdio: ["pipe", "pipe", "pipe"],
     });
-    child.stderr.resume();
     let out = "";
+    let err = "";
     let settled = false;
-    const finish = (value: string | undefined) => {
+    const finish = (value: string | undefined, failure?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
       input.signal?.removeEventListener("abort", onAbort);
-      resolve(value);
+      if (failure) reject(new TextGenFailure(failure));
+      else resolve(value);
     };
     const deadline = setTimeout(() => {
       child.kill("SIGKILL");
-      finish(undefined);
+      finish(undefined, "timed out");
     }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const onAbort = () => {
       child.kill("SIGKILL");
       finish(undefined);
     };
     input.signal?.addEventListener("abort", onAbort, { once: true });
-    child.on("error", () => finish(undefined));
+    child.on("error", (error) => finish(undefined, `could not start: ${error.message}`));
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
     });
-    child.on("close", (code) => finish(code === 0 ? out : undefined));
+    child.stderr.on("data", (chunk: Buffer) => {
+      err = (err + chunk.toString("utf8")).slice(-4000);
+    });
+    child.on("close", (code, signal) => {
+      if (code === 0) finish(out);
+      else finish(undefined, `exited ${code ?? signal}: ${redactedTail(err || out) || "no output"}`);
+    });
+    child.stdin.on("error", () => undefined);
     child.stdin.write(prompt);
     child.stdin.end();
   });
+}
+
+function spawnEnv(patch: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const [name, value] of Object.entries(patch)) {
+    if (value === undefined) delete env[name];
+    else env[name] = value;
+  }
+  return env;
 }
 
 function parseJson(text: string): Structured | undefined {
