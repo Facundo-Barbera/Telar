@@ -4,8 +4,6 @@
  * no entry falls back to the generic pane rather than to nothing.
  */
 import { expect, mock, test } from "bun:test";
-import { renderToStaticMarkup } from "react-dom/server";
-import { PROJECT_PLUGINS_VERSION, type PluginStatus, type Project } from "@telar/engine-client";
 
 /** The bespoke panes read the router on render. Stubbed as in `data-science-section.test.tsx`. */
 mock.module("next/navigation", () => ({
@@ -19,7 +17,6 @@ const { DataScienceSection } = await import("../data-science/data-science-sectio
 const { DataSciencePackagesRow } = await import("../data-science/machine-settings");
 const { LatexSection } = await import("../latex/latex-section");
 const { LatexDistributionSettings } = await import("../latex/machine-settings");
-const { ProjectPluginPanes } = await import("@/features/projects/components/projects-page");
 
 test("the two shipped features keep only what the generated pane cannot draw", () => {
   expect(projectPaneFor("data-science")).toBe(DataScienceSection);
@@ -35,35 +32,4 @@ test("a plugin with no entry resolves to none — including an inherited key", (
   expect(projectPaneFor("hello")).toBeUndefined();
   expect(machineBlocksFor("hello")).toEqual({});
   expect(projectPaneFor("constructor")).toBeUndefined();
-});
-
-const status = (id: string, name: string): PluginStatus =>
-  ({ meta: { id, name, settings: [{ id: "general", scope: "project", label: name }] }, state: "ready" }) as never;
-
-const enabledFor = (...ids: string[]): Project =>
-  ({
-    id: "project_1",
-    name: "Telar",
-    root: "/tmp/telar",
-    plugins: { version: PROJECT_PLUGINS_VERSION, entries: Object.fromEntries(ids.map((id) => [id, { enabled: true }])) },
-  }) as unknown as Project;
-
-test("an enabled plugin with a pane draws it; one without draws the generic pane", () => {
-  const plugins = [status("data-science", "Data science"), status("hello", "Hello")];
-  const html = renderToStaticMarkup(
-    <ProjectPluginPanes project={enabledFor("data-science", "hello")} plugins={plugins} onChange={() => {}} />,
-  );
-  // Data science's own editor, not the generic switch.
-  expect(html).toContain('aria-label="Enable data science for this project"');
-  expect(html).not.toContain('aria-label="Data science enabled"');
-  // `hello` gets the generic pane.
-  expect(html).toContain('aria-label="Hello enabled"');
-});
-
-test("a plugin with a pane that is OFF for the project still gets the generic pane", () => {
-  const html = renderToStaticMarkup(
-    <ProjectPluginPanes project={enabledFor()} plugins={[status("data-science", "Data science")]} onChange={() => {}} />,
-  );
-  expect(html).toContain('aria-label="Data science enabled"');
-  expect(html).not.toContain('aria-label="Enable data science for this project"');
 });

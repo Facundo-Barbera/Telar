@@ -50,8 +50,6 @@ async function mount(instance: ProviderInstance, inheritance?: InheritanceNotice
       <ProviderInstanceCard
         instance={instance}
         signInCommand="claude login"
-        expanded
-        onExpandedChange={() => undefined}
         onPatch={(patch) => patches.push(patch)}
         {...(inheritance ? { inheritance } : {})}
       />,

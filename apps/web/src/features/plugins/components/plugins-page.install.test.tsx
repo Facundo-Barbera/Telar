@@ -2,7 +2,7 @@
  * ADD AND REMOVE AN INSTALLED PLUGIN FROM SETTINGS ▸ PLUGINS.
  *
  *   add      a chosen folder is posted with the mode pressed; a refusal shows its reason
- *   remove   only installed plugins offer it, and only after a confirm
+ *   remove   only an installed plugin's page offers it, and only after a confirm
  */
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
@@ -81,9 +81,9 @@ async function mount() {
 
 const buttons = (host: HTMLElement, label: string) => [...host.querySelectorAll("button")].filter((candidate) => candidate.textContent === label);
 
-test("only an installed plugin offers Remove", async () => {
+test("only an installed plugin's page offers Remove", async () => {
   const { host, done } = await mount();
-  expect(buttons(host, "Remove")).toHaveLength(1);
+  expect(buttons(host, "Remove").map((button) => button.closest("[data-detail-for]")?.getAttribute("data-detail-for"))).toEqual(["echo"]);
   done();
 });
 
@@ -112,6 +112,7 @@ test("Remove asks first, and a declined confirm removes nothing", async () => {
     asked = message ?? "";
     return false;
   };
+  await act(async () => (host.querySelector('[data-master-item="echo"]') as HTMLElement).click());
   await act(async () => buttons(host, "Remove")[0]!.click());
   await flush();
   expect(asked).toContain("your folder stays");

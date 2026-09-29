@@ -5,7 +5,6 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { SETTINGS_SEARCH_INDEX, searchSettings } from "@/features/settings";
 import { projectSettingsHref } from "../project-settings-link";
-import { enablePatch } from "@/features/plugins/sections";
 import { isTelarIcon, TELAR_ICONS, type ProviderModel } from "@telar/engine-client";
 import type { ModelChoice } from "@/features/providers/models";
 import { modelOptionsOf } from "@/features/composer";
@@ -17,7 +16,7 @@ mock.module("next/navigation", () => ({
   useRouter: () => ({ push: () => {}, replace: () => {}, refresh: () => {}, back: () => {}, forward: () => {}, prefetch: () => {} }),
 }));
 
-const { ProjectConversationRows, ProjectIdentityRows, ProjectModelOptionsRow, ProjectPluginPanes, ProjectPluginRows, ProjectsPage } = await import("./projects-page");
+const { ProjectConversationRows, ProjectIdentityRows, ProjectModelOptionsRow, ProjectsPage } = await import("./projects-page");
 
 GlobalRegistrator.register({ url: "http://localhost/settings" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -116,8 +115,8 @@ const press = async (element: Element | undefined) => {
   await flush();
 };
 
-const options = () => [...document.querySelectorAll('[role="option"]')].map((option) => option.textContent?.trim());
-const option = (label: string) => [...document.querySelectorAll('[role="option"]')].find((candidate) => candidate.textContent?.trim() === label);
+const options = () => [...document.querySelectorAll('[role="option"]:not([data-master-item])')].map((option) => option.textContent?.trim());
+const option = (label: string) => [...document.querySelectorAll('[role="option"]:not([data-master-item])')].find((candidate) => candidate.textContent?.trim() === label);
 
 async function rename(input: HTMLInputElement, value: string) {
   await act(async () => {
@@ -228,33 +227,6 @@ describe("static rows", () => {
     expect(html).not.toContain("aria-pressed");
   });
 
-  test("a project on another Mac has read-only plugin switches, and the row says whose", () => {
-    const html = renderToStaticMarkup(<ProjectPluginRows project={project({ hostId: "host_mini", hostName: "mini" })} plugins={[LATEX]} />);
-    expect(html).toContain("LaTeX");
-    expect(html).toContain("Registered on mini");
-    expect(html).toContain("inert");
-  });
-
-  test("a plugin off for the whole Mac is inert in every project, and says where to turn it on", () => {
-    const machine = { version: 1, entries: { latex: { enabled: false } } };
-    const asked = project({ plugins: { version: 1, entries: { latex: { enabled: true } } } } as Partial<ScopedProject>);
-
-    const rows = renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[LATEX]} machine={machine} />);
-    expect(rows).toContain("LaTeX is off for every project on this Mac.");
-    expect(rows).toContain('href="/settings?section=plugins"');
-    expect(rows).toContain("inert");
-
-    const panes = renderToStaticMarkup(<ProjectPluginPanes project={asked} plugins={[LATEX]} machine={machine} onChange={() => {}} />);
-    expect(panes).toContain("LaTeX is off for every project on this Mac.");
-    expect(panes).toContain("inert");
-
-    expect(renderToStaticMarkup(<ProjectPluginRows project={asked} plugins={[LATEX]} />)).not.toContain("off for every project");
-  });
-
-  test("with no plugins registered the group says so rather than heading empty air", () => {
-    expect(renderToStaticMarkup(<ProjectPluginRows plugins={[]} />)).toContain("No plugins registered");
-  });
-
   test("the pane's first paint is All projects, with nothing bound", () => {
     const html = renderToStaticMarkup(<ProjectsPage />);
     expect(html).toContain('data-slot="select-value" class="flex flex-1 text-left">All projects<');
@@ -353,17 +325,6 @@ describe("row writes", () => {
     view.done();
   });
 
-  test("a plugin switch patches the named project, and does nothing without one", async () => {
-    const unbound = await mount(<ProjectPluginRows plugins={[LATEX]} />);
-    await press(unbound.host.querySelector('[role="switch"]')!);
-    unbound.done();
-    expect(calls.filter((call) => call.method === "PATCH")).toEqual([]);
-
-    const bound = await mount(<ProjectPluginRows project={project()} plugins={[LATEX]} />);
-    await press(bound.host.querySelector('[role="switch"]')!);
-    expect(calls.filter((call) => call.method === "PATCH")).toEqual([{ method: "PATCH", url: "/api/projects/project_abc", body: enablePatch("latex", true) }]);
-    bound.done();
-  });
 });
 
 describe("the pane", () => {
@@ -400,12 +361,12 @@ describe("the pane", () => {
     missing.done();
   });
 
-  test("a named local project gets its own groups instead of the compact switch list", async () => {
+  test("a named local project gets its own groups and the plugin list", async () => {
     const view = await mount(<ProjectsPage />);
     const text = view.host.textContent ?? "";
     expect(text).toContain("Tool servers only this project's sessions see.");
     expect(text).toContain("Remove project from Telar");
-    expect(text).not.toContain("Which of this Mac's plugins this project has opted into.");
+    expect(text).toContain("Which of this Mac's plugins this project has opted into.");
     view.done();
   });
 

@@ -92,6 +92,8 @@ export function PluginSettings({
         />
       )}
 
+      {enabled && !machineOff && !failed && fields.length === 0 && <NothingToConfigure hint="This plugin has no settings for a project." />}
+
       {failed && (
         <Row
           icon={CircleAlertIcon}
@@ -106,4 +108,8 @@ export function PluginSettings({
       )}
     </SettingsGroup>
   );
+}
+
+export function NothingToConfigure({ hint }: { hint: string }) {
+  return <p className="py-3 text-xs text-muted-foreground">Nothing to configure. {hint}</p>;
 }

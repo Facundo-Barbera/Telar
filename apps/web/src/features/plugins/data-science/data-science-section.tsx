@@ -69,6 +69,13 @@ function toConfig(env: { path: string; root?: string; manager: DataScienceEnviro
   return { enabled: true, python: { source, path: env.path, resolvedAt: Date.now(), manager: env.manager, ...(env.root ? { root: env.root } : {}) } };
 }
 
+export function dataScienceToggle(project: Project, next: boolean): DataScienceConfig | null {
+  const config = pluginBlock(project, "data-science") as DataScienceConfig | undefined;
+  const current = config?.python;
+  if (next) return { ...(config ?? {}), enabled: true, ...(current ? { python: current } : {}) };
+  return current ? { enabled: false, python: current } : null;
+}
+
 export function DataScienceSection({ project, onChange }: { project: Project; onChange: (project: Project) => void }) {
   const router = useRouter();
   const config = pluginBlock(project, "data-science") as DataScienceConfig | undefined;
@@ -138,7 +145,7 @@ export function DataScienceSection({ project, onChange }: { project: Project; on
             <Switch
               checked={enabled}
               disabled={saving}
-              onCheckedChange={(next: boolean) => void save(next ? { ...(config ?? {}), enabled: true, ...(current ? { python: current } : {}) } : current ? { enabled: false, python: current } : null)}
+              onCheckedChange={(next: boolean) => void save(dataScienceToggle(project, next))}
               aria-label="Enable data science for this project"
             />
           }
