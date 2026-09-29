@@ -26,7 +26,6 @@ export async function openMicrophone(
   } catch (cause) {
     if (!missing(cause)) throw cause;
   }
-  // Before the first grant the list names nothing: the default's grant names it, then look again.
   const fallback = await fallBack(media, choice);
   if (named) return fallback;
   const again = matchMicrophone(choice, await listInputs(media));
