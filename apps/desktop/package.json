@@ -79,6 +79,13 @@
         "to": "engine/node_modules"
       },
       {
+        "from": "../web/public/sounds",
+        "to": ".",
+        "filter": [
+          "*.wav"
+        ]
+      },
+      {
         "from": "assets",
         "to": "branding",
         "filter": [

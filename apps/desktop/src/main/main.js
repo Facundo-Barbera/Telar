@@ -9,6 +9,7 @@ const { startRunTerminalServer } = require("../terminal/run-terminal-server");
 const { publishTailscaleServe, serveEnv, unpublishTailscaleServe } = require("./tailscale");
 const { windowTargetUrl } = require("./window-target");
 const { createDesktopNotifier } = require("./desktop-notifications");
+const { createChime } = require("./notification-sound");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("../store/store-gate");
 const { createStoreGateWindow } = require("../store/store-gate-window");
@@ -145,7 +146,9 @@ function startServer(port, home) {
   return child;
 }
 
-const desktopNotifier = createDesktopNotifier({ Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath });
+const desktopNotifier = createDesktopNotifier({
+  Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath, chime: createChime({ bundled: app.isPackaged }),
+});
 const presence = createPresence({ send: engineNotices.send });
 
 function openNotificationPath(route) {
