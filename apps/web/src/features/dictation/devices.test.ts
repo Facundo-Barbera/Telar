@@ -5,6 +5,7 @@ import {
   audioInputs,
   connected,
   labelsWithheld,
+  matchMicrophone,
   microphoneOptions,
   microphoneSnapshot,
   microphoneStatus,
@@ -53,10 +54,9 @@ describe("what the browser hands over, turned into a list worth showing", () => 
   });
 });
 
-describe("the constraint degrades rather than failing", () => {
-  test("a choice rides as `ideal`, never `exact`", () => {
-    // `exact` throws OverconstrainedError when the device is absent; `ideal` falls back.
-    expect(audioConstraints({ deviceId: "abc123", label: "AirPods Pro" })).toEqual({ deviceId: { ideal: "abc123" } });
+describe("the constraint names one device", () => {
+  test("a choice rides as `exact`, so the browser cannot quietly open another", () => {
+    expect(audioConstraints({ deviceId: "abc123", label: "AirPods Pro" })).toEqual({ deviceId: { exact: "abc123" } });
   });
 
   test("and no choice is the plain `true` this hook always opened with", () => {
@@ -88,6 +88,15 @@ describe("a choice survives the device going away", () => {
     expect(microphoneStatus(gone, [])).toBeUndefined();
     // The option is still appended so the trigger has something to draw.
     expect(microphoneOptions(gone, []).at(-1)).toEqual({ value: "airpods", label: "AirPods Pro" });
+  });
+
+  test("a changed id is found again by its name, unless two inputs share it", () => {
+    const moved = { deviceId: "old-id", label: "MacBook Pro Microphone" };
+    expect(matchMicrophone(moved, inputs)).toEqual(inputs[0]);
+    expect(microphoneStatus(moved, inputs)).toBeUndefined();
+    const twins = [...inputs, { deviceId: "other", label: "MacBook Pro Microphone" }];
+    expect(matchMicrophone(moved, twins)).toBeUndefined();
+    expect(matchMicrophone({ deviceId: "old-id", label: "" }, [{ deviceId: "x", label: "" }])).toBeUndefined();
   });
 
   test("and a connected choice earns no word on the row at all", () => {

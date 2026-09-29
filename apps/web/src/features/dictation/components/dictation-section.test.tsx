@@ -401,6 +401,19 @@ describe("what the pane shows before anybody has chosen", () => {
     await unmount();
   });
 
+  test("a microphone whose id changed is found again by its name, and the new id is stored", async () => {
+    browser({ secure: true, inputs: [input("airpods", "AirPods Pro"), input("cam-2", "Studio Display Camera")] });
+    window.localStorage.setItem("telar:dictation-microphone:v1", JSON.stringify({ deviceId: "cam-old", label: "Studio Display Camera" }));
+    const { host, settled, unmount } = await pane(configured);
+    await settled(() => window.localStorage.getItem("telar:dictation-microphone:v1")?.includes("cam-2") === true);
+
+    expect(JSON.parse(window.localStorage.getItem("telar:dictation-microphone:v1") ?? "{}")).toEqual({ deviceId: "cam-2", label: "Studio Display Camera" });
+    expect(host.querySelector('[aria-label="Dictation microphone"]')?.textContent).toContain("Studio Display Camera");
+    expect(host.textContent).not.toContain("Not connected");
+
+    await unmount();
+  });
+
   test("before the first grant the list says why it is short instead of rendering blanks", async () => {
     // `enumerateDevices` reports one entry per input with an empty label until a
     // microphone has been allowed once.
