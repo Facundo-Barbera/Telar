@@ -56,14 +56,23 @@ describe("mobile push delivery", () => {
     expect(notification({ ...registration, enabled: false }, blocked, signalKey(working))).toBeUndefined();
   });
   test("the phone's chosen set names the bundled file; an app that sent no choice keeps the default sound", () => {
-    const failed = { ...working, activity: "idle", lastTurnEndedAt: 3000, lastTurnFailed: true };
     const sound = (patch: Partial<MobileRegistration>, session = blocked) => notification({ ...registration, ...patch }, session, signalKey(working))!.payload.aps.sound;
     expect(sound({ sounds: "armonico" })).toBe("telar-armonico-needs.caf");
-    expect(sound({ sounds: "felt" }, failed)).toBe("telar-felt-error.caf");
     expect(sound({})).toBe("default");
     const off = notification({ ...registration, sounds: "off" }, blocked, signalKey(working))!;
     expect(off.payload.aps.alert).toBeDefined();
     expect(off.payload.aps).not.toHaveProperty("sound");
+  });
+  test("on the phone only a request interrupts with a sound; a failure shows silently and a finish goes quietly to the notification centre", () => {
+    const ended = { ...working, activity: "idle", lastTurnEndedAt: 3000 };
+    const aps = (session: SessionSignal, patch: Partial<MobileRegistration> = {}) => notification({ ...registration, ...patch }, session, signalKey(working))!.payload.aps;
+    for (const patch of [{}, { sounds: "felt" as const }]) {
+      expect(aps(blocked, patch)).toMatchObject({ "interruption-level": "active", sound: expect.any(String) });
+      expect(aps({ ...ended, lastTurnFailed: true }, patch)).toMatchObject({ "interruption-level": "active" });
+      expect(aps({ ...ended, lastTurnFailed: true }, patch)).not.toHaveProperty("sound");
+      expect(aps(ended, patch)).toMatchObject({ "interruption-level": "passive" });
+      expect(aps(ended, patch)).not.toHaveProperty("sound");
+    }
   });
   test("a registration carries its sound choice, and refuses one it doesn't know", () => {
     expect(parseRegistration({ ...registration, sounds: "hilo" }).sounds).toBe("hilo");
