@@ -25,7 +25,6 @@ import { Switch } from "@/ui/switch";
 import { binaryKey, useProviderInstances, type UpdateReport } from "../hooks/use-provider-instances";
 import { announceProviderInstancesChanged } from "../provider-instance-cache";
 import { MasterDetail, Row, SettingsGroup, type MasterDetailItem } from "@/features/settings";
-import { useUsageProviderGroup } from "@/features/usage";
 
 const api = createEngineApi();
 
@@ -197,7 +196,6 @@ export function ProvidersSection() {
   const [added, setAdded] = useState<string>();
 
   const probeFor = (id: string) => probes.find((probe) => probe.instanceId === id);
-  const usage = useUsageProviderGroup();
 
   const items = (providers.unreachable ? [] : (instances ?? [])).map((instance): MasterDetailItem => {
     const probe = probeFor(instance.id);
@@ -251,38 +249,32 @@ export function ProvidersSection() {
       {updateReport && <UpdateReportCard report={updateReport} />}
 
       <MasterDetail
-        title="Providers"
-        description="Agent logins, and the hubs whose remaining quota Usage reads."
+        title="Logins"
+        description="Each row is one configured login."
         param="provider"
+        bounded
         {...(added ? { select: added } : {})}
-        groups={[
-          {
-            id: "agents",
-            title: "Agents",
-            items,
-            empty: providers.unreachable ? (
-              <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
-            ) : (
-              <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
-            ),
-            footer: (
-              <div className="flex flex-wrap items-center gap-2 py-3">
-                <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-                  <PlusIcon />
-                  Add a login
-                </Button>
-                <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
-                  <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
-                  Re-check
-                </Button>
-              </div>
-            ),
-          },
-          usage.group,
-        ]}
+        items={items}
+        empty={
+          providers.unreachable ? (
+            <Row label="The engine did not answer" hint="Start it with the launcher, using the same TELAR_HOME." control={<Badge variant="outline">Offline</Badge>} />
+          ) : (
+            <Row label="Loading" control={<Badge variant="outline">…</Badge>} />
+          )
+        }
+        footer={
+          <div className="flex flex-wrap items-center gap-2 py-3">
+            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              Add a login
+            </Button>
+            <Button size="sm" variant="ghost" disabled={rechecking} onClick={() => void providers.recheck()}>
+              <RotateCwIcon className={rechecking ? "animate-spin" : ""} />
+              Re-check
+            </Button>
+          </div>
+        }
       />
-
-      {usage.dialog}
       <AddInstanceDialog
         open={adding}
         onOpenChange={setAdding}

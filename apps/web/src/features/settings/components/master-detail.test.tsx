@@ -102,32 +102,15 @@ test("an item without an editor is listed but cannot be chosen", async () => {
   view.done();
 });
 
-const GROUPS = [
-  { id: "agents", title: "Agents", items: ITEMS.slice(0, 2), footer: <p>Add a login</p> },
-  { id: "usage", title: "Usage", items: [{ id: "usage:hub", label: "HUB", detail: <p>hub editor</p> }] },
-];
-
-test("groups draw their headers and footers, and the items stay in order", async () => {
-  const view = await mount(<MasterDetail title="Providers" param="provider" groups={GROUPS} />);
-  const groups = [...view.host.querySelectorAll('[role="group"]')];
-  expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["Agents", "Usage"]);
-  expect(groups[0]!.textContent).toContain("Add a login");
-  expect([...groups[1]!.querySelectorAll('[role="option"]')].map((option) => option.textContent)).toEqual(["HUB"]);
-  expect(view.shown()).toEqual(["alpha editor"]);
-  view.done();
-});
-
-test("up and down cross from one group into the next", async () => {
-  window.history.replaceState(null, "", "/settings?section=providers&provider=beta");
-  const view = await mount(<MasterDetail title="Providers" param="provider" groups={GROUPS} />);
-  view.option("beta").focus();
-  await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
-  expect(view.shown()).toEqual(["hub editor"]);
-  expect(document.activeElement).toBe(view.option("usage:hub"));
-  expect(new URLSearchParams(window.location.search).get("provider")).toBe("usage:hub");
-  await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true })));
-  expect(view.shown()).toEqual(["beta editor"]);
-  view.done();
+test("a bounded split scrolls its detail inside a capped height instead of growing the page", () => {
+  const markup = renderToStaticMarkup(<MasterDetail title="Logins" param="provider" items={ITEMS} bounded />);
+  const paneClass = (html: string) => /class="([^"]+)"/.exec(/<div[^>]*data-detail-pane[^>]*>/.exec(html)?.[0] ?? "")?.[1] ?? "";
+  const pane = paneClass(markup);
+  expect(pane).toContain("overflow-y-auto");
+  expect(pane).toMatch(/max-h-\[max\(20rem,70dvh\)\]/);
+  expect(markup).toContain("@min-[44rem]/master:h-[min(44rem,calc(100dvh-11rem))]");
+  const open = paneClass(renderToStaticMarkup(<MasterDetail title="Plugins" param="plugin" items={ITEMS} />));
+  expect(open).not.toContain("overflow-y-auto");
 });
 
 test("the split answers to its own named container, so a narrow settings pane stacks it", () => {

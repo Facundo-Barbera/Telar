@@ -16,14 +16,6 @@ export type MasterDetailItem = {
   detail?: ReactNode;
 };
 
-export type MasterDetailGroup = {
-  id: string;
-  title?: string;
-  items: readonly MasterDetailItem[];
-  empty?: ReactNode;
-  footer?: ReactNode;
-};
-
 function readParam(param: string): string | null {
   return new URLSearchParams(window.location.search).get(param);
 }
@@ -37,28 +29,26 @@ function writeParam(param: string, value: string) {
 export function MasterDetail({
   title,
   description,
-  items = [],
-  groups: grouped,
+  items,
   param,
   empty,
   footer,
   select,
+  bounded = false,
 }: {
   title: string;
   description?: ReactNode;
-  items?: readonly MasterDetailItem[];
-  groups?: readonly MasterDetailGroup[];
+  items: readonly MasterDetailItem[];
   param: string;
   empty?: ReactNode;
   footer?: ReactNode;
   select?: string;
+  bounded?: boolean;
 }) {
   const [chosen, setChosen] = useState<string>();
   const list = useRef<HTMLDivElement>(null);
   const pending = usePendingReveal();
-  const groups = grouped ?? [{ id: "all", items, empty, footer }];
-  const all = groups.flatMap((group) => group.items);
-  const withDetail = all.filter((item) => item.detail !== undefined);
+  const withDetail = items.filter((item) => item.detail !== undefined);
   const selected = withDetail.find((item) => item.id === chosen) ?? withDetail[0];
 
   useEffect(() => {
@@ -109,7 +99,7 @@ export function MasterDetail({
           role="option"
           aria-selected={on}
           data-master-item={item.id}
-          tabIndex={on || (!selected && item === all[0]) ? 0 : -1}
+          tabIndex={on || (!selected && item === items[0]) ? 0 : -1}
           disabled={item.detail === undefined}
           onClick={() => choose(item.id)}
           className={cn(
@@ -144,25 +134,33 @@ export function MasterDetail({
         <h4 className="font-heading text-xs-plus font-semibold tracking-tight text-foreground">{title}</h4>
         {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
       </div>
-      <div className={cn("grid gap-6", withDetail.length > 0 && "@min-[44rem]/master:grid-cols-[15rem_minmax(0,1fr)] @min-[44rem]/master:items-start")}>
-        <div className="overflow-hidden rounded-xl border border-border bg-card shadow-1 @min-[44rem]/master:sticky @min-[44rem]/master:top-0">
-          <div ref={list} role="listbox" aria-label={title} onKeyDown={onKeyDown}>
-            {groups.map((group) => (
-              <div key={group.id} role="group" {...(group.title ? { "aria-label": group.title } : {})} className="border-b border-border/60 last:border-b-0">
-                {group.title && (
-                  <div className="px-3 pt-3 pb-1 text-3xs font-medium tracking-wider text-muted-foreground/70 uppercase">{group.title}</div>
-                )}
-                <div className="divide-y divide-border/60">
-                  {group.items.length === 0 && <div className="px-4">{group.empty}</div>}
-                  {group.items.map((item) => renderItem(item))}
-                </div>
-                {group.footer && <div className="border-t border-border/60 px-4">{group.footer}</div>}
-              </div>
-            ))}
+      <div
+        className={cn(
+          "grid gap-6",
+          withDetail.length > 0 && "@min-[44rem]/master:grid-cols-[15rem_minmax(0,1fr)] @min-[44rem]/master:items-start",
+          bounded && withDetail.length > 0 && "@min-[44rem]/master:h-[min(44rem,calc(100dvh-11rem))] @min-[44rem]/master:min-h-[24rem] @min-[44rem]/master:items-stretch",
+        )}
+      >
+        <div
+          className={cn(
+            "flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-1",
+            bounded ? "@min-[44rem]/master:min-h-0" : "@min-[44rem]/master:sticky @min-[44rem]/master:top-0",
+          )}
+        >
+          <div ref={list} role="listbox" aria-label={title} onKeyDown={onKeyDown} className={cn("divide-y divide-border/60", bounded && "min-h-0 flex-1 overflow-y-auto")}>
+            {items.length === 0 && <div className="px-4">{empty}</div>}
+            {items.map((item) => renderItem(item))}
           </div>
+          {footer && <div className="shrink-0 border-t border-border/60 px-4">{footer}</div>}
         </div>
         {withDetail.length > 0 && (
-          <div className="min-w-0">
+          <div
+            data-detail-pane
+            className={cn(
+              "min-w-0",
+              bounded && "max-h-[max(20rem,70dvh)] overflow-y-auto overscroll-contain @min-[44rem]/master:max-h-none @min-[44rem]/master:min-h-0",
+            )}
+          >
             {withDetail.map((item) => (
               <div key={item.id} data-detail-for={item.id} hidden={item !== selected}>
                 {item.detail}

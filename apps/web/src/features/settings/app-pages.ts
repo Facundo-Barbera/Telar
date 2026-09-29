@@ -376,18 +376,16 @@ export const APP_PAGES: SettingsPageSpec[] = [
             keywords: ["account", "claude", "codex", "api key", "sign in", "auth", "provider"],
             icon: PlugIcon,
           },
+        ],
+      },
+      {
+        title: "Usage providers",
+        rows: [
           {
             navigateOnly: true,
             title: "Add hub",
             hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
             keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
-            icon: ServerIcon,
-          },
-          {
-            navigateOnly: true,
-            title: "Management API",
-            hint: "Where Telar reads a hub's remaining quota. Choose the hub under Usage to change or remove it.",
-            keywords: ["hub", "url", "management key", "remove hub", "cliproxy"],
             icon: ServerIcon,
           },
         ],
