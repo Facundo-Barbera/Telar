@@ -6,8 +6,6 @@ struct TableSurface: View {
     let path: String
     let active: Bool
 
-    static let page = 200
-
     @ScaledMetric(relativeTo: .caption) private var headerHeight: CGFloat = 34
     @ScaledMetric(relativeTo: .caption) private var rowHeight: CGFloat = 26
     @ScaledMetric(relativeTo: .caption) private var columnPerCharacter: CGFloat = 9
@@ -17,19 +15,16 @@ struct TableSurface: View {
 
     @ScaledMetric(relativeTo: .caption) private var columnFallback: CGFloat = 100
 
-    @State private var meta: TableWindow?
-    @State private var rows: [Int: [JSONValue]] = [:]
-    @State private var inflight: Set<Int> = []
+    @State private var windows: TableWindows?
     @State private var sort: (column: String, desc: Bool)?
-    @State private var error: String?
     @State private var viewport: CGSize = .zero
 
     var body: some View {
         VStack(spacing: 0) {
-            FileAddressRow(path: path, detail: meta.map { "\($0.total) rows × \($0.columns.count)\($0.truncated == true ? " · partial read" : "")" })
-            if let meta {
-                grid(meta)
-            } else if let error {
+            FileAddressRow(path: path, detail: windows?.meta.map { "\($0.total) rows × \($0.columns.count)\($0.truncated == true ? " · partial read" : "")" })
+            if let windows, let meta = windows.meta {
+                grid(meta, windows)
+            } else if let error = windows?.error {
                 ContentUnavailableView("Could not read this table", systemImage: "xmark.circle", description: Text(error))
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -38,7 +33,7 @@ struct TableSurface: View {
         .task(id: "\(path):\(active):\(sort?.column ?? ""):\(sort?.desc ?? false)") { await reset() }
     }
 
-    private func grid(_ meta: TableWindow) -> some View {
+    private func grid(_ meta: TableWindow, _ windows: TableWindows) -> some View {
         let widths = meta.columns.map { column -> CGFloat in
             max(columnMinimum, min(columnMaximum, CGFloat(column.count) * columnPerCharacter + columnPadding))
         }
@@ -46,8 +41,8 @@ struct TableSurface: View {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 Section {
                     ForEach(0..<meta.total, id: \.self) { index in
-                        row(index, widths: widths)
-                            .onAppear { ensure(index) }
+                        row(index, cells: windows.rows[index], widths: widths)
+                            .onAppear { windows.ensure(index) }
                     }
                 } header: {
                     HStack(spacing: 0) {
@@ -101,9 +96,9 @@ struct TableSurface: View {
         if on { Label(label, systemImage: "checkmark") } else { Text(label) }
     }
 
-    private func row(_ index: Int, widths: [CGFloat]) -> some View {
+    private func row(_ index: Int, cells: [JSONValue]?, widths: [CGFloat]) -> some View {
         HStack(spacing: 0) {
-            if let cells = rows[index] {
+            if let cells {
                 ForEach(Array(cells.enumerated()), id: \.offset) { i, cell in
                     cellText(cell)
                         .padding(.horizontal, 8)
@@ -140,30 +135,12 @@ struct TableSurface: View {
     }
 
     private func reset() async {
-        rows = [:]
-        inflight = []
-        meta = nil
-        error = nil
-        await fetch(offset: 0)
-    }
-
-    private func ensure(_ index: Int) {
-        let offset = (index / Self.page) * Self.page
-        guard rows[offset] == nil, !inflight.contains(offset) else { return }
-        Task { await fetch(offset: offset) }
-    }
-
-    private func fetch(offset: Int) async {
-        guard !inflight.contains(offset) else { return }
-        inflight.insert(offset)
-        defer { inflight.remove(offset) }
-        do {
-            let window = try await api.sessionTable(sessionId, path: path, offset: offset, limit: Self.page, sort: sort?.column, desc: sort?.desc ?? false)
-            if meta == nil { meta = window }
-            for (i, cells) in window.rows.enumerated() { rows[window.offset + i] = cells }
-        } catch {
-            if meta == nil { self.error = describe(error) }
+        let sort = sort
+        let fresh = TableWindows { [api, sessionId, path] offset in
+            try await api.sessionTable(sessionId, path: path, offset: offset, limit: TableWindows.page, sort: sort?.column, desc: sort?.desc ?? false)
         }
+        windows = fresh
+        await fresh.ensure(0)?.value
     }
 
     private func cycleSort(_ column: String) {

@@ -37,7 +37,13 @@ extension PluginsAPI {
         try await latex(id, method: "compile", body: .object(path.map { ["path": .string($0)] } ?? [:]))
     }
     func latexToolchain(_ id: EngineID) async throws -> LatexToolchain { try await latex(id, method: "toolchain", body: .object([:])) }
+    func latexLog(_ id: EngineID, tail: Int = 400) async throws -> [String] {
+        let answer: LatexLogLines = try await latex(id, method: "log", body: .object(["tail": .number(Double(tail))]))
+        return answer.lines
+    }
 }
+
+struct LatexLogLines: Decodable, Sendable { var lines: [String] }
 
 extension HTTPEngineAPI: PluginsAPI {
     func sessionTable(_ id: EngineID, path: String, offset: Int, limit: Int, sort: String?, desc: Bool) async throws -> TableWindow {
