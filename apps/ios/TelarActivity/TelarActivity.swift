@@ -10,22 +10,22 @@ struct TelarActivityBundle: WidgetBundle {
 struct SessionLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: SessionActivityAttributes.self) { context in
-            HStack(alignment: .top, spacing: 12) {
-                TelarLogo(size: 28)
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text("TELAR").font(.caption2.weight(.semibold))
-                        Spacer()
-                        Text(context.attributes.hostName).font(.caption2).lineLimit(1)
-                    }.foregroundStyle(.secondary)
-                    Text(context.state.title).font(.headline).lineLimit(2).privacySensitive()
-                    HStack {
-                        Text(context.isStale ? "Waiting for an update" : context.state.status).font(.subheadline).foregroundStyle(color(context.state))
-                        Spacer()
-                        if !context.state.ended && !context.isStale {
-                            Text(context.state.startedAt, style: .timer).font(.caption.monospacedDigit()).multilineTextAlignment(.trailing)
-                        }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    TelarLogo(size: 22)
+                    Text(context.attributes.hostName).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Spacer()
+                    Text(headline(context.state, stale: context.isStale)).font(.caption).foregroundStyle(color(context.state))
+                    if !context.state.ended && !context.isStale {
+                        Text(context.state.startedAt, style: .timer).font(.caption.monospacedDigit()).foregroundStyle(.secondary).frame(maxWidth: 52, alignment: .trailing)
                     }
+                }
+                if let rows = context.state.rows, !rows.isEmpty {
+                    ForEach(rows) { row in
+                        Link(destination: context.attributes.url(sessionId: row.id)) { RowView(row: row, color: statusColor(row.status)) }
+                    }
+                } else {
+                    Text(context.state.title).font(.headline).lineLimit(2).privacySensitive()
                 }
             }
             .padding(16)
@@ -36,38 +36,78 @@ struct SessionLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label { Text("Telar") } icon: { TelarLogo(size: 16) }.font(.caption).foregroundStyle(color(context.state))
+                    Label { Text(context.attributes.hostName).lineLimit(1) } icon: { TelarLogo(size: 16) }.font(.caption)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    if !context.state.ended && !context.isStale { Text(context.state.startedAt, style: .timer).font(.caption.monospacedDigit()) }
+                    Text(headline(context.state, stale: context.isStale)).font(.caption).foregroundStyle(color(context.state))
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text(context.state.title).font(.headline).lineLimit(1).privacySensitive()
-                        Text(context.isStale ? "Waiting for an update" : context.state.status).font(.caption).foregroundStyle(color(context.state))
+                        if let rows = context.state.rows, !rows.isEmpty {
+                            ForEach(rows.prefix(3)) { row in
+                                Link(destination: context.attributes.url(sessionId: row.id)) { RowView(row: row, color: statusColor(row.status), compact: true) }
+                            }
+                        } else {
+                            Text(context.state.title).font(.headline).lineLimit(1).privacySensitive()
+                        }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
             } compactLeading: {
                 TelarLogo(size: 20)
             } compactTrailing: {
                 if let count = context.state.activeCount, count > 1 { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(color(context.state)) }
-                else { Image(systemName: symbol(context.state, stale: context.isStale)).foregroundStyle(color(context.state)) }
+                else { Image(systemName: statusSymbol(context.state.status, ended: context.state.ended, stale: context.isStale)).foregroundStyle(color(context.state)) }
             } minimal: {
-                Image(systemName: symbol(context.state, stale: context.isStale)).foregroundStyle(color(context.state))
+                Image(systemName: statusSymbol(context.state.status, ended: context.state.ended, stale: context.isStale)).foregroundStyle(color(context.state))
             }
             .widgetURL(context.attributes.url(sessionId: context.state.sessionId))
             .keylineTint(color(context.state))
         }
     }
-    private func color(_ state: SessionActivityAttributes.ContentState) -> Color {
-        if state.status == "Needs you" { return .orange }
-        if state.status == "Failed" { return .red }
-        if state.ended { return .mint }
-        return .cyan
+
+    private func headline(_ state: SessionActivityAttributes.ContentState, stale: Bool) -> String {
+        if stale { return "Waiting for an update" }
+        if state.rows?.contains(where: \.needsYou) == true { return "Needs you" }
+        guard let count = state.activeCount, count > 0, state.rows != nil else { return state.status }
+        return "\(count) active"
     }
-    private func symbol(_ state: SessionActivityAttributes.ContentState, stale: Bool) -> String {
-        if stale { return "wifi.slash" }
-        if state.status == "Needs you" || state.status == "Failed" { return "exclamationmark" }
-        return state.ended ? "checkmark" : "ellipsis"
+    private func color(_ state: SessionActivityAttributes.ContentState) -> Color {
+        state.rows?.contains(where: \.needsYou) == true ? .orange : state.ended && state.status != "Failed" ? .mint : statusColor(state.status)
+    }
+}
+
+private func statusColor(_ status: String) -> Color {
+    switch status {
+    case "Needs you": .orange
+    case "Failed": .red
+    case "Done": .mint
+    case "Queued", "Background": .secondary
+    default: .cyan
+    }
+}
+
+private func statusSymbol(_ status: String, ended: Bool, stale: Bool) -> String {
+    if stale { return "wifi.slash" }
+    if status == "Needs you" || status == "Failed" { return "exclamationmark" }
+    return ended || status == "Done" ? "checkmark" : "ellipsis"
+}
+
+private struct RowView: View {
+    var row: SessionActivityRow
+    var color: Color
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: statusSymbol(row.status, ended: false, stale: false)).font(.caption2.weight(.bold)).foregroundStyle(color).frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.title ?? row.project ?? "Session").font(compact ? .caption : .subheadline).lineLimit(1).privacySensitive()
+                if !compact, row.title != nil, let project = row.project {
+                    Text(project).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer(minLength: 4)
+            Text(row.status).font(.caption2).foregroundStyle(color)
+        }
     }
 }

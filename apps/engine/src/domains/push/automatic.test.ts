@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { AUTOMATIC_ACTIVITY, CARD_LINGER_S, parseRegistration, saveRegistration, readPushRecords, type PushRecord, type Delivery } from "./push";
 import { deliverRecord } from "./worker";
+import { BARE_END_DISMISS_S } from "./card";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -53,7 +54,7 @@ test("a finished card is closed after it lingers, and only then may the next wor
   let r=(await deliverRecord({...record(),card},[],send,1000))!;
   r=(await deliverRecord(r,[],send,1000+CARD_LINGER_S-1))!;expect(sent).toHaveLength(1);
   r=(await deliverRecord(r,[],send,1000+CARD_LINGER_S))!;
-  expect(sent[1]!.payload.aps).toMatchObject({event:"end","dismissal-date":1000+CARD_LINGER_S});
+  expect(sent[1]!.payload.aps).toMatchObject({event:"end","dismissal-date":1000+CARD_LINGER_S+BARE_END_DISMISS_S});
   expect(r.card).toBeUndefined();
   await deliverRecord(r,[work],send,2000);
   expect(sent[2]!.payload.aps.event).toBe("start");

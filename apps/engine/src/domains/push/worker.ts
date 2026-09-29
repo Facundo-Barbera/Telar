@@ -1,16 +1,14 @@
-import type { EngineClient, LiveSessionRow, SessionAssignment } from "@telar/engine-client";
+import type { EngineClient, LiveSessionRow, Project, SessionAssignment } from "@telar/engine-client";
 import { needsRelayTest, relayTestDelivery, relayV2Delivery } from "./relay-v2";
 import { desktopAttached, macTookAlert, notifyDesktop } from "./desktop";
 import { collectReads, noteAlert, READ_SYNC_BATCH, readSyncDelivery, readSyncDue, readSyncWanted } from "./read-sync";
-import { ACTIVITY_REFRESH_S, CARD_LINGER_S, tokenFingerprint, automaticSessions, automaticActivityDelivery, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { ACTIVITY_REFRESH_S, CARD_LINGER_S, tokenFingerprint, isDeadToken, notification, pushAvailable, pushConfigured, readPushRecords, sendAPNs, signalKey, writePushRecords, type Delivery, type DeliveryResult, type PushRecord, type SessionSignal } from "./push";
+import { automaticActivityDelivery, automaticSessions, cardAlert, cardRows, type CardAlert } from "./card";
 
 const RETRY_FLOOR = 30;
 const RETRY_CEILING = 3600;
 export const PARK_AFTER_FAILURES = 20;
 
-function urgentActivity(delivery: Delivery, urgent: boolean): Delivery {
-  return urgent ? { ...delivery, urgent: true } : delivery;
-}
 export async function deliverRecord(
   record: PushRecord,
   sessions: SessionSignal[],
@@ -34,20 +32,36 @@ export async function deliverRecord(
     return result;
   };
   const next: PushRecord = { ...record, seen: { ...record.seen }, activitySent: { ...record.activitySent } };
+  const push = async (session: SessionSignal, payload: Delivery): Promise<"dead" | boolean> => {
+    const result = await safeSend(payload);
+    if (isDeadToken(result)) return "dead";
+    if (result.status !== 200) return false;
+    if (options.readSync) next.readSync = noteAlert(next.readSync ?? { alerted: [], pending: [] }, session.id);
+    return true;
+  };
+  const cardLive = record.liveActivities === true && record.card !== undefined;
+  const held: [SessionSignal, Delivery][] = [];
   for (const session of sessions) {
     if (options.changed && !options.changed.has(session.id) && session.id in record.seen) continue;
     const payload = notification(record, session, record.seen[session.id] ?? (record.baselined ? "new:0:0:false" : undefined));
     if (payload && !options.macTook?.(session)) {
-      const result = await safeSend(payload);
-      if (isDeadToken(result)) return undefined;
-      if (result.status !== 200) continue;
-      if (options.readSync) next.readSync = noteAlert(next.readSync ?? { alerted: [], pending: [] }, session.id);
+      if (cardLive && session.activity === "blocked" && payload.payload.request === undefined) held.push([session, payload]);
+      else {
+        const sent = await push(session, payload);
+        if (sent === "dead") return undefined;
+        if (!sent) continue;
+      }
     }
     next.seen[session.id] = signalKey(session);
   }
   const ids = new Set(sessions.map(s => s.id));
   for (const id of Object.keys(next.seen)) if (!ids.has(id)) delete next.seen[id];
-  await deliverCard(record, next, sessions, safeSend, now);
+  const alerted = await deliverCard(record, next, sessions, safeSend, now, held.length ? cardAlert(record, held.map(([s]) => s)) : undefined);
+  if (!alerted) for (const [session, payload] of held) {
+    const sent = await push(session, payload);
+    if (sent === "dead") return undefined;
+    if (!sent) next.seen[session.id] = record.seen[session.id] ?? "new:0:0:false";
+  }
   if (options.readSync && next.readSync) {
     next.readSync = collectReads(next.readSync, sessions);
     if (readSyncDue(next.readSync, now)) {
@@ -71,7 +85,7 @@ export async function deliverRecord(
   return next;
 }
 
-async function deliverCard(record: PushRecord, next: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<DeliveryResult>, now: number): Promise<void> {
+async function deliverCard(record: PushRecord, next: PushRecord, sessions: SessionSignal[], send: (delivery: Delivery) => Promise<DeliveryResult>, now: number, alert?: CardAlert): Promise<boolean> {
   const active = record.liveActivities ? automaticSessions(sessions) : [];
   const card = record.card;
   if (!active.length) next.automaticStartedAt = undefined;
@@ -81,21 +95,23 @@ async function deliverCard(record: PushRecord, next: PushRecord, sessions: Sessi
     if (result.status === 200) next.automaticStartedAt = now;
     if (isDeadToken(result)) next.pushToStartToken = undefined;
   }
-  if (!card) return;
+  if (!card) return false;
   if (active.length) { next.automaticStartedAt = card.startedAt; delete next.cardFinishedAt; }
-  const signal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)])]);
+  const signal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)]), cardRows(sessions, now, record.previews)]);
   const moved = signal !== record.automaticSignal;
   const close = !record.liveActivities || (!active.length && record.cardFinishedAt !== undefined && now - record.cardFinishedAt >= CARD_LINGER_S);
   const beat = active.length > 0 && now - (record.activitySent[card.token] ?? 0) >= ACTIVITY_REFRESH_S;
-  if (!close && !moved && !beat) return;
-  const result = await send(urgentActivity(automaticActivityDelivery(record, sessions, card.token, card.startedAt, now, close ? "end" : "update"), moved && active[0]?.activity === "blocked"));
+  if (!close && !moved && !beat && !alert) return false;
+  const result = await send(automaticActivityDelivery(record, sessions, card.token, card.startedAt, now, close ? "end" : "update", close ? undefined : alert));
   if (isDeadToken(result) || (result.status === 200 && close)) {
     delete next.card; delete next.cardFinishedAt;
     delete next.activitySent[card.token];
-  } else if (result.status === 200) {
-    next.activitySent[card.token] = now; next.automaticSignal = signal;
-    if (!active.length) next.cardFinishedAt = record.cardFinishedAt ?? now;
+    return false;
   }
+  if (result.status !== 200) return false;
+  next.activitySent[card.token] = now; next.automaticSignal = signal;
+  if (!active.length) next.cardFinishedAt = record.cardFinishedAt ?? now;
+  return alert !== undefined;
 }
 
 const POLL_INTERVAL = 10_000;
@@ -178,14 +194,16 @@ export async function markApprovable(
   }
 }
 
-export function signals(sessions: readonly LiveSessionRow[], assignments: Record<string, SessionAssignment[]> = {}): SessionSignal[] {
+export function signals(sessions: readonly LiveSessionRow[], assignments: Record<string, SessionAssignment[]> = {}, projects: readonly Project[] = []): SessionSignal[] {
   const delegating = new Set(Object.values(assignments).flat().filter(task => task.outcome === undefined).map(task => task.fromSessionId));
+  const names = new Map(projects.map(p => [p.id, p.name]));
   return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, lastTurnOrigin, startedFrom, projectId, lastTurnSequence, lastReadTurnSequence }) => ({
     id, title, activity,
     ...(startedFrom !== undefined || assignments[id]?.some(task => task.outcome !== "detached") ? { hasParent: true } : {}),
     ...(delegating.has(id) ? { delegating: true } : {}),
     ...(lastTurnOrigin === undefined ? {} : { lastTurnOrigin }),
     ...(projectId === undefined ? {} : { projectId }),
+    ...(projectId !== undefined && names.has(projectId) ? { project: names.get(projectId)! } : {}),
     ...(activityAt === undefined ? {} : { activityAt }),
     ...(lastTurnSequence === undefined ? {} : { lastTurnSequence }),
     ...(lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence }),
@@ -318,7 +336,7 @@ export function startMobilePushWorker(given?: PushWorkerDeps): void {
         if (!heartbeatDue(records, sessions, workerGlobal.telarMobilePushBeatAt, nowMs) && !reads.due) return;
         changed = new Set<string>();
       } else {
-        sessions = signals(answer.sessions, answer.assignments);
+        sessions = signals(answer.sessions, answer.assignments, answer.projects);
         if (answer.etag !== undefined) workerGlobal.telarMobilePushETag = answer.etag;
         changed = reconcile ? undefined : changedSessions(sessions, workerGlobal.telarMobilePushSnapshot);
         workerGlobal.telarMobilePushSnapshot = sessions;

@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ACTIVITY_REFRESH_S, ACTIVITY_STALE_S, isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type RelayCredential, type SessionSignal } from "./push";
+import { ACTIVITY_STALE_S } from "./card";
+import { ACTIVITY_REFRESH_S, isDeadToken, readPushRecords, saveRegistration, signalKey, writePushRecords, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type RelayCredential, type SessionSignal } from "./push";
 import { relayV2Delivery } from "./relay-v2";
 import { canReach, changedSessions, deliverRecord, heartbeatDue, heartbeatWanted, pauseHost, pushPausedUntil, PARK_AFTER_FAILURES, PARKED_TTL_MS, sendableRecords, stalePushRecords } from "./worker";
 

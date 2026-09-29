@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { passesOver, pollDelay } from "./worker";
-import { ACTIVITY_REFRESH_S, ACTIVITY_STALE_S } from "./push";
+import { ACTIVITY_REFRESH_S } from "./push";
+import { ACTIVITY_STALE_S } from "./card";
 
 describe("the cadence the feed buys (#586)", () => {
   test("WITHOUT the feed, ten minutes costs sixty wide passes", () => {
