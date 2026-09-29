@@ -49,6 +49,10 @@ Write each worker a self-contained brief. It will not see this conversation.
 - One \`worktree\` session per task: \`sessions_create\` with \`envMode:
   "worktree"\`, a title that says what it is, and the brief as \`task\`. One
   call creates it under you and assigns the work.
+- Pick each worker's \`model\` and \`effort\` for its task, not yours: search
+  or read, a Haiku; mechanical edits, a Sonnet at medium; review, a Sonnet at
+  high; design or debugging, your own model. \`sessions_capabilities\` lists
+  what is offered, and each result says what that run spent.
 - Then ONE \`sessions_subscribe({ sessionIds: [...] })\` for all of them, and
   END YOUR TURN. No per-session subscribes, no polling, no sleeping. You are
   woken once, when every worker has sent its result (or failed, was stopped
