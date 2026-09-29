@@ -8,8 +8,9 @@ import { matchRoute } from "../../platform/http/router";
 import {
   DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_DISMISS, DESKTOP_NOTICE, DESKTOP_PRESENCE, PRESENCE_STALE_MS,
   createDesktopStream, desktopAttached, desktopNotices, dismissDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
-  readNotifyOn, writeNotifyOn, type DesktopState, type Presence,
+  type DesktopState, type Presence,
 } from "./desktop";
+import { readNotifyOn, readSounds, soundFor, writeNotifyOn, writeSounds } from "./prefs";
 import { notification, signalKey, type Delivery, type DeliveryResult, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import { pushRoutes } from "./routes";
 import { deliverRecord } from "./worker";
@@ -302,6 +303,44 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
     const following = { ...phone, activities: [{ sessionId: "s1", token: "b".repeat(64), startedAt: 1 }] };
     await deliverRecord(following, [blocked], push.send, 11, { changed: moved, macTook: macTookAlert });
     expect(push.sent.map((d) => d.kind)).toEqual(["liveactivity"]);
+  });
+});
+
+describe("the sound a banner plays", () => {
+  const reset = () => {
+    g.telarDesktopNotify = { seen: { s1: signalKey(working) }, baselined: true, offered: {} };
+    g.telarDesktopPresence = { active: true, viewingPath: null, at: 10_000 };
+  };
+
+  test("each alert kind names its own sound in the chosen set", () => {
+    const heard = (session: SessionSignal) => {
+      reset();
+      const mac = recorder();
+      notifyDesktop([session], new Set(["s1"]), { channel: mac, notifyOn: "mac", sounds: "felt", now: 11_000 });
+      return (mac.sent[0] as { sound?: string }).sound;
+    };
+    expect([heard(blocked), heard(finished), heard(failed)]).toEqual(["telar-felt-needs", "telar-felt-done", "telar-felt-error"]);
+  });
+
+  test("Off sends a banner with no sound at all", () => {
+    reset();
+    const mac = recorder();
+    notifyDesktop([blocked], new Set(["s1"]), { channel: mac, notifyOn: "mac", sounds: "off", now: 11_000 });
+    expect(mac.sent).toHaveLength(1);
+    expect(mac.sent[0]).not.toHaveProperty("sound");
+    expect(soundFor("off", "failed")).toBeUndefined();
+  });
+
+  test("defaults to Hilo; a write reads back and nonsense reads as the default", () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "telar-sounds-"));
+    try {
+      const file = path.join(dir, "remote", "notification-sounds.json");
+      expect(readSounds(file)).toBe("hilo");
+      writeSounds("armonico", file);
+      expect(readSounds(file)).toBe("armonico");
+      writeFileSync(file, JSON.stringify({ sounds: "kazoo" }));
+      expect(readSounds(file)).toBe("hilo");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
 

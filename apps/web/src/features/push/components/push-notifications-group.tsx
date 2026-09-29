@@ -7,6 +7,7 @@ import { fmtAgo } from "@/ui/format";
 import type { ActivityReport, NotifyOn, PushRelayStatus } from "@telar/engine-client";
 import { pushNotifyOn, pushRelayStatus, setPushNotifyOn } from "../api";
 import { Dropdown, Row, SettingsGroup } from "@/features/settings";
+import { NotificationSoundsRow } from "./notification-sounds-row";
 
 export function relayHeadline(status: PushRelayStatus): { label: string; ok: boolean } {
   return status.configured ? { label: "Ready", ok: true } : { label: "Not ready", ok: false };
@@ -158,6 +159,7 @@ export function PushNotificationsGroup() {
           }
         />
       )}
+      <NotificationSoundsRow />
       {!status.configured && (
         <Row
           label="No phone can be reached yet"

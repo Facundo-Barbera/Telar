@@ -1,6 +1,7 @@
 import { EngineClientError, type EngineClient, type PushRelayStatus } from "@telar/engine-client";
 import { fail, ok, type Route } from "../../platform/http/route";
-import { desktopStream, handleDesktopMessage, isNotifyOn, readNotifyOn, writeNotifyOn } from "./desktop";
+import { desktopStream, handleDesktopMessage } from "./desktop";
+import { isNotificationSounds, isNotifyOn, readNotifyOn, readSounds, writeNotifyOn, writeSounds } from "./prefs";
 import { activityReport, parseRegistration, pushAvailable, pushConfigured, PushInputError, readPushRecords, saveRegistration } from "./push";
 import { clearedSessions, parseReadStateIds } from "./read-sync";
 import { pushPausedUntil, sendRelayTest, startMobilePushWorker } from "./worker";
@@ -116,6 +117,22 @@ export function pushRoutes(deps: PushRouteDeps): Route[] {
         if (!isNotifyOn(body.notifyOn)) return fail(400, "invalid_request", "notifyOn must be mac, iphone or both.");
         writeNotifyOn(body.notifyOn);
         return ok({ notifyOn: body.notifyOn });
+      },
+    },
+    {
+      method: "GET",
+      path: "/v2/push/sounds",
+      auth: "engine",
+      handle: () => ok({ sounds: readSounds() }),
+    },
+    {
+      method: "PUT",
+      path: "/v2/push/sounds",
+      auth: "engine",
+      handle({ body }) {
+        if (!isNotificationSounds(body.sounds)) return fail(400, "invalid_request", "sounds must be hilo, armonico, felt or off.");
+        writeSounds(body.sounds);
+        return ok({ sounds: body.sounds });
       },
     },
     {

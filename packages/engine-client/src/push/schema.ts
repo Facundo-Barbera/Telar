@@ -2,6 +2,10 @@ export type NotifyOn = "mac" | "iphone" | "both";
 export const NOTIFY_ON_VALUES: readonly NotifyOn[] = ["mac", "iphone", "both"];
 export const DEFAULT_NOTIFY_ON: NotifyOn = "mac";
 
+export type NotificationSounds = "hilo" | "armonico" | "felt" | "off";
+export const NOTIFICATION_SOUNDS_VALUES: readonly NotificationSounds[] = ["hilo", "armonico", "felt", "off"];
+export const DEFAULT_NOTIFICATION_SOUNDS: NotificationSounds = "hilo";
+
 export type ActivityReport = {
   card: boolean;
   blocker?: "off" | "no-start-token" | "gave-up";

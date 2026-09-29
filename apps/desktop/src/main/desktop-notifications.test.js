@@ -4,6 +4,7 @@ const {
   ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
   parseNotice, routeOf, shouldNotifyDesktop, createDesktopNotifier,
 } = require("./desktop-notifications");
+const { createChime } = require("./notification-sound");
 
 class FakeNotification {
   static made = [];
@@ -36,6 +37,7 @@ function harness(context = {}) {
     send: (message) => sent.push(message),
     context: () => context,
     open: (route) => opened.push(route),
+    chime: createChime({ bundled: true }),
   });
   return { notifier, sent, opened };
 }
@@ -129,7 +131,7 @@ describe("the banner and its actions", () => {
     notifier.handleServerMessage(notice());
     const [banner] = FakeNotification.made;
     expect(banner.shown).toBe(true);
-    expect(banner.options).toEqual({ title: "Fix the build", body: "A session needs your input or approval.", actions: [{ type: "button", text: "Open" }] });
+    expect(banner.options).toEqual({ title: "Fix the build", body: "A session needs your input or approval.", silent: true, actions: [{ type: "button", text: "Open" }] });
     banner.handlers.click();
     expect(opened).toEqual(["/projects/p1/sessions/s1"]);
     expect(sent).toEqual([]);
