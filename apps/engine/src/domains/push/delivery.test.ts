@@ -8,7 +8,7 @@ import { canReach, changedSessions, deliverRecord, heartbeatDue, heartbeatWanted
 
 const registration: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
-  enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
+  enabled: true, completions: true, previews: false, mutedSessions: [],
 };
 const working: SessionSignal = { id: "one", title: "A task", activity: "working", activityAt: 1000 };
 const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
@@ -165,21 +165,16 @@ describe("waking on what moved, not on a timer", () => {
     expect([...changedSessions([working], undefined)]).toEqual([working.id]);
   });
 
-  test("the heartbeat runs only for a registered Live Activity with live work, every two minutes", () => {
+  test("the heartbeat runs while the host card shows work, or waits to be closed, every two minutes", () => {
     const idle = record();
-    const withActivity = record({ liveActivities: true, activities: [{ sessionId: working.id, token: "d".repeat(64), startedAt: 1 }] });
+    const withCard = record({ liveActivities: true, card: { token: "d".repeat(64), startedAt: 1 } });
     expect(heartbeatDue([idle], [working], undefined, 120_000)).toBe(false);
-    expect(heartbeatDue([withActivity], [{ ...working, activity: "idle" }], undefined, 120_000)).toBe(false);
-    expect(heartbeatDue([withActivity], [working], undefined, 120_000)).toBe(true);
-    expect(heartbeatDue([withActivity], [working], 60_000, 120_000)).toBe(false);
-    expect(heartbeatDue([withActivity], [working], 0, 120_000)).toBe(true);
+    expect(heartbeatDue([withCard], [{ ...working, activity: "idle" }], undefined, 120_000)).toBe(false);
+    expect(heartbeatDue([withCard], [working], undefined, 120_000)).toBe(true);
+    expect(heartbeatDue([withCard], [working], 60_000, 120_000)).toBe(false);
+    expect(heartbeatDue([withCard], [working], 0, 120_000)).toBe(true);
+    expect(heartbeatWanted([{ ...withCard, cardFinishedAt: 1 }], [])).toBe(true);
     expect(ACTIVITY_REFRESH_S * 2).toBeLessThan(ACTIVITY_STALE_S);
-  });
-
-  test("a followed session's card is kept fresh with the automatic card switched off", () => {
-    const followedOnly = record({ liveActivities: false, activities: [{ sessionId: working.id, token: "d".repeat(64), startedAt: 1 }] });
-    expect(heartbeatWanted([followedOnly], [{ ...working, activity: "blocked" }])).toBe(true);
-    expect(heartbeatDue([followedOnly], [working], undefined, 120_000)).toBe(true);
   });
 });
 

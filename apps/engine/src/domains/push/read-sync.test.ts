@@ -6,7 +6,7 @@ import { deliverRecord, readSyncPass } from "./worker";
 
 const registration: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789ABC", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
-  enabled: true, completions: true, previews: true, mutedSessions: [], activities: [],
+  enabled: true, completions: true, previews: true, mutedSessions: [],
 };
 const working = (id: string): SessionSignal => ({ id, title: `Secret title ${id}`, activity: "working", activityAt: 1000, lastTurnSequence: 1, lastReadTurnSequence: 1 });
 const finished = (id: string): SessionSignal => ({ ...working(id), activity: "idle", lastTurnEndedAt: 2000, lastTurnSequence: 2 });

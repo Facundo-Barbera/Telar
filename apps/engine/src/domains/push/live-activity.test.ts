@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { ACTIVITY_STALE_S, AUTOMATIC_ACTIVITY, activityDelivery, automaticActivityDelivery, type MobileRegistration } from "./push";
+import { ACTIVITY_STALE_S, AUTOMATIC_ACTIVITY, CARD_LINGER_S, automaticActivityDelivery, type MobileRegistration } from "./push";
 import { v2Body } from "./relay-v2";
 
 const swift = readFileSync(new URL("../../../../ios/Shared/SessionActivityAttributes.swift", import.meta.url), "utf8");
@@ -15,7 +15,6 @@ const contentState = fields(stateBody), attributes = fields(attributesBody);
 const record: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc", hostName: "Studio", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
   enabled: true, completions: true, previews: false, mutedSessions: [], liveActivities: true, pushToStartToken: "b".repeat(64),
-  activities: [{ sessionId: "session_1", token: "c".repeat(64), startedAt: 1_800_000_000 }],
 };
 const now = 1_800_000_100.5;
 const working = { id: "session_1", title: "Deploy", activity: "working" };
@@ -32,18 +31,17 @@ test("the Swift type was read, so the checks below compare against something", (
   expect(attributes.all).toEqual(["hostId", "hostName", "sessionId"]);
 });
 
-describe("a followed session's card", () => {
-  test("is a liveactivity push to the bundle's liveactivity topic, named by its session", () => {
-    const delivery = activityDelivery(record, record.activities[0], working, now);
+describe("the host card", () => {
+  test("is a liveactivity push to the bundle's liveactivity topic", () => {
+    const delivery = automaticActivityDelivery(record, [working], "c".repeat(64), 1_800_000_000, now);
     expect(delivery.kind).toBe("liveactivity");
     expect(delivery.topic).toBe("io.github.novarix.telar.push-type.liveactivity");
     expect(delivery.token).toBe("c".repeat(64));
-    expect(delivery.activityId).toBe("session_1");
-    expect(activityDelivery({ ...record, topic: "io.github.novarix.telar.dev", sandbox: true }, record.activities[0], working, now).topic).toBe("io.github.novarix.telar.dev.push-type.liveactivity");
+    expect(automaticActivityDelivery({ ...record, topic: "io.github.novarix.telar.dev", sandbox: true }, [working], "c".repeat(64), 1, now).topic).toBe("io.github.novarix.telar.dev.push-type.liveactivity");
   });
 
   test("its content-state decodes as SessionActivityAttributes.ContentState, dates from 2001", () => {
-    const aps = activityDelivery(record, record.activities[0], working, now).payload.aps;
+    const aps = automaticActivityDelivery(record, [working], "c".repeat(64), 1_800_000_000, now).payload.aps;
     const state = aps["content-state"] as Record<string, unknown>;
     expectDecodable(state);
     expect(state.updatedAt).toBe(now - REFERENCE_EPOCH);
@@ -53,19 +51,21 @@ describe("a followed session's card", () => {
     expect(aps["stale-date"]).toBe(Math.floor(now + ACTIVITY_STALE_S));
   });
 
-  test("an idle or vanished session ends the card and schedules its dismissal", () => {
-    for (const session of [{ ...working, activity: "idle" }, undefined]) {
-      const aps = activityDelivery(record, record.activities[0], session, now).payload.aps;
-      expect(aps.event).toBe("end");
-      expect(aps["dismissal-date"]).toBeGreaterThan(Math.floor(now));
-      expectDecodable(aps["content-state"] as Record<string, unknown>);
-    }
+  test("finished work updates the card in place, and only an end dismisses it, at once", () => {
+    const finished = automaticActivityDelivery(record, [{ ...working, activity: "idle" }], "c".repeat(64), 1, now).payload.aps;
+    expect(finished.event).toBe("update");
+    expect(finished["content-state"]).toMatchObject({ status: "Finished", ended: true });
+    expect(finished).not.toHaveProperty("dismissal-date");
+    expect(finished["stale-date"]).toBe(Math.floor(now + ACTIVITY_STALE_S + CARD_LINGER_S));
+    const end = automaticActivityDelivery(record, [], "c".repeat(64), 1, now, "end").payload.aps;
+    expect(end["dismissal-date"]).toBe(Math.floor(now));
+    expectDecodable(end["content-state"] as Record<string, unknown>);
   });
 });
 
 describe("the automatic card", () => {
   test("a start carries everything push-to-start needs, decodable as the Swift type", () => {
-    const delivery = automaticActivityDelivery(record, [working], "b".repeat(64), now, now, true);
+    const delivery = automaticActivityDelivery(record, [working], "b".repeat(64), now, now, "start");
     const aps = delivery.payload.aps;
     expect(delivery.topic).toBe("io.github.novarix.telar.push-type.liveactivity");
     expect(aps.event).toBe("start");
@@ -86,7 +86,7 @@ describe("the automatic card", () => {
     expect(update.activityId).toBe(AUTOMATIC_ACTIVITY);
     expect(v2Body(update)).toMatchObject({ kind: "liveactivity", activity: AUTOMATIC_ACTIVITY });
     expectDecodable(update.payload.aps["content-state"] as Record<string, unknown>);
-    const end = automaticActivityDelivery(record, [], "e".repeat(64), now - 50, now);
+    const end = automaticActivityDelivery(record, [], "e".repeat(64), now - 50, now, "end");
     expect(end.payload.aps.event).toBe("end");
     expectDecodable(end.payload.aps["content-state"] as Record<string, unknown>);
     expect(JSON.parse(JSON.stringify(end.payload.aps["content-state"]))).not.toHaveProperty("sessionId");

@@ -54,7 +54,7 @@ describe("which transitions reach the Mac", () => {
   });
 
   test("agrees with the phone's rule, including the completions gate and the ungated failure", () => {
-    const phone: MobileRegistration = { hostId: "h", token: "t", topic: "io.github.novarix.telar", sandbox: false, enabled: true, completions: false, previews: true, mutedSessions: [], activities: [] };
+    const phone: MobileRegistration = { hostId: "h", token: "t", topic: "io.github.novarix.telar", sandbox: false, enabled: true, completions: false, previews: true, mutedSessions: [] };
     const { state } = pass(emptyDesktopState(), [working]);
     const prefs = { completions: false, previews: true };
     expect(desktopNotices(state, [finished], undefined, prefs).notices).toEqual([]);
@@ -225,7 +225,7 @@ describe("presence from the shell", () => {
 describe("the Mac takes an alert, and the phone's seen still advances", () => {
   const phone: PushRecord = {
     hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: false,
-    enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
+    enabled: true, completions: true, previews: false, mutedSessions: [],
     deviceId: "paired", revision: "r1", updatedAt: 1000, baselined: true, seen: { s1: signalKey(working) }, activitySent: {},
   };
   const reset = (presence?: Presence) => {
@@ -296,11 +296,11 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
     expect(push.sent).toHaveLength(1);
   });
 
-  test("Live Activities are not arbitrated: a followed session's card is still refreshed", async () => {
+  test("Live Activities are not arbitrated: the host card is still refreshed", async () => {
     reset({ active: true, viewingPath: null, at: 10_000 });
     notifyDesktop([blocked], moved, { channel: recorder(), notifyOn: "mac", now: 11_000 });
     const push = phoneSends();
-    const following = { ...phone, activities: [{ sessionId: "s1", token: "b".repeat(64), startedAt: 1 }] };
+    const following = { ...phone, liveActivities: true, card: { token: "b".repeat(64), startedAt: 1 } };
     await deliverRecord(following, [blocked], push.send, 11, { changed: moved, macTook: macTookAlert });
     expect(push.sent.map((d) => d.kind)).toEqual(["liveactivity"]);
   });

@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ALERT_BODY, activityDelivery, legacyPushFile, notification, parseRegistration, pushFile, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import { ALERT_BODY, legacyPushFile, notification, parseRegistration, pushFile, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
 import type { LiveSessionRow, SessionAssignment } from "@telar/engine-client";
 import { desktopNotices, emptyDesktopState } from "./desktop";
 import { deliverRecord, signals } from "./worker";
 
 const registration: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: true,
-  enabled: true, completions: true, previews: false, mutedSessions: [], activities: [],
+  enabled: true, completions: true, previews: false, mutedSessions: [],
 };
 const working: SessionSignal = { id: "session/a?b", title: "Private repository task", activity: "working", activityAt: 1000 };
 const blocked: SessionSignal = { ...working, activity: "blocked", activityAt: 2000 };
@@ -21,6 +21,12 @@ describe("mobile push delivery", () => {
     for (const patch of [{ topic: "com.someone.else" }, { token: "not-a-token" }, { hostId: "wrong" }, { enabled: "yes" }, { activities: Array(9).fill({}) }]) {
       expect(() => parseRegistration({ ...registration, ...patch })).toThrow();
     }
+  });
+  test("a registration keeps only the host card, never a session's own card", () => {
+    const card = { sessionId: "__automatic__", token: "c".repeat(64), startedAt: 5 };
+    const session = { sessionId: "session_1", token: "d".repeat(64), startedAt: 6 };
+    expect(parseRegistration({ ...registration, activities: [session, card] }).card).toEqual({ token: card.token, startedAt: 5 });
+    expect(parseRegistration({ ...registration, activities: [session] })).not.toHaveProperty("card");
   });
   test("still accepts the pre-#1042 app's topics, so phones paired with it keep working", () => {
     for (const topic of ["com.telar.mobile", "com.telar.mobile.dev", "io.github.novarix.telar.dev"]) {
@@ -77,26 +83,6 @@ describe("mobile push delivery", () => {
     await deliverRecord(sent!, [blocked], async () => { count++; return { status: 200 }; });
     expect(count).toBe(0);
     expect(await deliverRecord(initial, [blocked], async()=>({status:410}))).toBeUndefined();
-  });
-  test("Live Activity uses the widget contract, separate topic and ends on completion", async () => {
-    const follow = { sessionId: working.id, token: "b".repeat(64), startedAt: 1800000000 };
-    const r = { ...record(), activities: [follow] };
-    const payload = activityDelivery(r, follow, working, 1800000060);
-    expect(payload.topic).toBe("io.github.novarix.telar.push-type.liveactivity");
-    expect(payload.payload.aps.event).toBe("update");
-    expect(payload.payload.aps["content-state"]).toMatchObject({ title: "Telar session", updatedAt: 821692860, ended: false });
-    expect(activityDelivery(r, follow, undefined, 1800000060).payload.aps.event).toBe("end");
-    const ended = await deliverRecord(r, [{ ...working, activity: "idle" }], async()=>({status:200}), 1800000060);
-    expect(ended?.activities).toEqual([]);
-  });
-  test("a turn that ended into waiting or a schedule is finished; background work is named as such", async () => {
-    const follow = { sessionId: working.id, token: "b".repeat(64), startedAt: 1800000000 };
-    const r = { ...record(), activities: [follow] };
-    for (const activity of ["waiting", "scheduled"] as const) {
-      expect(activityDelivery(r, follow, { ...working, activity }, 1800000060).payload.aps.event).toBe("end");
-      expect((await deliverRecord(r, [{ ...working, activity }], async()=>({status:200}), 1800000060))?.activities).toEqual([]);
-    }
-    expect(activityDelivery(r, follow, { ...working, activity: "monitoring" }, 1800000060).payload.aps["content-state"]).toMatchObject({ status: "Background", ended: false });
   });
   test("registrations are device scoped, private on disk, and preserve checkpoints", () => {
     const folder = mkdtempSync(path.join(os.tmpdir(), "telar-push-")); const file = path.join(folder, "push.json");
