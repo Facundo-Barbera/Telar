@@ -4,7 +4,6 @@ const {
   ACTIVE_IDLE_SECONDS, PRESENCE_BEAT_MS, presenceMessage, createPresenceReporter,
   parseNotice, routeOf, shouldNotifyDesktop, createDesktopNotifier,
 } = require("./desktop-notifications");
-const { createChime } = require("./notification-sound");
 
 class FakeNotification {
   static made = [];
@@ -37,7 +36,7 @@ function harness(context = {}) {
     send: (message) => sent.push(message),
     context: () => context,
     open: (route) => opened.push(route),
-    chime: createChime({ bundled: true }),
+    chime() {},
   });
   return { notifier, sent, opened };
 }
