@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { activityDelivery, legacyPushFile, notification, parseRegistration, pushFile, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
-import { deliverRecord } from "./worker";
+import { ALERT_BODY, activityDelivery, legacyPushFile, notification, parseRegistration, pushFile, readPushRecords, saveRegistration, signalKey, type MobileRegistration, type PushRecord, type SessionSignal } from "./push";
+import type { LiveSessionRow, SessionAssignment } from "@telar/engine-client";
+import { desktopNotices, emptyDesktopState } from "./desktop";
+import { deliverRecord, signals } from "./worker";
 
 const registration: MobileRegistration = {
   hostId: "12345678-1234-1234-1234-123456789abc", token: "a".repeat(64), topic: "io.github.novarix.telar", sandbox: true,
@@ -129,5 +131,47 @@ describe("mobile push delivery", () => {
       else process.env.TELAR_HOME = previous.home;
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe("an alert goes to the person only for what is theirs", () => {
+  const ended = (patch: Partial<SessionSignal>): SessionSignal => ({ ...working, activity: "idle", activityAt: 3000, lastTurnEndedAt: 3000, ...patch });
+  const alerted = (session: SessionSignal) => notification(registration, session, signalKey(working))?.payload.aps.alert;
+  const row = (patch: Partial<LiveSessionRow>) => ({ id: "child", title: "Builder", activity: "idle", activityAt: 3000, lastTurnEndedAt: 3000, ...patch }) as LiveSessionRow;
+  const task = (outcome?: SessionAssignment["outcome"]) => ({ taskRunId: "run_task", fromSessionId: "orchestrator", ...(outcome ? { outcome } : {}) }) as SessionAssignment;
+
+  test("a turn the person or a schedule started alerts when it finishes or fails", () => {
+    expect(alerted(ended({}))).toMatchObject({ body: ALERT_BODY.finished });
+    expect(alerted(ended({ lastTurnOrigin: "user", lastTurnFailed: true }))).toMatchObject({ body: ALERT_BODY.failed });
+    expect(alerted(ended({ lastTurnOrigin: "schedule" }))).toMatchObject({ body: ALERT_BODY.finished });
+  });
+
+  test("an orchestrator turn a wake, a worker's message or the provider started ends silently", () => {
+    for (const lastTurnOrigin of ["session", "provider"] as const) {
+      expect(alerted(ended({ lastTurnOrigin }))).toBeUndefined();
+      expect(alerted(ended({ lastTurnOrigin, lastTurnFailed: true }))).toBeUndefined();
+    }
+  });
+
+  test("a sub-session's finish or failure goes to its orchestrator, not the phone or the Mac", () => {
+    const [started, tasked] = signals([row({ startedFrom: { sessionId: "orchestrator" } }), row({ id: "tasked" })], { tasked: [task()] });
+    for (const child of [started, tasked]) {
+      expect(alerted({ ...child, lastTurnOrigin: "user" })).toBeUndefined();
+      expect(alerted({ ...child, lastTurnFailed: true })).toBeUndefined();
+    }
+    const seen = { seen: { child: signalKey(working) }, baselined: true, offered: {} };
+    expect(desktopNotices(seen, [started], undefined).notices).toEqual([]);
+  });
+
+  test("a session the person took back from its orchestrator alerts again", () => {
+    const [detached] = signals([row({})], { child: [task("detached")] });
+    expect(detached.hasParent).toBeUndefined();
+    expect(alerted(detached)).toMatchObject({ body: ALERT_BODY.finished });
+  });
+
+  test("a request parked for a person alerts from any session, sub-sessions included", () => {
+    const [child] = signals([row({ activity: "blocked", startedFrom: { sessionId: "orchestrator" } })]);
+    expect(alerted({ ...child, lastTurnOrigin: "session" })).toMatchObject({ body: ALERT_BODY.blocked });
+    expect(desktopNotices({ ...emptyDesktopState(), baselined: true }, [child], undefined).notices.map(n => n.kind)).toEqual(["blocked"]);
   });
 });
