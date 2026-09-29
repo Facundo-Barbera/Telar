@@ -18,6 +18,35 @@ struct AutomaticActivityTests {
         #expect(state.activeCount == nil)
     }
 
+    @Test func theCardDecodesItsSessionRows() throws {
+        let data = Data(#"{"title":"2 active sessions","status":"Needs you","updatedAt":800000000,"startedAt":799999900,"ended":false,"sessionId":"a","activeCount":2,"rows":[{"id":"a","status":"Needs you","title":"Fix login","project":"web"},{"id":"b","status":"Done","project":"api"}]}"#.utf8)
+        let state = try JSONDecoder().decode(SessionActivityAttributes.ContentState.self, from: data)
+        let rows = try #require(state.rows)
+        #expect(rows.map(\.id) == ["a", "b"])
+        #expect(rows[0].needsYou && rows[0].title == "Fix login")
+        #expect(rows[1].over && rows[1].title == nil && rows[1].project == "api")
+    }
+
+    @Test func thePhoneMapsSessionsToRowsInTheEnginesOrder() throws {
+        func session(_ id: String, _ activity: String, at: Int, title: String? = nil) throws -> Session {
+            try JSONDecoder().decode(Session.self, from: Data("""
+            {"id":"\(id)","title":"\(title ?? "Title \(id)")","createdAt":1,"updatedAt":1,"activity":"\(activity)","activityAt":\(at),
+             "driver":"claude","workspace":{"mode":"worktree","path":"/tmp/x"}}
+            """.utf8))
+        }
+        let sessions = [try session("q", "queued", at: 9), try session("w1", "working", at: 1), try session("w2", "working", at: 5),
+                        try session("b", "blocked", at: 1), try session("m", "monitoring", at: 9), try session("i", "idle", at: 9)]
+        let carried = [SessionActivityRow(id: "w1", status: "Working", project: "web"), SessionActivityRow(id: "old", status: "Failed")]
+        let rows = AutomaticCard.rows(sessions, previews: true, carried: carried)
+        #expect(rows.map(\.id) == ["b", "w2", "w1", "q"])
+        #expect(rows.map(\.status) == ["Needs you", "Working", "Working", "Queued"])
+        #expect(rows[2].project == "web")
+        #expect(AutomaticCard.rows([try session("w", "working", at: 1)], previews: true, carried: carried).map(\.id) == ["w", "old"])
+        #expect(AutomaticCard.rows(sessions, previews: false).allSatisfy { $0.title == nil })
+        let long = AutomaticCard.rows([try session("l", "working", at: 1, title: String(repeating: "x", count: 80))], previews: true)
+        #expect(long[0].title?.count == 60 && long[0].title?.hasSuffix("…") == true)
+    }
+
     @Test func thePhoneStartsACardOnlyForAWorkingMacWithoutOneThatCannotPushIt() {
         let (a, b, c, d) = (UUID(), UUID(), UUID(), UUID())
         #expect(AutomaticCard.hostsToStart(enabled: true, working: [a, b, c, d], carded: [b], dismissed: [c], engineStarts: [d]) == [a])

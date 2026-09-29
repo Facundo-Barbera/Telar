@@ -288,7 +288,7 @@ struct PushStatus: Decodable {
             Task { await activity.update(ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale))) }
         }
     }
-    static let activityStale: TimeInterval = 300
+    static let activityStale: TimeInterval = 600
     func removeHost(_ host: HostID, api: HTTPEngineAPI?) async {
         if let token, let api {
             #if DEBUG

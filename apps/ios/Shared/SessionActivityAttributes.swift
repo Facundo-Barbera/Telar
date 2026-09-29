@@ -1,6 +1,22 @@
 import ActivityKit
 import Foundation
 
+struct SessionActivityRow: Codable, Hashable, Identifiable {
+    var id: String
+    var status: String
+    var title: String? = nil
+    var project: String? = nil
+
+    var needsYou: Bool { status == "Needs you" }
+    var over: Bool { status == "Done" || status == "Failed" }
+
+    static func clip(_ text: String, _ max: Int) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > max else { return trimmed }
+        return String(trimmed.prefix(max - 1)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+}
+
 struct SessionActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var title: String
@@ -10,6 +26,7 @@ struct SessionActivityAttributes: ActivityAttributes {
         var ended: Bool
         var sessionId: String? = nil
         var activeCount: Int? = nil
+        var rows: [SessionActivityRow]? = nil
     }
     var hostId: String
     var sessionId: String

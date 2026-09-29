@@ -31,25 +31,32 @@ enum AutomaticCard {
         dismissed.intersection(working)
     }
 
-    static func initialState(_ sessions: [Session], previews: Bool, now: Date) -> SessionActivityAttributes.ContentState {
-        let rank: [SessionActivity: Int] = [.blocked: 0, .working: 1, .queued: 2, .monitoring: 3]
+    static let maxRows = 4
+    private static let rank: [SessionActivity: Int] = [.blocked: 0, .working: 1, .queued: 2, .monitoring: 3]
+    private static let status: [SessionActivity: String] = [.blocked: "Needs you", .working: "Working", .queued: "Queued", .monitoring: "Background"]
+
+    static func rows(_ sessions: [Session], previews: Bool, carried: [SessionActivityRow] = []) -> [SessionActivityRow] {
         let active = sessions.filter { rank[$0.activity] != nil }
-            .sorted { (rank[$0.activity]!, $0.id) < (rank[$1.activity]!, $1.id) }
-        let focus = active.first
-        let title = previews && active.count == 1 ? focus!.title : active.count > 1 ? "\(active.count) active sessions" : "Telar work"
-        let status = switch focus?.activity {
-        case .blocked: "Needs you"
-        case .queued: "Queued"
-        case .monitoring: "Background"
-        default: "Working"
-        }
-        return .init(title: title, status: status, updatedAt: now, startedAt: now, ended: false, sessionId: focus?.id, activeCount: active.count)
+            .sorted { (rank[$0.activity]!, -($0.activityAt ?? 0), $0.id) < (rank[$1.activity]!, -($1.activityAt ?? 0), $1.id) }
+        let projects = Dictionary(carried.map { ($0.id, $0.project) }, uniquingKeysWith: { first, _ in first })
+        let live = active.map { SessionActivityRow(id: $0.id, status: status[$0.activity]!, title: previews ? SessionActivityRow.clip($0.title, 60) : nil, project: projects[$0.id] ?? nil) }
+        let ids = Set(active.map(\.id))
+        return Array((live + carried.filter { $0.over && !ids.contains($0.id) }).prefix(maxRows))
+    }
+
+    static func initialState(_ sessions: [Session], previews: Bool, now: Date, carried: [SessionActivityRow] = []) -> SessionActivityAttributes.ContentState {
+        let shown = rows(sessions, previews: previews, carried: carried)
+        let active = shown.filter { !$0.over }
+        let count = sessions.filter { rank[$0.activity] != nil }.count
+        let title = previews && count == 1 ? sessions.first { $0.id == active.first?.id }.map { SessionActivityRow.clip($0.title, 160) } ?? "Telar work" : count > 1 ? "\(count) active sessions" : "Telar work"
+        return .init(title: title, status: active.first?.status ?? "Working", updatedAt: now, startedAt: now, ended: false,
+                     sessionId: shown.first?.id, activeCount: count, rows: shown)
     }
 
     static func refreshed(_ current: SessionActivityAttributes.ContentState, _ sessions: [Session], previews: Bool, now: Date) -> SessionActivityAttributes.ContentState? {
-        var next = initialState(sessions, previews: previews, now: now)
+        var next = initialState(sessions, previews: previews, now: now, carried: current.rows ?? [])
         next.startedAt = current.startedAt
-        let same = (next.title, next.status, next.sessionId, next.activeCount) == (current.title, current.status, current.sessionId, current.activeCount)
+        let same = (next.title, next.status, next.sessionId, next.activeCount, next.rows) == (current.title, current.status, current.sessionId, current.activeCount, current.rows)
         return same ? nil : next
     }
 }
