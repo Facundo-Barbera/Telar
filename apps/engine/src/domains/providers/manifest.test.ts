@@ -6,6 +6,7 @@ import {
   claudeEffortFor,
   claudeFixedWindowOf,
   claudeProfileOf,
+  claudeTierOf,
   claudeWindowTokensOf,
   longDefaultOf,
   type ModelManifest,
@@ -180,10 +181,19 @@ test("the bundled manifest is well-formed: every model has a profile, the defaul
   const seen = new Set<string>();
   for (const model of claude.models) {
     expect(claude.profiles[model.profile], model.slug).toBeDefined();
+    expect([1, 2, 3, 4], model.slug).toContain(model.tier!);
     for (const alias of [model.slug, ...(model.aliases ?? [])]) {
       expect(seen.has(alias), alias).toBe(false);
       seen.add(alias);
     }
   }
   expect(claude.models.some((model) => model.slug === claude.defaults?.chat)).toBe(true);
+});
+
+test("a model's cost tier is found by any of its spellings, and an unknown model has none", () => {
+  expect(claudeTierOf("haiku")).toBe(1);
+  expect(claudeTierOf("claude-sonnet-5[1m]")).toBe(2);
+  expect(claudeTierOf("claude-opus-5-5")).toBe(3);
+  expect(claudeTierOf("claude-fable-5-1[1m]")).toBe(4);
+  expect(claudeTierOf("claude-mystery-9")).toBeUndefined();
 });
