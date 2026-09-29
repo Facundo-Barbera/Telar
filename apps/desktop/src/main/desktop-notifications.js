@@ -73,7 +73,7 @@ function createDesktopNotifier({ Notification, send, context, open, chime }) {
     const banner = new Notification({
       title: notice.title,
       body: notice.body,
-      ...chime.options(notice.sound),
+      silent: true,
       actions: approvable ? [{ type: "button", text: "Approve" }, { type: "button", text: "Open" }] : [{ type: "button", text: "Open" }],
     });
     const forget = () => {
@@ -92,9 +92,9 @@ function createDesktopNotifier({ Notification, send, context, open, chime }) {
       } else open(notice.path);
     });
     banner.on("close", forget);
+    banner.on("show", () => chime(notice.sound));
     live.set(notice.sessionId, banner);
     banner.show();
-    chime.shown(notice.sound);
   }
 
   return {
