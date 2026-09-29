@@ -2,6 +2,7 @@ import { z } from "zod";
 import { McpServer } from "../agent-tools/schema";
 import { ProviderInstance } from "../providers/schema";
 import {
+  AgentModelChoice,
   BrowserProvider,
   BrowserTab,
   Id,
@@ -121,6 +122,7 @@ export const AgentTurnInput = z.object({
   input: z.string().min(1),
   attachments: z.array(Id).optional(),
   corrects: Id.optional(),
+  model: AgentModelChoice.optional(),
   proof: z.object({ sessionId: Id, runId: Id, claimToken: z.string().min(16) }).optional(),
 });
 export type AgentTurnInput = z.infer<typeof AgentTurnInput>;

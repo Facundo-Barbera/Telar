@@ -7,17 +7,18 @@ import fs from "node:fs";
 import {
   type ProviderDriverKind,
   type RequestKind,
+  type SessionCapabilities,
 } from "@telar/engine-client";
 import { ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { Kernel } from "./platform/kernel";
 import { SettingsStore } from "./domains/settings";
 import { AppearanceStore } from "./domains/appearance";
 import { McpOAuthStore, McpServers } from "./domains/agent-tools";
-import { installedCli, ModelCatalogues, ProviderRegistry, type InstalledCli } from "./domains/providers";
+import { chosenModel, installedCli, ModelCatalogues, ProviderRegistry, sessionCapabilities, turnModelChoice, type InstalledCli } from "./domains/providers";
 import { DataScienceOps, LatexOps, PluginToolchains } from "./domains/plugins";
 import { UsageLimitSources } from "./domains/usage";
 import { SessionQueries, LiveSessions, SessionSettler, createSessionModules, SessionAttachments, workspaceRootOf, OpenPrefixes, SessionActivity, sessionDir, SessionIndex, SessionItems, SessionMailbox, sessionMetadataFile, SessionQueues, SessionRecords, SessionRequests, SessionLifecycle, SessionSubscriptions, SessionTasks, storedSession, RequestGate } from "./domains/sessions";
-import { requireRunningClaimFromQueue, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, RequestPath } from "./domains/turns";
+import { requireRunningClaimFromQueue, runSpendOf, TurnAnchors, WorkerChannel, TurnWakes, TurnRecovery, TurnClaims, TurnIngest, type StoppedClaim, TurnLifecycle, TurnIntake, RequestPath } from "./domains/turns";
 import { Dictation } from "./domains/dictation";
 import { type ResolvedComputerUse } from "./domains/computer-use";
 import { WorkspaceFiles } from "./domains/files";
@@ -403,6 +404,20 @@ export class EngineStore {
     return { sessionPulls, sessionTerminals, requestGate, pluginDoors, anchors, schedules };
   }
 
+  sessionCapabilities(caller?: string): SessionCapabilities {
+    return sessionCapabilities({
+      instances: () => this.providers.list(),
+      rows: (driver) => this.catalogues.cachedRows(driver),
+      defaultModel: (instanceId, driver) =>
+        driver === "claude"
+          ? this.catalogues.defaultClaudeModelId(instanceId)
+          : (this.catalogues.overlay(instanceId).default ?? this.catalogues.cachedRows(driver)?.find((row) => row.isDefault)?.id),
+      sessionDefaults: () => this.settings.sessionDefaults(),
+      session: (id) => this.records.get(id),
+      project: (id) => { try { return this.projectRegistry.get(id); } catch { return undefined; } },
+    }, caller);
+  }
+
   /**
    * THE PROJECT'S `setup.command`, IN THE BACKGROUND — never inside the
    * per-project queue, which would hold every other cut for as long as an
@@ -437,6 +452,7 @@ export class EngineStore {
       sessionDefaults: () => this.settings.sessionDefaults(),
       requireInstance: (instanceId) => this.providers.require(instanceId),
       cachedModels: (driver) => this.catalogues.cachedRows(driver),
+      chooseModel: (driver, instanceId, choice) => chosenModel(driver, instanceId, choice, this.catalogues.cachedRows(driver)),
       readQueue: (sessionId) => this.sessionQueues.read(sessionId),
       writeQueue: (sessionId, queue) => this.sessionQueues.write(sessionId, queue),
       appendEvent: (sessionId, event, runId) => this.kernel.appendEvent(sessionId, event, runId),
@@ -605,7 +621,15 @@ export class EngineStore {
       waitingSubscription: (subscriber, target) =>
         this.subscriptions.readSubscriptions().some((sub) => sub.subscriberSessionId === subscriber && sub.targetSessionId === target && sub.events.includes("turn_completed")),
       cohortHolds: (id, sender) => this.subscriptions.cohortHolds(id, sender),
-      recordCohortMessage: (id, sender, intent, runId, text) => this.subscriptions.recordCohortMessage(id, sender, intent, runId, text),
+      recordCohortMessage: (id, sender, intent, runId, text, spent) => this.subscriptions.recordCohortMessage(id, sender, intent, runId, text, spent),
+      agentTurnModel: (id, choice) => {
+        const session = this.records.get(id);
+        return turnModelChoice(session, choice, this.catalogues.cachedRows(session.driver));
+      },
+      runSpend: (id, runId) => runSpendOf(this.records.get(id), this.sessionQueues.read(id).turns.find((turn) => turn.runId === runId), {
+        tokens: this.kernel.executionStore.runTokens(id, runId),
+        defaultModel: (instanceId) => this.catalogues.defaultClaudeModelId(instanceId),
+      }),
     });
   }
 

@@ -51,6 +51,7 @@ export type WorkerClient = Pick<
   | "createSession"
   | "submitAgentTurn"
   | "events"
+  | "sessionCapabilities"
   | "session"
   | "stopSession"
   | "sessionDiff"

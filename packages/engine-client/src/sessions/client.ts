@@ -1,4 +1,4 @@
-import type { ModelSelection, ProviderDriverKind, RuntimeMode, TurnAttachment } from "../protocol/common";
+import type { AgentModelChoice, ModelSelection, ProviderDriverKind, RuntimeMode, TurnAttachment } from "../protocol/common";
 import type { Cohort, Session, SessionOrigin, SubscribedCohort, Subscription, Turn, WakeKind } from "../protocol/entities";
 import type { AgentTurnInput } from "../protocol/observations";
 import type { TaskOutputPage } from "../protocol/tasks";
@@ -9,6 +9,7 @@ import {
   type LiveSessionsAnswer,
   type LiveSessionsUnchanged,
   type SessionBootstrap,
+  type SessionCapabilities,
   type SessionGrepAnswer,
   type SessionOutlineAnswer,
   type SessionSearchAnswer,
@@ -70,10 +71,15 @@ export const sessionsClient = {
       branchName?: string;
       origin?: SessionOrigin;
       ceilingFrom?: string;
+      model?: AgentModelChoice;
       proof?: AgentTurnInput["proof"];
     },
   ): Promise<{ session: Session }> {
     return this.request("POST", "/v2/sessions", input);
+  },
+
+  sessionCapabilities(this: EngineTransport, caller?: string): Promise<SessionCapabilities> {
+    return this.request("GET", `/v2/sessions/capabilities${queryOf({ caller })}`);
   },
 
   /** Reading it mints and reveals the `sessions` MCP socket's secret. */

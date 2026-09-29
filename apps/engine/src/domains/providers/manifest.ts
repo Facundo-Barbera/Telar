@@ -19,6 +19,7 @@ type ManifestModel = {
   profile: string;
   badge?: "new";
   minVersion?: string;
+  tier?: number;
 };
 
 export type ModelManifest = {
@@ -54,6 +55,10 @@ export function claudeSlugOf(id: string, manifest: ModelManifest = BUNDLED_MANIF
 export function claudeProfileOf(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): ManifestProfile | undefined {
   const model = modelOf(id, manifest);
   return model ? manifest.claude?.profiles[model.profile] : undefined;
+}
+
+export function claudeTierOf(id: string, manifest: ModelManifest = BUNDLED_MANIFEST): number | undefined {
+  return modelOf(id, manifest)?.tier;
 }
 
 const WINDOW_TOKENS: Record<ContextWindow, number> = { "200k": 200_000, "1m": 1_000_000 };

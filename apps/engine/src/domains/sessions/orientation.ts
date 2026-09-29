@@ -56,6 +56,12 @@ It is not this CLI's own notion of a session, and not a chat thread.
   you learn what it did by asking.
 - **Assignment** — \`intent: "task"\` is what starts work: pass \`task\` to
   \`sessions_create\`, or \`sessions_send\` it later. Creating alone starts none.
+- **Choosing a model** — \`sessions_create\` and a \`sessions_send\` task take
+  \`model\` and \`effort\`; omitted, the person's default runs, often the
+  priciest. By task: search or read, a Haiku; mechanical edits, a Sonnet at
+  medium; review, a Sonnet at high; design or debugging, your own model.
+  \`sessions_capabilities\` lists what this Mac offers, and a worker's result
+  says what its run spent.
 - **Working for someone: end with a \`result\` and ONE line.** When the task
   is done, \`sessions_send\` intent \`result\` to whoever tasked you — the
   point first, under ~800 characters; tasked by several, each gets its own;
@@ -87,7 +93,8 @@ It is not this CLI's own notion of a session, and not a chat thread.
 
 Tools: \`sessions_list\`, \`sessions_create\`, \`sessions_send\`, \`sessions_read\`,
 \`sessions_status\`, \`sessions_stop\`, \`sessions_settle\`, \`sessions_subscribe\`,
-\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_schedule\`.
+\`sessions_requests\`, \`sessions_resolve_request\`, \`sessions_schedule\`,
+\`sessions_capabilities\`.
 
 ### Reading a peer without spending your context on it
 

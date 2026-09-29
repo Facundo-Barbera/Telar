@@ -4,6 +4,7 @@ import type { LiveSessionRow, Project, Session, Subscription, Turn } from "../pr
 import type { Item } from "../protocol/items";
 import type { EngineRequest } from "../protocol/requests";
 import type { Task } from "../protocol/tasks";
+import type { Effort, EnvMode, ProviderDriverKind, RuntimeMode } from "../protocol/common";
 import type { InboxPolicy, SidebarLayout } from "../settings/schema";
 
 export type SessionSettleEnded = { terminals: number; backgroundTasks: number };
@@ -99,3 +100,19 @@ export type LiveSessionsAnswer = {
 };
 
 export type LiveSessionsUnchanged = { unchanged: true; revision: number; daemonId?: string };
+
+export type CapabilityModel = {
+  id: string;
+  label: string;
+  tier?: number;
+  efforts: Effort[];
+  defaultEffort?: Effort;
+  window?: number;
+  default?: true;
+};
+
+export type SessionCapabilities = {
+  you?: { sessionId: string; driver: ProviderDriverKind; instanceId: string; model?: string; effort?: Effort; tier?: number; access: RuntimeMode };
+  defaults: { envMode: EnvMode; access?: RuntimeMode; project?: { model?: string; effort?: Effort } };
+  providers: Array<{ instanceId: string; driver: ProviderDriverKind; name?: string; models: CapabilityModel[] }>;
+};

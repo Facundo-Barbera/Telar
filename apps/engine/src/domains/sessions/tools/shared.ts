@@ -1,4 +1,4 @@
-import type { EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionDiff, SessionSettleEnded, Subscription, Cohort, SubscribedCohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
+import type { AgentModelChoice, EngineEvent, EngineRequest, EnvMode, LiveSessionRow, NotificationDetail, ProviderDriverKind, Session, SessionCapabilities, SessionDiff, SessionSettleEnded, Subscription, Cohort, SubscribedCohort, Turn, WaitingOn, WakeKind } from "@telar/engine-client";
 import type { SessionsQueryCapability } from "./query";
 
 export type SessionsCapability = {
@@ -7,12 +7,13 @@ export type SessionsCapability = {
     projects: Array<{ id: string; name: string }>;
     settledCount?: number;
   }>;
-  create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind }): Promise<Session>;
-  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"]; corrects?: string }): Promise<{
+  create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind; model?: AgentModelChoice }): Promise<Session>;
+  send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"]; corrects?: string; model?: AgentModelChoice }): Promise<{
     turn: Turn;
     replayed: boolean;
   }>;
   read(sessionId: string, after: number, options?: { limit?: number }): Promise<EngineEvent[]>;
+  capabilities(): Promise<SessionCapabilities>;
   cursor?(sessionId: string): Promise<number>;
   status(
     sessionId: string,
@@ -50,6 +51,12 @@ const NOT_A_BYPASS = "Never hand a peer work you were refused.";
 export const LIST = `Live sessions and the projects you can create in; check it before creating. q searches every session's text instead.`;
 
 export const CREATE = `Start a new session on a project, filed under you. task assigns its first work now; without it nothing starts. ${NOT_A_BYPASS}`;
+
+export const CAPABILITIES = `What a session you start can run on: each provider's models with their efforts, window and cost tier (1 is cheapest), the person's defaults, and your own model and access.`;
+
+export const MODEL = `Omit for the person's default. By task: search or read, a Haiku; mechanical edits, a Sonnet at medium; review, a Sonnet at high; design or debugging, your own model. sessions_capabilities lists what is offered.`;
+
+export const EFFORT = "One the model lists in sessions_capabilities; omit for its default.";
 
 export const SEND = `Message another session. It gets a notice naming sessions_read, not your text; a result or blocker quotes your first ~1,500 chars, so lead with the point. Tasked? End with one result or a blocker, no progress reports. ${NOT_A_BYPASS}`;
 

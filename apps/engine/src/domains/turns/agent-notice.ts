@@ -1,4 +1,4 @@
-import type { Turn } from "@telar/engine-client";
+import { defaultInstanceIdForDriver, type Session, type TokenUsage, type Turn } from "@telar/engine-client";
 
 function senderPhrase(sender: { sessionId?: string } | undefined): string {
   return sender?.sessionId ? `session ${sender.sessionId}` : "an agent outside any session (the sessions socket)";
@@ -25,7 +25,35 @@ export type AgentNoticeInput = {
   sender?: { sessionId?: string };
   scope?: string;
   corrects?: string;
+  spent?: string;
 };
+
+export type RunSpend = { model?: string; effort?: string; tokens?: TokenUsage };
+
+const count = (value: number): string =>
+  value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}M` : value >= 1_000 ? `${Math.round(value / 1_000)}k` : String(value);
+
+/** The model a run ran on, as the claim resolves it: the turn's pick, else the session's, else the Claude default. */
+export function runSpendOf(
+  session: Session,
+  turn: Pick<Turn, "model"> | undefined,
+  known: { tokens?: TokenUsage; defaultModel: (instanceId: string) => string | undefined },
+): RunSpend {
+  const selection = turn?.model ?? session.model;
+  const model = selection?.model ?? (session.driver === "claude" ? known.defaultModel(session.providerInstanceId ?? defaultInstanceIdForDriver("claude")) : undefined);
+  return { ...(model ? { model } : {}), ...(selection?.effort ? { effort: selection.effort } : {}), ...(known.tokens ? { tokens: known.tokens } : {}) };
+}
+
+export function spendPhrase(spend: RunSpend | undefined): string | undefined {
+  if (!spend) return undefined;
+  const on = spend.model ? `${spend.model}${spend.effort ? ` at ${spend.effort} effort` : ""}` : undefined;
+  const tokens = spend.tokens;
+  const total = tokens ? tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreate : 0;
+  const used = tokens && total > 0
+    ? `${count(total)} tokens (${count(tokens.cacheRead)} cache read, ${count(tokens.cacheCreate)} cache write, ${count(tokens.input)} in, ${count(tokens.output)} out)`
+    : undefined;
+  return on && used ? `${on}, ${used}` : (on ?? used);
+}
 
 export const INLINE_CHARS = 1_500;
 
@@ -61,7 +89,8 @@ export function agentNotice(input: AgentNoticeInput): string {
   const where = `sessions_read(sessionId: "${input.recipientSessionId}", runId: "${input.runId}")`;
   const header = `[agent message · ${input.intent}] ${who} ${verbPhrase(input.intent)} (run ${input.runId}, ${size}).${input.corrects ? ` It CORRECTS their earlier message (run ${input.corrects}); disregard that one.` : ""}`;
   if ((input.intent === "result" || input.intent === "blocker") && input.body.trim()) {
-    return [header, ...quotedExcerpt(input.body, where), ...(input.intent === "result" ? [NO_REPLY] : [])].join("\n");
+    const spent = input.intent === "result" && input.spent ? [`Its run so far: ${input.spent}.`] : [];
+    return [header, ...quotedExcerpt(input.body, where), ...spent, ...(input.intent === "result" ? [NO_REPLY] : [])].join("\n");
   }
   return [
     header,

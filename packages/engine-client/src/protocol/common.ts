@@ -59,6 +59,9 @@ export const ModelSelection = z
   );
 export type ModelSelection = z.infer<typeof ModelSelection>;
 
+export const AgentModelChoice = z.object({ model: z.string().min(1).optional(), effort: Effort.optional() });
+export type AgentModelChoice = z.infer<typeof AgentModelChoice>;
+
 export const RuntimeMode = z.enum([
   "approval-required",
   "auto-accept-edits",

@@ -44,7 +44,7 @@ describe("creating a session", () => {
     expect(made.origin).toBe("session");
     expect(made.startedFrom).toBeUndefined();
     expect(Object.keys(capabilityOver(store)).sort()).toEqual([
-      "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
+      "capabilities", "cohorts", "create", "diff", "list", "query", "read", "requests", "resolveRequest", "send", "settle", "status", "stop", "subscribe", "subscribeCohort", "subscriptions", "unsubscribe",
     ]);
   });
 

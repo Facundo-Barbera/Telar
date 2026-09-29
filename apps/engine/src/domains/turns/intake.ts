@@ -1,5 +1,6 @@
 import {
   assignmentsOf,
+  type AgentModelChoice,
   PROVIDER_CAPABILITIES,
   type AssignmentTurn,
   seedSessionTitle,
@@ -26,6 +27,7 @@ import {
   type SessionRecords,
 } from "../sessions";
 import type { prepareSessionWorktree, WorktreePlan } from "../worktrees";
+import { spendPhrase, type RunSpend } from "./agent-notice";
 import { MAX_DELIVERIES, mergeNotifications, peerNotification } from "./notification";
 
 export const MAX_TEXT_LENGTH = 200_000;
@@ -93,7 +95,9 @@ type IntakeDeps = {
   rewriteNotificationItem: (sessionId: string, turn: Turn) => void;
   waitingSubscription: (subscriberSessionId: string, targetSessionId: string) => boolean;
   cohortHolds: (sessionId: string, senderSessionId: string) => boolean;
-  recordCohortMessage: (sessionId: string, senderSessionId: string, intent: NonNullable<Turn["agentIntent"]>, runId: string, text: string) => void;
+  recordCohortMessage: (sessionId: string, senderSessionId: string, intent: NonNullable<Turn["agentIntent"]>, runId: string, text: string, spent?: string) => void;
+  agentTurnModel: (sessionId: string, choice: AgentModelChoice) => TurnModelSelection | undefined;
+  runSpend: (sessionId: string, runId: string) => RunSpend | undefined;
 };
 
 /** Accepting a message into a session's queue: a person's, an agent's, a wake or a schedule's. */
@@ -172,7 +176,7 @@ export class TurnIntake {
    */
   submitAgentTurn(
     sessionId: string,
-    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string; corrects?: string },
+    input: { runId: string; input: string; attachments?: string[]; intent?: Turn["agentIntent"]; scope?: string; corrects?: string; model?: AgentModelChoice },
     proof?: SenderProof,
   ): { turn: Turn; replayed: boolean } {
     return this.kernel.command("submitAgentTurn", () => {
@@ -183,7 +187,10 @@ export class TurnIntake {
         sender = { sessionId: claimed.sessionId };
       }
       const intent = input.intent ?? "report";
+      if (input.model && intent !== "task") throw new EngineStateError("invalid_request", "model and effort go with a task; a report, result or blocker runs nothing.");
+      const model = input.model ? this.deps.agentTurnModel(sessionId, input.model) : undefined;
       if ((intent === "result" || intent === "blocker") && sender.sessionId) this.assertAnswersAnAssignment(sessionId, sender.sessionId, intent);
+      const spent = intent === "result" && proof && sender.sessionId ? spendPhrase(this.deps.runSpend(sender.sessionId, proof.runId)) : undefined;
       const waiting = intent === "result" && sender.sessionId ? this.deps.waitingSubscription(sessionId, sender.sessionId) : false;
       const correction = input.corrects && !this.deps.readQueue(sessionId).turns.some((turn) => turn.runId === input.runId)
         ? this.correctionOf(sessionId, input.corrects, sender.sessionId)
@@ -198,6 +205,7 @@ export class TurnIntake {
         ...(input.corrects ? { corrects: input.corrects } : {}),
         ...(sender.sessionId ? { sender } : {}),
         ...(scope ? { scope } : {}),
+        ...(spent ? { spent } : {}),
       });
       // Not for a correction: it replaces an earlier message rather than joining it.
       const folds = !correction && delivery === "wake" && proof && sender.sessionId && FOLDING_INTENTS.has(intent)
@@ -211,6 +219,7 @@ export class TurnIntake {
         ...(folds || joins || cohortHeld ? { foldedIntoWaitingWake: true } : {}),
         runId: input.runId,
         input: input.input,
+        ...(model ? { model } : {}),
         ...(input.attachments ? { attachments: input.attachments } : {}),
         origin: "session", sender, agentIntent: intent, agentDelivery: folds || joins ? "passive" : delivery,
         ...(proof ? { agentSourceRunId: proof.runId } : {}),
@@ -222,7 +231,7 @@ export class TurnIntake {
       });
       if (folds && !result.replayed) this.foldIntoWaitingMessage(sessionId, folds, notification);
       if (joins && !result.replayed) this.deps.joinWaitingNotification(sessionId, joins, notification);
-      if (!result.replayed && sender.sessionId) this.deps.recordCohortMessage(sessionId, sender.sessionId, intent, input.runId, input.input);
+      if (!result.replayed && sender.sessionId) this.deps.recordCohortMessage(sessionId, sender.sessionId, intent, input.runId, input.input, spent);
       // The unread version goes only once its replacement is safely accepted.
       if (correction === "queued" || correction === "held") this.withdrawCorrected(sessionId, input.corrects!, correction);
       return result;

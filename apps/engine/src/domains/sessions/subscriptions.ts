@@ -358,13 +358,13 @@ export class SessionSubscriptions {
    * From a member, a `result` makes it done and a `blocker` holds it pending until answered;
    * from the subscriber to a member, that answer releases the blocker.
    */
-  recordCohortMessage(recipientSessionId: string, senderSessionId: string, intent: NonNullable<Turn["agentIntent"]>, runId: string, body: string): void {
+  recordCohortMessage(recipientSessionId: string, senderSessionId: string, intent: NonNullable<Turn["agentIntent"]>, runId: string, body: string, spent?: string): void {
     if (intent === "result") {
       const line = firstLineOf(body);
       this.updateCohortMembers(senderSessionId, recipientSessionId, (member) =>
         member.outcome && member.outcome !== "result"
           ? undefined
-          : { sessionId: member.sessionId, ...(member.title ? { title: member.title } : {}), outcome: "result", fetch: { sessionId: recipientSessionId, runId }, ...(line ? { firstLine: line } : {}), ...excerptOf(body), at: this.kernel.now() },
+          : { sessionId: member.sessionId, ...(member.title ? { title: member.title } : {}), outcome: "result", fetch: { sessionId: recipientSessionId, runId }, ...(line ? { firstLine: line } : {}), ...excerptOf(body), ...(spent ? { spent: spent.slice(0, 300) } : {}), at: this.kernel.now() },
       );
     } else if (intent === "blocker") {
       this.updateCohortMembers(senderSessionId, recipientSessionId, (member) => (member.outcome || member.blocked ? undefined : { ...member, blocked: true }));

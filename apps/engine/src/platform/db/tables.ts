@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { SessionActivity } from "@telar/engine-client";
+import type { SessionActivity, TokenUsage } from "@telar/engine-client";
 import type { ScheduleRule } from "../../domains/schedules";
 import type { TurnSummary } from "../../domains/turns";
 import type { ExecutionStore } from "./execution-store";
@@ -305,6 +305,33 @@ export function latestAnsweredTurn(store: ExecutionStore, sessionId: string): Tu
     "SELECT * FROM turn_summaries WHERE session_id=? AND state='completed' AND answer_chars>0 ORDER BY sequence DESC LIMIT 1",
   ).get(sessionId);
   return columns ? turnFromColumns(columns) : undefined;
+}
+
+/** A run's tokens: the folded total once it ended, else the sum of its `usage.updated` rows so far. */
+export function runTokens(store: ExecutionStore, sessionId: string, runId: string): TokenUsage | undefined {
+  const folded = store.statement(
+    "SELECT usage_input, usage_output, usage_cache_read, usage_cache_create, usage_reasoning FROM turn_summaries WHERE session_id=? AND run_id=? AND usage_rows IS NOT NULL",
+  ).get(sessionId, runId);
+  const row = folded
+    ? { input: folded.usage_input, output: folded.usage_output, cache_read: folded.usage_cache_read, cache_create: folded.usage_cache_create, reasoning: folded.usage_reasoning, rows: 1 }
+    : store.statement(
+      `SELECT COUNT(*) AS rows,
+              SUM(COALESCE(json_extract(value,'$.usage.tokens.input'),0)) AS input,
+              SUM(COALESCE(json_extract(value,'$.usage.tokens.output'),0)) AS output,
+              SUM(COALESCE(json_extract(value,'$.usage.tokens.cacheRead'),0)) AS cache_read,
+              SUM(COALESCE(json_extract(value,'$.usage.tokens.cacheCreate'),0)) AS cache_create,
+              SUM(COALESCE(json_extract(value,'$.usage.tokens.reasoning'),0)) AS reasoning
+         FROM events WHERE session_id=? AND json_extract(value,'$.type')='usage.updated' AND json_extract(value,'$.runId')=?`,
+    ).get(sessionId, runId);
+  if (!row || Number(row.rows) === 0) return undefined;
+  const reasoning = Number(row.reasoning ?? 0);
+  return {
+    input: Number(row.input ?? 0),
+    output: Number(row.output ?? 0),
+    cacheRead: Number(row.cache_read ?? 0),
+    cacheCreate: Number(row.cache_create ?? 0),
+    ...(reasoning > 0 ? { reasoning } : {}),
+  };
 }
 
 export function turnSummaryCount(store: ExecutionStore, sessionId: string): number {

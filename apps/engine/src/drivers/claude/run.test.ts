@@ -83,7 +83,7 @@ test("the browser socket registers as its own http server, ALONGSIDE the in-proc
   // surface per capability, not two.
   const telar = servers?.telar as { tools?: { name?: string }[] } | undefined;
   const inProcess = (telar?.tools ?? []).map((tool) => tool.name);
-  expect(inProcess.length).toBe(11);
+  expect(inProcess.length).toBe(12);
   expect(inProcess.every((name) => name!.startsWith("sessions_"))).toBe(true);
   // #877: `warp` was the one name here that was not a sessions verb, and it was
   // registered UNCONDITIONALLY. Pinned as an absence so a re-add fails here.
@@ -165,9 +165,9 @@ test("a toolkit registers under the SAME one server, and only when the turn carr
     "sessions_subscribe",
     "sessions_requests",
     "sessions_resolve_request",
-    // #543, appended at the END so the wall GROWS rather than reorders — a
-    // reordered list is a diff nobody can read against the one before it.
+    // Appended at the end so the wall grows rather than reorders.
     "sessions_schedule",
+    "sessions_capabilities",
   ]);
   // #877: `warp` sat after these, registered whether or not the turn carried a
   // capability. Pinned as an absence so a re-add fails here.

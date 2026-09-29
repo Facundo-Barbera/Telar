@@ -1,4 +1,4 @@
-import type { EngineClient, EngineEvent, Session, SessionDiff, SessionSettleEnded, Subscription } from "@telar/engine-client";
+import type { EngineClient, EngineEvent, Session, SessionCapabilities, SessionDiff, SessionSettleEnded, Subscription } from "@telar/engine-client";
 import type { SessionsCapability } from "./tools/shared";
 import type { EngineStore } from "../../state";
 
@@ -21,6 +21,7 @@ export type SessionsPort = {
     input: Parameters<Capability["send"]>[1] & { proof?: ClaimProof & { sessionId: string } },
   ): ReturnType<Capability["send"]>;
   events(sessionId: string, after: number, limit?: number): Promise<{ events: EngineEvent[] }>;
+  sessionCapabilities(caller?: string): Promise<SessionCapabilities>;
   stopSession(sessionId: string, by: "agent"): ReturnType<Capability["stop"]>;
   settleSession(sessionId: string, settled: boolean): Promise<{ session: Session; ended?: SessionSettleEnded }>;
   sessionDiff(sessionId: string): Promise<{ diff: SessionDiff }>;
@@ -91,6 +92,7 @@ export function storeSessionsPort(store: EngineStore): SessionsPort {
     createSession: async ({ proof, ...input }) => ({ session: await store.requestPath.createSession(input, proof) }),
     submitAgentTurn: async (id, { proof, ...input }) => store.requestPath.submitAgentTurn(id, input, proof),
     events: async (id, after, limit) => ({ events: store.queries.readEvents(id, after, limit) }),
+    sessionCapabilities: async (caller) => store.sessionCapabilities(caller),
     stopSession: async (id, by) => store.turnLifecycle.stopSession(id, by),
     settleSession: async (id, settled) => {
       const session = store.lifecycle.updateSession(id, { settledOverride: settled ? "settled" : "active" });
@@ -131,6 +133,7 @@ export function sessionsCapability(port: SessionsPort, identity: SessionIdentity
       })).session,
     send: (id, input) => port.submitAgentTurn(id, identity ? { ...input, proof: { sessionId: identity.sessionId, ...identity.proof() } } : input),
     read: async (id, after, options) => (await port.events(id, after, options?.limit)).events,
+    capabilities: () => port.sessionCapabilities(identity?.sessionId),
     stop: (id) => port.stopSession(id, "agent"),
     settle: async (id, settled) => {
       const answer = await port.settleSession(id, settled);
