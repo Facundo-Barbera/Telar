@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState, type ComponentType, type KeyboardEvent } from "react";
-import { CopyIcon, FileWarningIcon, NetworkIcon, PackageIcon, TerminalIcon, VariableIcon } from "lucide-react";
+import { BoxesIcon, FileWarningIcon, NetworkIcon, PackageIcon, TerminalIcon, VariableIcon } from "lucide-react";
 import {
   resolveWorkspace,
   type ProjectWorkspaceOverrides,
   type ProjectWorkspaceView,
   type WorkspaceArtifact,
+  type WorkspaceDependencies,
   type WorkspacePorts,
-  type WorkspaceSeed,
   type WorkspaceSetup,
   type WorkspaceSource,
 } from "@telar/engine-client";
@@ -23,13 +23,13 @@ import { Dropdown, Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 
-export type WorkspaceRowField = "setup" | "env" | "ports" | "seedDependencies" | "artifacts";
-type TextField = Exclude<WorkspaceRowField, "setup">;
+export type WorkspaceRowField = "setup" | "env" | "ports" | "dependencies" | "artifacts";
+type ModeField = Exclude<WorkspaceRowField, "dependencies">;
+type TextField = Exclude<ModeField, "setup">;
 type Values = {
   setup: WorkspaceSetup;
   env: Record<string, string>;
   ports: WorkspacePorts;
-  seedDependencies: WorkspaceSeed;
   artifacts: WorkspaceArtifact[];
 };
 type Parsed<T> = { ok: true; value: T } | { ok: false; message: string };
@@ -65,15 +65,6 @@ export function parsePorts(text: string, previous?: WorkspacePorts): Parsed<Work
   const names = text.split(/[\s,]+/).filter(Boolean);
   if (names.length === 0) return { ok: true, value: undefined };
   return { ok: true, value: { names, ...(previous?.base !== undefined ? { base: previous.base } : {}) } };
-}
-
-function formatSeed(seed: WorkspaceSeed | undefined): string {
-  return seed?.paths.join("\n") ?? "";
-}
-
-function parseSeed(text: string): Parsed<WorkspaceSeed | undefined> {
-  const paths = numberedLines(text).map((entry) => entry.line);
-  return { ok: true, value: paths.length > 0 ? { paths } : undefined };
 }
 
 const ARTIFACT_SEPARATOR = "=>";
@@ -125,7 +116,6 @@ const TEXT: { [F in TextField]: TextSpec<F> } = {
     placeholder: "PORT, WEB_PORT",
     multiline: false,
   },
-  seedDependencies: { format: formatSeed, parse: parseSeed, empty: { paths: [] }, placeholder: "path/to/dependencies", multiline: true },
   artifacts: {
     format: formatArtifacts,
     parse: parseArtifacts,
@@ -135,7 +125,7 @@ const TEXT: { [F in TextField]: TextSpec<F> } = {
   },
 };
 
-const ROWS: { field: WorkspaceRowField; label: string; icon: ComponentType<{ className?: string }>; hint: string; info?: string }[] = [
+const ROWS: { field: ModeField; label: string; icon: ComponentType<{ className?: string }>; hint: string; info?: string }[] = [
   { field: "setup", label: "Setup", icon: TerminalIcon, hint: "Runs in the background in each new worktree, with the variables and ports below." },
   {
     field: "env",
@@ -145,13 +135,6 @@ const ROWS: { field: WorkspaceRowField; label: string; icon: ComponentType<{ cla
     info: "Merges by key: this Mac < the repo's .telar/workspace.json < this project.",
   },
   { field: "ports", label: "Ports", icon: NetworkIcon, hint: "One stable port per name, exported under that name." },
-  {
-    field: "seedDependencies",
-    label: "Seed dependencies",
-    icon: CopyIcon,
-    hint: "Copied from the main checkout into a new worktree that lacks them.",
-    info: "One path per line, relative to the checkout.",
-  },
   {
     field: "artifacts",
     label: "Artifacts",
@@ -319,14 +302,14 @@ function FieldEditor({
   required,
   commit,
   reject,
-}: { field: WorkspaceRowField; label: string; value: unknown; required: boolean } & Commit<unknown>) {
+}: { field: ModeField; label: string; value: unknown; required: boolean } & Commit<unknown>) {
   if (field === "setup") {
     return <SetupEditor value={value as WorkspaceSetup | undefined} required={required} commit={commit} reject={reject} />;
   }
   return <TextEditor field={field} label={label} value={value as never} required={required} commit={commit} reject={reject} />;
 }
 
-function formatAny(field: WorkspaceRowField, value: unknown): string {
+function formatAny(field: ModeField, value: unknown): string {
   return field === "setup" ? formatSetup(value as WorkspaceSetup | undefined) : TEXT[field].format(value as never);
 }
 
@@ -381,6 +364,33 @@ function useLayerWriter<L>(put: (layer: L) => Promise<L>, apply: (layer: L) => v
 
 type Mode = "inherit" | "off" | "custom";
 
+const DEPENDENCY_LABELS: Record<WorkspaceDependencies, string> = { install: "Install", share: "Share", none: "None" };
+
+function DependenciesRow({ view, writer }: { view: ProjectWorkspaceView; writer: WorkspaceWriter | undefined }) {
+  const inherited = resolveWorkspace(view.machine, view.proposal.config, { ...view.overrides, dependencies: undefined }).effective.dependencies;
+  return (
+    <Row
+      label="Dependencies"
+      icon={BoxesIcon}
+      hint="How a new worktree gets node_modules and .venv: install them with the setup command, share the checkout's, or neither."
+      info="Share skips the setup command and uses no extra disk, but a package installed or removed in the worktree changes the checkout's too, and a branch that changes the lockfile needs Install."
+      {...rowState(writer, "dependencies")}
+      control={
+        <Dropdown<WorkspaceDependencies | "inherit">
+          value={view.overrides.dependencies ?? "inherit"}
+          label="Dependencies"
+          className="w-28"
+          onChange={(next) => writer?.save("dependencies", next === "inherit" ? undefined : next)}
+          options={[
+            { value: "inherit", label: `Inherit (${DEPENDENCY_LABELS[inherited ?? "install"]})` },
+            ...(["install", "share", "none"] as const).map((value) => ({ value, label: DEPENDENCY_LABELS[value] })),
+          ]}
+        />
+      }
+    />
+  );
+}
+
 function inheritedFrom(view: ProjectWorkspaceView, field: WorkspaceRowField, source: WorkspaceSource | undefined): string {
   if (field === "env") {
     const mac = Object.keys(view.machine.env ?? {}).length > 0;
@@ -400,16 +410,16 @@ function Inherited({ caption, text }: { caption: string; text: string }) {
 }
 
 export function ProjectWorkspaceRows({ view, writer }: { view: ProjectWorkspaceView; writer?: WorkspaceWriter }) {
-  const [drafting, setDrafting] = useState<WorkspaceRowField[]>([]);
+  const [drafting, setDrafting] = useState<ModeField[]>([]);
 
-  const modeOf = (field: WorkspaceRowField): Mode => {
+  const modeOf = (field: ModeField): Mode => {
     const own = view.overrides[field];
     if (own === null) return "off";
     if (own !== undefined || drafting.includes(field)) return "custom";
     return "inherit";
   };
 
-  const choose = (field: WorkspaceRowField, mode: Mode, inherited: unknown) => {
+  const choose = (field: ModeField, mode: Mode, inherited: unknown) => {
     setDrafting((current) => current.filter((entry) => entry !== field));
     if (mode === "inherit") return writer?.save(field, undefined);
     if (mode === "off") return writer?.save(field, null);
@@ -467,6 +477,7 @@ export function ProjectWorkspaceRows({ view, writer }: { view: ProjectWorkspaceV
           </Row>
         );
       })}
+      <DependenciesRow view={view} writer={writer} />
     </SettingsGroup>
   );
 }

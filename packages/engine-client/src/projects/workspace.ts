@@ -30,11 +30,9 @@ export const WorkspacePorts = z.object({
 });
 export type WorkspacePorts = z.infer<typeof WorkspacePorts>;
 
-export const WorkspaceSeed = z.object({
-  /** Copied from the main checkout by copy-on-write clone when absent here. */
-  paths: z.array(WorkspaceRelativePath).max(32),
-});
-export type WorkspaceSeed = z.infer<typeof WorkspaceSeed>;
+/** How a new worktree gets its dependencies: the setup command, links to the checkout's, or neither. */
+export const WorkspaceDependencies = z.enum(["install", "share", "none"]);
+export type WorkspaceDependencies = z.infer<typeof WorkspaceDependencies>;
 
 export const WorkspaceArtifact = z.object({
   /** May carry `*` in a segment: `apps/ios/DerivedData-*`. */
@@ -48,14 +46,14 @@ export const WorkspaceConfig = z.object({
   setup: WorkspaceSetup.optional(),
   env: z.record(WorkspaceEnvName, z.string()).optional(),
   ports: WorkspacePorts.optional(),
-  seedDependencies: WorkspaceSeed.optional(),
+  dependencies: WorkspaceDependencies.optional(),
   artifacts: z.array(WorkspaceArtifact).max(64).optional(),
   /** Reserved for the execution policy; accepted and stored, read by nothing yet. */
   execution: z.unknown().optional(),
 });
 export type WorkspaceConfig = z.infer<typeof WorkspaceConfig>;
 
-export const WORKSPACE_FIELDS = ["setup", "env", "ports", "seedDependencies", "artifacts", "execution"] as const;
+export const WORKSPACE_FIELDS = ["setup", "env", "ports", "dependencies", "artifacts", "execution"] as const;
 export type WorkspaceField = (typeof WORKSPACE_FIELDS)[number];
 
 /** A project's overrides: absent inherits, `null` is off, a value replaces. */
@@ -63,7 +61,7 @@ export const ProjectWorkspaceOverrides = z.object({
   setup: WorkspaceSetup.nullable().optional(),
   env: z.record(WorkspaceEnvName, z.string()).nullable().optional(),
   ports: WorkspacePorts.nullable().optional(),
-  seedDependencies: WorkspaceSeed.nullable().optional(),
+  dependencies: WorkspaceDependencies.optional(),
   artifacts: z.array(WorkspaceArtifact).max(64).nullable().optional(),
   execution: z.unknown().optional(),
 });

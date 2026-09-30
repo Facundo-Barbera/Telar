@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceConfig } from "@telar/engine-client";
 import { atomicWrite } from "../../platform/fs/atomic";
+import { shareDependencies } from "./dependencies";
 import { resolveShell, type RunHandle, type RunLauncher } from "../terminal";
 
 export type SetupState = "running" | "succeeded" | "failed" | "timed-out" | "stopped" | "interrupted";
@@ -27,9 +28,7 @@ const DEFAULT_SETUP_TIMEOUT_MS = 10 * 60 * 1000;
 
 const MAX_LINES = 2000;
 const MAX_LINE_CHARS = 4000;
-/** How long a stopped setup's group gets between SIGTERM and SIGKILL — the
- *  grace its launcher is built with. Longer than a terminal's second: an
- *  installer interrupted mid-write deserves the time to clean up. */
+/** Between SIGTERM and SIGKILL: longer than a terminal's, so an interrupted installer can clean up. */
 export const SETUP_STOP_GRACE_MS = 5000;
 
 type Live = {
@@ -109,10 +108,12 @@ export class WorktreeSetups {
   // Resolves once the run has started or was refused; `wait` is for its end.
   async start(
     sessionId: string,
-    input: { worktree: string; config: WorkspaceConfig; env?: Record<string, string> },
+    input: { checkout: string; worktree: string; config: WorkspaceConfig; env?: Record<string, string> },
   ): Promise<SetupStatus | undefined> {
+    const dependencies = input.config.dependencies ?? "install";
+    if (dependencies === "share") shareDependencies(input.checkout, input.worktree);
     const setup = input.config.setup;
-    if (!setup) return undefined;
+    if (!setup || dependencies !== "install") return undefined;
     if (this.live.has(sessionId)) return { ...this.live.get(sessionId)!.status };
 
     const files = this.files(sessionId);
@@ -174,8 +175,7 @@ export class WorktreeSetups {
     if (!run) return false;
     run.stopping ??= why;
     if (why === "timed-out") this.append(sessionId, run, `\n[telar] setup timed out; stopping it\n`);
-    // The handle's close is the polite signal, the grace, then SIGKILL — the
-    // escalation this used to spell out with its own timer.
+    // The handle's close is the polite signal, the grace, then SIGKILL.
     void run.handle?.close().catch(() => {
       /* already gone: its exit is on the way */
     });

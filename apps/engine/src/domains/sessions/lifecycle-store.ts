@@ -24,7 +24,7 @@ import type { ProjectAvailability } from "../../platform/fs/volumes";
 import { assertId, EngineStateError, type JournalEntry, type Kernel } from "../../platform/kernel";
 import { removeTelarVenv, telarVenvDir } from "../plugins";
 import { RUNTIME_MODES } from "../settings";
-import { createSessionWorktreeAsync, derivedBranchFor, isGitWorkTree, prepareSessionWorktree, removeSessionWorktreeAsync, type WorktreePlan, type WorktreeQueue } from "../worktrees";
+import { createSessionWorktreeAsync, derivedBranchFor, isGitWorkTree, prepareSessionWorktree, pruneBuildOutputs, removeSessionWorktreeAsync, type WorktreePlan, type WorktreeQueue } from "../worktrees";
 import { parseSession, releaseDelegationSettle, sessionDir, sessionMetadataFile, storedSession } from "./metadata";
 import { emptyQueue, type SessionQueue } from "./queue";
 import type { SessionRecords } from "./records";
@@ -417,17 +417,13 @@ export class SessionLifecycle {
     this.releaseDataScience(session, "session archived");
 
     // A worktree implies a project; the checkout goes only when asked (Storage's policy, or a caller giving it back).
-    if (
-      session.workspace.mode === "worktree" &&
-      session.projectId &&
-      !session.workspace.released &&
-      (options.releaseCheckout ?? this.host.releasesArchivedCheckouts())
-    ) {
+    if (session.workspace.mode === "worktree" && session.projectId && !session.workspace.released) {
       const project = this.host.getProject(session.projectId);
       // Best-effort. A leaked directory is bounded inside the engine's own
       // root and is reapable later; refusing to archive because git was
       // unhappy would strand the session in a state a human cannot leave.
-      this.releaseWorktree(project, session.workspace.path);
+      if (options.releaseCheckout ?? this.host.releasesArchivedCheckouts()) this.releaseWorktree(project, session.workspace.path);
+      else this.pruneWorktree(project, session.workspace.path);
     }
     const at = this.kernel.now();
     session.state = "archived";
@@ -441,12 +437,19 @@ export class SessionLifecycle {
   /** Gives a checkout back on the per-project queue, without waiting; best-effort, since a leaked worktree is reapable later. */
   private releaseWorktree(project: Project, worktreePath: string): void {
     // Availability is read on the queue, when git would actually run: a drive can go while the removal waits.
-    void this.host.worktreeQueue(project.root, () =>
-      removeSessionWorktreeAsync(this.host.worktreeGit, project.root, worktreePath, this.host.projectAvailability(project)).finally(() => {
+    void this.host.worktreeQueue(project.root, async () => {
+      try {
+        const removed = await removeSessionWorktreeAsync(this.host.worktreeGit, project.root, worktreePath, this.host.projectAvailability(project));
+        if (!removed) await pruneBuildOutputs(this.host.worktreeGit, worktreePath).catch(() => []);
+      } finally {
         this.host.forgetGitReadsUnder(project.root);
         this.host.forgetGitReadsUnder(worktreePath);
-      }),
-    );
+      }
+    });
+  }
+
+  private pruneWorktree(project: Project, worktreePath: string): void {
+    void this.host.worktreeQueue(project.root, () => pruneBuildOutputs(this.host.worktreeGit, worktreePath).catch(() => []));
   }
 
   private releaseDataScience(session: Session, reason: string): void {

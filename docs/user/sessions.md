@@ -15,7 +15,7 @@ A project that isn't a git repository always uses its checkout. Set the default 
 
 ## Worktrees
 
-- A new worktree can be prepared automatically. Telar can run a setup command, copy dependencies from the main checkout, and give the worktree its own ports. Configure this in Settings → Projects → New worktrees. Until setup finishes, the row says "Preparing".
+- A new worktree can be prepared automatically. Telar can run a setup command or share the main checkout's dependencies, and give the worktree its own ports. Archiving a session that keeps its worktree deletes the ignored `.next`, `dist` and `.turbo` folders in it. Configure this in Settings → Projects → New worktrees. Until setup finishes, the row says "Preparing".
 - When a worktree is removed, Telar keeps its branch. The commits stay yours.
 - Worktrees take disk space. Settings → Storage → Worktrees can remove the ones that have been inactive for a while or have no changes, and lists every worktree so you can free them. Telar never removes a worktree that has uncommitted changes, unpushed commits, or something still running. A session whose worktree was removed gets a new one when you send it another message.
 
