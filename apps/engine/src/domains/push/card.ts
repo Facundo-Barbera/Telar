@@ -46,7 +46,7 @@ function families(sessions: SessionSignal[]): SessionSignal[][] {
   return [...groups].map(([id, members]) => [byId.get(id)!, ...members.filter(m => m.id !== id)]);
 }
 
-export function activeRoots(sessions: SessionSignal[]): SessionSignal[] {
+function activeRoots(sessions: SessionSignal[]): SessionSignal[] {
   return families(sessions).filter(family => automaticSessions(family).length).map(([root]) => root!);
 }
 
