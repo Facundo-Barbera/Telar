@@ -68,12 +68,19 @@ function runAction(action: Completion["action"], props: ComposerProps, startResu
   if (action.type === "stop") props.onStop();
 }
 
+/** Opened from the compact card; back to compact once the reader returns to the bottom. */
+function useExpanded(compact: boolean) {
+  const [expanded, setExpanded] = useState(false);
+  if (!compact && expanded) setExpanded(false);
+  return [expanded, () => setExpanded(true)] as const;
+}
+
 export function Composer(props: ComposerProps) {
   const { draft, ready, compact = false, kind = "session", attachments, onAttach, fresh = false, driver, busy, sending, session, projectId, onDraftChange, onStop } = props;
   const editor = useRef<ComposerEditorHandle>(null);
   // Reported up by the environment strip, which already polls the project's git state.
   const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
-  const [editorFocused, setEditorFocused] = useState(false);
+  const [expanded, expand] = useExpanded(compact);
   const [resuming, setResuming] = useState(false);
   const startResume = useCallback(() => setResuming(true), []);
   const token = useId();
@@ -105,9 +112,8 @@ export function Composer(props: ComposerProps) {
 
   const addFiles = (files: File[]) => onAttach([...attachments, ...files].slice(0, MAX_ATTACHMENTS));
   const drop = useDropTarget(editor, addFiles);
-  // A focused pill does not count: expanding would remount it and close its menu.
-  const compactNow =
-    compact && !fresh && !editorFocused && !question.active && !drop.dropping && !stash.open && !menu.open && !esc.armed && !driveAway && attachments.length === 0;
+  // Focus and typing keep it compact; only what the compact card cannot show opens the full one.
+  const compactNow = compact && !expanded && !fresh && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
   const pills = (session || (fresh && driver)) && (
     <ComposerPills
       {...props}
@@ -181,9 +187,10 @@ export function Composer(props: ComposerProps) {
               onEdit={onEdit}
               onSelectionChange={() => !question.active && menu.retrigger(draft)}
               onKeyDown={onKeyDown}
-              onFocusChange={(focused) => {
-                if (focused) markComposerActive(token);
-                setEditorFocused(focused);
+              onFocus={() => markComposerActive(token)}
+              onExpand={() => {
+                expand();
+                editor.current?.focus();
               }}
               stash={stash}
               menu={menu}
