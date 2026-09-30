@@ -35,20 +35,48 @@ enum AutomaticCard {
     private static let rank: [SessionActivity: Int] = [.blocked: 0, .working: 1, .queued: 2, .monitoring: 3]
     private static let status: [SessionActivity: String] = [.blocked: "Needs you", .working: "Working", .queued: "Queued", .monitoring: "Background"]
 
+    static func families(_ sessions: [Session]) -> [(root: Session, active: [Session])] {
+        let byId = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        func root(_ session: Session) -> Session {
+            var seen: Set<String> = [session.id]
+            var current = session
+            while let parent = current.startedFrom.flatMap({ byId[$0.sessionId] }) {
+                guard seen.insert(parent.id).inserted else { return session }
+                current = parent
+            }
+            return current
+        }
+        var order: [String] = []
+        var active: [String: [Session]] = [:]
+        for session in sessions {
+            let top = root(session).id
+            if active[top] == nil { order.append(top); active[top] = [] }
+            if rank[session.activity] != nil { active[top]!.append(session) }
+        }
+        return order.compactMap { id in active[id]!.isEmpty ? nil : (byId[id]!, active[id]!) }
+    }
+
     static func rows(_ sessions: [Session], previews: Bool, carried: [SessionActivityRow] = []) -> [SessionActivityRow] {
-        let active = sessions.filter { rank[$0.activity] != nil }
-            .sorted { (rank[$0.activity]!, -($0.activityAt ?? 0), $0.id) < (rank[$1.activity]!, -($1.activityAt ?? 0), $1.id) }
+        let key = { (members: [Session]) in (members.map { rank[$0.activity]! }.min()!, -(members.compactMap(\.activityAt).max() ?? 0)) }
+        let active = families(sessions).sorted { (key($0.active).0, key($0.active).1, $0.root.id) < (key($1.active).0, key($1.active).1, $1.root.id) }
         let projects = Dictionary(carried.map { ($0.id, $0.project) }, uniquingKeysWith: { first, _ in first })
-        let live = active.map { SessionActivityRow(id: $0.id, status: status[$0.activity]!, title: previews ? SessionActivityRow.clip($0.title, 60) : nil, project: projects[$0.id] ?? nil) }
-        let ids = Set(active.map(\.id))
+        let live = active.map { family in
+            let title = family.root.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let workers = family.active.filter { $0.id != family.root.id }.count
+            return SessionActivityRow(id: family.root.id, status: status[family.active.min { rank[$0.activity]! < rank[$1.activity]! }!.activity]!,
+                                      title: previews && !title.isEmpty ? SessionActivityRow.clip(title, 60) : nil,
+                                      project: projects[family.root.id] ?? nil, workers: workers > 0 ? workers : nil)
+        }
+        let ids = Set(active.map(\.root.id))
         return Array((live + carried.filter { $0.over && !ids.contains($0.id) }).prefix(maxRows))
     }
 
     static func initialState(_ sessions: [Session], previews: Bool, now: Date, carried: [SessionActivityRow] = []) -> SessionActivityAttributes.ContentState {
         let shown = rows(sessions, previews: previews, carried: carried)
         let active = shown.filter { !$0.over }
-        let count = sessions.filter { rank[$0.activity] != nil }.count
-        let title = previews && count == 1 ? sessions.first { $0.id == active.first?.id }.map { SessionActivityRow.clip($0.title, 160) } ?? "Telar work" : count > 1 ? "\(count) active sessions" : "Telar work"
+        let count = families(sessions).count
+        let lead = sessions.first { $0.id == active.first?.id }?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let title = previews && count == 1 && !lead.isEmpty ? SessionActivityRow.clip(lead, 160) : count > 1 ? "\(count) active sessions" : "Telar work"
         return .init(title: title, status: active.first?.status ?? "Working", updatedAt: now, startedAt: now, ended: false,
                      sessionId: shown.first?.id, activeCount: count, rows: shown)
     }

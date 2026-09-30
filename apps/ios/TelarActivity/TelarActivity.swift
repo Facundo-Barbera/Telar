@@ -22,7 +22,7 @@ struct SessionLiveActivity: Widget {
                 }
                 if let rows = context.state.rows, !rows.isEmpty {
                     ForEach(rows) { row in
-                        Link(destination: context.attributes.url(sessionId: row.id)) { RowView(row: row, color: statusColor(row.status)) }
+                        Link(destination: context.attributes.url(sessionId: row.id)) { RowView(row: row, color: statusColor(row.status), host: context.attributes.hostName) }
                     }
                 } else {
                     Text(context.state.title).font(.headline).lineLimit(2).privacySensitive()
@@ -45,7 +45,7 @@ struct SessionLiveActivity: Widget {
                     VStack(alignment: .leading, spacing: 6) {
                         if let rows = context.state.rows, !rows.isEmpty {
                             ForEach(rows.prefix(3)) { row in
-                                Link(destination: context.attributes.url(sessionId: row.id)) { RowView(row: row, color: statusColor(row.status), compact: true) }
+                                Link(destination: context.attributes.url(sessionId: row.id)) { RowView(row: row, color: statusColor(row.status), host: context.attributes.hostName, compact: true) }
                             }
                         } else {
                             Text(context.state.title).font(.headline).lineLimit(1).privacySensitive()
@@ -95,15 +95,17 @@ private func statusSymbol(_ status: String, ended: Bool, stale: Bool) -> String 
 private struct RowView: View {
     var row: SessionActivityRow
     var color: Color
+    var host: String
     var compact = false
 
     var body: some View {
         HStack(spacing: 8) {
             Image(systemName: statusSymbol(row.status, ended: false, stale: false)).font(.caption2.weight(.bold)).foregroundStyle(color).frame(width: 14)
             VStack(alignment: .leading, spacing: 1) {
-                Text(row.title ?? row.project ?? "Session").font(compact ? .caption : .subheadline).lineLimit(1).privacySensitive()
-                if !compact, row.title != nil, let project = row.project {
-                    Text(project).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                Text(row.title ?? row.project ?? host).font(compact ? .caption : .subheadline).lineLimit(1).privacySensitive()
+                let detail = [row.title == nil ? nil : row.project, row.workersLabel].compactMap { $0 }.joined(separator: " · ")
+                if !compact, !detail.isEmpty {
+                    Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 4)

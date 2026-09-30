@@ -55,10 +55,10 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: filter)
     }
 
-    var working: [HostedSession] {
+    var onCards: [HostedSession] {
         let stale = staleHosts
         let all = mergeInbox(order.compactMap { id in stores[id].map { (id, $0.sections) } }, filter: nil)
-        return (all.active + all.tail).filter { $0.session.activity != .idle && !stale.contains($0.hostId) }
+        return (all.active + all.tail.filter { $0.session.activity != .idle }).filter { !stale.contains($0.hostId) }
     }
 
     var shelvedOnMacs: Int {
