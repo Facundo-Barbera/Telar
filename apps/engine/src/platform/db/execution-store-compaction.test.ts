@@ -116,6 +116,7 @@ const REACH: { kind: ItemDetail["type"]; stream: ContentStream; detail: (text: s
   { kind: "context_compaction", stream: "assistant_text", detail: (text) => ({ type: "context_compaction", reason: text }) },
   { kind: "provider_wait", stream: "assistant_text", detail: () => ({ type: "provider_wait", wait: { kind: "api_retry", attempt: 1 } }) },
   { kind: "conversation_import", stream: "assistant_text", detail: (text) => ({ type: "conversation_import", import: { provider: "claude", sourceSessionId: "session_src", sessionId: "session_one", firstPrompt: text, records: 1, cut: "whole", rows: 1, rowCut: "whole" } }) },
+  { kind: "artifact", stream: "assistant_text", detail: (text) => ({ type: "artifact", artifact: { id: "chart", kind: "markdown", title: text || "Chart", attachmentId: "att_one", version: 1 } }) },
   { kind: "error", stream: "assistant_text", detail: (text) => ({ type: "error", error: { message: text } }) },
   { kind: "unknown", stream: "unknown", detail: (text) => ({ type: "unknown", label: text }) },
 ];
@@ -125,7 +126,7 @@ test("compaction reaches exactly the kinds whose settled row keeps the streamed 
   expect(REACH.map((row) => row.kind)).toEqual(
     ItemDetailSchema.options.map((option) => option.shape.type.value as ItemDetail["type"]),
   );
-  expect(REACH).toHaveLength(18);
+  expect(REACH).toHaveLength(19);
 
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "telar-compact-reach-")); homes.push(root);
   fs.mkdirSync(path.join(root, "sessions"), { recursive: true });
