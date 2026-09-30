@@ -14,6 +14,8 @@ struct UserInputField: Codable, Identifiable, Equatable {
     var choices: [String]?
     var required: Bool?
     var multiple: Bool?
+    var header: String?
+    var descriptions: [String: String]?
 
     var id: String { key }
 

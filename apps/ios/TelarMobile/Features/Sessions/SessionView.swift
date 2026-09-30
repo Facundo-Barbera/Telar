@@ -3,6 +3,7 @@ import SwiftUI
 struct SessionView: View {
     @State private var store: SessionStore
     @State private var draft = ""
+    @State private var height: CGFloat = 0
 
     @State private var composerFocused = false
     @State private var renaming = false
@@ -311,6 +312,7 @@ struct SessionView: View {
             footer
         }
         .background(Theme.canvas)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
     }
 
     @ViewBuilder private var statusStrip: some View {
@@ -480,7 +482,7 @@ struct SessionView: View {
             }
             ForEach(store.sync.openRequests) { request in
                 StatusCard(tint: Theme.statusAmber) {
-                    RequestCardView(request: request, store: store)
+                    RequestCardView(request: request, store: store, maxHeight: height > 0 ? height * 0.58 : .infinity)
                 }
             }
             if let error = store.sendError, store.pendingSend != nil {

@@ -1,4 +1,4 @@
-import { type DriverRun, normalizeOutcome } from "../contract";
+import { type DriverRun, normalizeOutcome, questionChoices } from "../contract";
 import { type SdkCanUseTool } from "./sdk";
 import { parseToolName, TELAR_BROWSER_MCP_SERVER, type UserInputField } from "@telar/engine-client";
 import { asRecord, str, requestKindForTool, requestDetailForToolCall } from "./mapping";
@@ -15,14 +15,11 @@ export const gateFor = (onRequest: NonNullable<DriverRun["onRequest"]>): SdkCanU
         const fields = questions.flatMap((question): UserInputField[] => {
           const text = str(question.question);
           if (!text) return [];
-          const choices = Array.isArray(question.options)
-            ? question.options.map(asRecord).flatMap((option) => (str(option.label) ? [str(option.label)!] : []))
-            : [];
           return [{
             key: text,
             label: text,
             kind: "choice",
-            choices,
+            ...questionChoices(question),
             ...(question.multiSelect === true ? { multiple: true } : {}),
             required: true,
           }];

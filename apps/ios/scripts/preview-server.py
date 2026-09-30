@@ -122,6 +122,18 @@ AGENT_TURNS = [
          acceptedAt=NOW - 30000, updatedAt=NOW - 29000),
 ]
 
+QUESTION = dict(
+    id='req_question', runId='run_question', sessionId='approval', state='open', openedAt=NOW - 5000,
+    detail=dict(kind='user_input', prompt='The agent needs your input to continue.', fields=[
+        dict(key='perm', kind='choice', required=True, header='Permiso',
+             label='¿Con qué permiso se ve la pestaña «Mapa de cuentas» de #contabilidad cuando alguien del equipo la abre desde el móvil?',
+             choices=['Solo lectura', 'Edición', 'Sin acceso'],
+             descriptions={'Solo lectura': 'Puede ver el mapa pero no cambiarlo.', 'Edición': 'Puede mover cuentas y renombrarlas.'}),
+        dict(key='notify', kind='choice', required=True, multiple=True, header='Avisos',
+             label='¿A quién avisamos del cambio?', choices=['Finanzas', 'Dirección', 'Todo el equipo']),
+    ]),
+)
+
 # ---- the panel's fixtures: a checkout, a notebook, a table, plots, LaTeX ----
 
 FILES = {
@@ -263,6 +275,8 @@ class Handler(BaseHTTPRequestHandler):
                 data['turns'] = data['turns'] + [STEERED_TURN] + AGENT_TURNS
                 data['items'] = data['items'] + STEERED_ITEMS
                 data['tasks'] = (data.get('tasks') or []) + STEERED_TASKS
+            if chosen['id'] == 'approval':
+                data['requests'] = data['requests'] + [QUESTION]
         else: data = {}
         self._send(200, json.dumps(data).encode())
 
@@ -302,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
         parts = route.split('/')
         door = parts[4] if len(parts) > 4 else ''
         method = '/'.join(parts[5:])
+        if door == 'requests': return self._send(200, b'{}')
         if door == 'ds':
             if method == 'kernel': return self._send(200, json.dumps({'state': 'idle', 'executionCount': 4, 'python': '3.12.4'}).encode())
             if method in ('interrupt', 'restart'): return self._send(200, b'{}')

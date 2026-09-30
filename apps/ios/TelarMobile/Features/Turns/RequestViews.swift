@@ -3,6 +3,7 @@ import SwiftUI
 struct RequestCardView: View {
     let request: EngineRequest
     let store: SessionStore
+    var maxHeight: CGFloat = .infinity
     @State private var declining = false
     @State private var declineReason = ""
 
@@ -38,9 +39,16 @@ struct RequestCardView: View {
                 }
                 approvalButtons
             case .userInput(let prompt, let fields):
-                header("Question", icon: "questionmark.bubble")
-                UserInputFormView(prompt: prompt, fields: fields) { answers in
-                    Task { await store.resolve(request, decision: .accept, answers: answers) }
+                if let draft = QuestionDraft(fields: fields) {
+                    QuestionCardView(draft: draft, maxHeight: maxHeight) { answers in
+                        Task { await store.resolve(request, decision: .accept, answers: answers) }
+                    }
+                    .id(request.id)
+                } else {
+                    header("Question", icon: "questionmark.bubble")
+                    UserInputFormView(prompt: prompt, fields: fields) { answers in
+                        Task { await store.resolve(request, decision: .accept, answers: answers) }
+                    }
                 }
             case .secretAccess(let secret):
                 header("Fill login from 1Password", icon: "key.fill")
