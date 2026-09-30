@@ -36,17 +36,12 @@ struct ModelChoice: Equatable {
     }
 }
 
-struct ModelPillView: View {
+struct ModelMenu: View {
     let catalogues: [String: ModelCatalogue]
     let choice: ModelChoice
 
     let driversSwitchable: Bool
-    var compact = false
     let onChange: (ModelChoice) -> Void
-
-    @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 44
-
-    @ScaledMetric(relativeTo: .subheadline) private var badge: CGFloat = 16
 
     private var models: [ProviderModel] {
         (catalogues[choice.driver]?.models ?? []).filter { !$0.hidden }
@@ -69,7 +64,6 @@ struct ModelPillView: View {
 
     private var label: String {
         var parts: [String] = [selectedFamily?.label ?? "Model"]
-        if compact { return parts[0] }
         if let level = ModelOptions.levelLabel(choice: choice, row: selectedRow) { parts.append(level) }
         if ModelFamilies.windows(of: selectedFamily).count > 1 { parts.append(window.label) }
         if choice.fastMode == true { parts.append("Fast") }
@@ -93,21 +87,9 @@ struct ModelPillView: View {
                 if sections.contains(.serviceTier) { serviceTierSection(row) }
             }
         } label: {
-            HStack(spacing: 8) {
-                ProviderIconView(driver: choice.driver, size: badge)
-
-                Text(label)
-                    .font(.system(Theme.subhead, weight: .semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.down").font(.system(Theme.caption, weight: .medium))
-            }
-            .foregroundStyle(Theme.text)
-            .padding(.horizontal, 14)
-            .frame(height: height)
-            .background(Theme.subtle)
-            .clipShape(Capsule())
-            .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))
+            Label(label, systemImage: "cpu")
         }
+        .accessibilityLabel("Model: \(label)")
     }
 
     @ViewBuilder private func familySection(_ header: String?, driver: String) -> some View {

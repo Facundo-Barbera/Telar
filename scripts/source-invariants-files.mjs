@@ -145,7 +145,7 @@ export const SWEPT_FILES = [
   ["apps/ios/TelarMobile/Features/Sessions/AgentsSurface.swift", ""],
   ["apps/ios/TelarMobile/Features/Composer/AttachmentChip.swift", ""],
   [
-    "apps/ios/TelarMobile/Features/Providers/ModelPill.swift",
+    "apps/ios/TelarMobile/Features/Providers/ModelMenu.swift",
     "holds one `.system(size: size * 0.65)` this check does NOT count, proportional to its own square like ProjectAvatar's. The pill's capsule takes a @ScaledMetric of its own (#674) so the badge grows with the label beside it",
   ],
   ["apps/ios/TelarMobile/Features/Plugins/HtmlOutputView.swift", ""],

@@ -47,6 +47,7 @@ extension NavigationUITests {
         let prompt = app.textViews["Describe a coding task in Telar"]
         XCTAssertTrue(prompt.waitForExistence(timeout: 10))
         prompt.tap()
+        prompt.typeText("go")
 
         let send = app.buttons["Send"]
         XCTAssertTrue(send.waitForExistence(timeout: 5))

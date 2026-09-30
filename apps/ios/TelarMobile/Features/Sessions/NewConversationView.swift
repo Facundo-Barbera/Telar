@@ -137,10 +137,8 @@ struct NewConversationView: View {
                 host: DraftComposerHost(model: model),
                 api: model.api ?? model.settings.hosts.first.flatMap { model.settings.api(for: $0.id) },
                 controls: ComposerControls(
-                    model: { compact in
-                        AnyView(ModelPillView(catalogues: model.catalogues, choice: model.choice, driversSwitchable: true,
-                                              compact: compact, onChange: { model.choice = $0 }))
-                    },
+                    model: AnyView(ModelMenu(catalogues: model.catalogues, choice: model.choice, driversSwitchable: true,
+                                             onChange: { model.choice = $0 })),
                     options: AnyView(RuntimeModePill(mode: model.runtimeMode) { model.runtimeMode = $0 })
                 )
             )

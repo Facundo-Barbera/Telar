@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ComposerControls {
-    var model: (_ compact: Bool) -> AnyView = { _ in AnyView(EmptyView()) }
+    var model: AnyView = AnyView(EmptyView())
     var options: AnyView = AnyView(EmptyView())
 }
 
@@ -81,48 +81,6 @@ struct ComposerPillLabel: View {
         Label(label, systemImage: "checkmark")
     } else {
         Text(label)
-    }
-}
-
-struct ControlPillButton: View {
-    let isRunning: Bool
-    let canSend: Bool
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: isRunning ? "stop.fill" : "arrow.up")
-                .foregroundStyle(isRunning ? Theme.dangerGlyph : (canSend ? Theme.primaryGlyph : Theme.textMuted))
-                .scaledGlyphBox(44, glyph: 16, weight: .semibold)
-                .background(isRunning ? Theme.dangerFill : (canSend ? Theme.primaryFill : Theme.subtleStrong))
-                .clipShape(Circle())
-        }
-        .disabled(!isRunning && !canSend)
-        .accessibilityLabel(isRunning ? "Stop the running turn" : "Send")
-    }
-}
-
-struct ToolbarPill<Label: View>: View {
-    enum Variant { case normal, danger }
-    let variant: Variant
-    let action: () -> Void
-    @ViewBuilder let label: Label
-
-    init(variant: Variant = .normal, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
-        self.variant = variant
-        self.action = action
-        self.label = label()
-    }
-
-    var body: some View {
-        Button(action: action) {
-            label
-                .foregroundStyle(variant == .danger ? Theme.dangerGlyph : Theme.text)
-                .scaledSquare(44)
-                .background(variant == .danger ? Theme.dangerFill : Theme.subtle)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
-        }
     }
 }
 

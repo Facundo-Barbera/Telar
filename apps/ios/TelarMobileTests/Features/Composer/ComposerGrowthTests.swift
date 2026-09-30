@@ -20,52 +20,68 @@ import UIKit
 
     static let keyboardUpHeight: CGFloat = 400
 
-    @Test func aSqueezedFooterStillDrawsItsTextInsideTheCard() async throws {
+    static let pillChrome: CGFloat = 21.5
+
+    @Test func aSqueezedFooterStillDrawsItsTextInsideThePill() async throws {
         let bench = try await Bench(height: Self.keyboardUpHeight, withTranscript: true)
         defer { bench.tearDown() }
 
         bench.type(Self.twoParagraphs)
         await bench.settle()
         let squeezed = bench.measure()
-        print("[#289] squeezed — \(squeezed.text)")
 
-        #expect(squeezed.chrome >= 93.5, "the card is drawn around all of the field — \(squeezed.text)")
+        #expect(squeezed.chrome >= Self.pillChrome, "the pill is drawn around all of the field — \(squeezed.text)")
         #expect(squeezed.content > squeezed.field.height,
                 "and the draft it cannot fit scrolls inside it — \(squeezed.text)")
     }
 
-    @Test func theCardGrowsWithTheDraftInsteadOfLettingItDrawBelow() async throws {
+    @Test func thePillGrowsWithTheDraftInsteadOfLettingItDrawBelow() async throws {
         let bench = try await Bench()
         defer { bench.tearDown() }
 
         bench.type("one line")
         await bench.settle()
         let short = bench.measure()
-        print("[#289] one line — \(short.text)")
 
-        bench.type(Self.twoParagraphs)
+        bench.type("one\ntwo\nthree")
         await bench.settle()
         let grown = bench.measure()
-        print("[#289] wrapped — \(grown.text)")
 
-        #expect(grown.lines >= 5, "the sample draft wraps to five or more lines at 393pt — \(grown.text)")
-        #expect(grown.field.height >= grown.content - 0.5,
-                "the field's frame holds all of its text — \(grown.text)")
-        #expect(grown.chrome >= 93.5,
-                "and the card is drawn around all of it — one line: \(short.text) / wrapped: \(grown.text)")
+        #expect(grown.lines == 3, "the draft takes three lines — \(grown.text)")
+        #expect(grown.field.height >= grown.content - 0.5, "the field's frame holds all of its text — \(grown.text)")
+        #expect(grown.composer > short.composer, "the pill grows — one line: \(short.text) / three: \(grown.text)")
+        #expect(abs(grown.field.maxY - short.field.maxY) < 0.5, "upward, its bottom edge staying where it was")
+        #expect(grown.field.minY < short.field.minY - 1, "so the top edge is what moves")
+        #expect(grown.chrome >= Self.pillChrome, "and is drawn around all of it — \(grown.text)")
     }
 
-    @Test func pastTheCapTheFieldScrollsInsideTheCardInsteadOfGrowing() async throws {
+    @Test func pastSixLinesTheFieldScrollsInsideThePillInsteadOfGrowing() async throws {
         let bench = try await Bench()
         defer { bench.tearDown() }
 
-        bench.type((1...20).map { "line \($0) of a draft that keeps going" }.joined(separator: "\n"))
+        bench.type((1...20).map { "line \($0)" }.joined(separator: "\n"))
         await bench.settle()
         let capped = bench.measure()
-        print("[#289] capped — \(capped.text)")
 
-        #expect(capped.field.height <= capped.lineHeight * 7 + 0.5, "seven lines is the cap — \(capped.text)")
+        #expect(capped.field.height <= capped.lineHeight * 6 + 0.5, "six lines is the cap — \(capped.text)")
         #expect(capped.content > capped.field.height, "and the rest scrolls inside it — \(capped.text)")
+    }
+
+    @Test func focusingKeepsTheComposersShape() async throws {
+        let bench = try await Bench(focused: false)
+        defer { bench.tearDown() }
+
+        bench.type("one\ntwo")
+        await bench.settle()
+        let resting = bench.measure()
+
+        bench.model.focused = true
+        await bench.settle()
+        let focused = bench.measure()
+
+        #expect(abs(focused.composer - resting.composer) < 0.5,
+                "focusing only raises the keyboard — resting: \(resting.text) / focused: \(focused.text)")
+        #expect(abs(focused.field.minX - resting.field.minX) < 0.5, "and the field stays where it was")
     }
 
     @MainActor final class Bench {
@@ -74,7 +90,8 @@ import UIKit
         let host: UIHostingController<Harness>
         let field: ComposerUITextView
 
-        init(height: CGFloat = 852, withTranscript: Bool = false) async throws {
+        init(height: CGFloat = 852, withTranscript: Bool = false, focused: Bool = true) async throws {
+            model.focused = focused
             let store = SessionStore(api: SilentAPI(), sessionId: "s")
             host = UIHostingController(rootView: Harness(model: model, store: store, withTranscript: withTranscript))
             window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: height))

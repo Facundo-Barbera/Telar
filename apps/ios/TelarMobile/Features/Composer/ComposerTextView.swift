@@ -57,8 +57,6 @@ struct ComposerTextView: UIViewRepresentable {
         }
         view.placeholderLabel.isHidden = !text.isEmpty
 
-        if !focused && view.contentOffset.y != 0 { view.setContentOffset(.zero, animated: false) }
-
         context.coordinator.wantsFocus = focused
         DispatchQueue.main.async {
             guard view.window != nil else { return }
@@ -71,11 +69,9 @@ struct ComposerTextView: UIViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, uiView: ComposerUITextView, context: Context) -> CGSize? {
         guard let width = proposal.width, width > 0 else { return nil }
         let line = uiView.font?.lineHeight ?? UIFont.systemFont(ofSize: fontSize).lineHeight
-        let content = max(uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height, line)
+        let content = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
         let offered = proposal.height.flatMap { $0.isFinite ? $0 : nil } ?? .greatestFiniteMagnitude
-        let cap = min(maxLines.map { line * CGFloat($0) } ?? .greatestFiniteMagnitude, offered)
-
-        return CGSize(width: width, height: max(min(content, cap), line))
+        return CGSize(width: width, height: ComposerGrowth.height(content: content, line: line, offered: offered, maxLines: maxLines))
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text, focused: $focused) }
