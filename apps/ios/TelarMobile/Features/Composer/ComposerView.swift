@@ -10,7 +10,7 @@ struct ComposerView: View {
 
     var api: (any EngineAPI)?
 
-    var controls: AnyView = AnyView(EmptyView())
+    var controls = ComposerControls()
 
     var onSend: () -> Void = {}
 
@@ -156,6 +156,7 @@ struct ComposerView: View {
                             .background(Theme.subtleStrong)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
+                    if !isRunning { dictationButton }
                     ControlPillButton(
                         isRunning: isRunning, canSend: canSend,
                         action: { isRunning ? stop() : submit() }
@@ -224,47 +225,26 @@ struct ComposerView: View {
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            ScrollView(.horizontal, showsIndicators: false) {
+            ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) {
-                    Button {
-                        pickingPhotos = true
-                    } label: {
-                        Image(systemName: "plus")
-                            .foregroundStyle(Theme.text)
-                            .scaledGlyphBox(44, glyph: 16)
-                            .background(Theme.subtle)
-                            .clipShape(Circle())
-                            .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
-                    }
-                    .accessibilityLabel("Attach photos")
-
-                    StashButton(hasDraft: !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                                onStash: stashDraft, onOpen: { showingStash = true })
-
-                    if let dictation, canDictate {
-                        ToolbarPill(variant: dictation.phase == .listening ? .danger : .normal) {
-                            dictation.toggle()
-                        } label: {
-                            Image(systemName: dictation.phase == .listening ? "mic.fill" : "mic")
-                                .scaledGlyph(16)
-
-                                .symbolEffect(.pulse, isActive: dictation.phase == .listening)
-                        }
-                        .accessibilityLabel(dictation.phase == .listening ? "Stop dictating" : "Dictate")
-                        .disabled(dictation.phase == .starting)
-                    }
-                    if isRunning {
-                        ToolbarPill(variant: .danger) {
-                            stop()
-                        } label: {
-                            Image(systemName: "stop.fill").scaledGlyph(14)
-                        }
-                        .accessibilityLabel("Stop the running turn")
-                    }
-
-                    controls
+                    attachButton
+                    StashButton(hasDraft: hasDraftText, onStash: stashDraft, onOpen: { showingStash = true })
+                    controls.model(false)
+                    controls.options
                 }
+                HStack(spacing: 8) { moreMenu; controls.model(false) }
+                HStack(spacing: 8) { moreMenu; controls.model(true) }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if isRunning {
+                ToolbarPill(variant: .danger) {
+                    stop()
+                } label: {
+                    Image(systemName: "stop.fill").scaledGlyph(14)
+                }
+                .accessibilityLabel("Stop the running turn")
+            }
+            dictationButton
             Button {
                 submit()
             } label: {
@@ -279,6 +259,54 @@ struct ComposerView: View {
         }
         .padding(.top, 8)
         .padding(.bottom, 2)
+    }
+
+    private var hasDraftText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+
+    private var attachButton: some View {
+        Button {
+            pickingPhotos = true
+        } label: {
+            Image(systemName: "plus")
+                .foregroundStyle(Theme.text)
+                .scaledGlyphBox(44, glyph: 16)
+                .background(Theme.subtle)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+        }
+        .accessibilityLabel("Attach photos")
+    }
+
+    private var moreMenu: some View {
+        Menu {
+            Button("Attach photos", systemImage: "photo") { pickingPhotos = true }
+            if hasDraftText { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
+            Button("Show stashed prompts", systemImage: "tray.full") { showingStash = true }
+            controls.options.environment(\.composerPillsInMenu, true)
+        } label: {
+            Image(systemName: "plus")
+                .foregroundStyle(Theme.text)
+                .scaledGlyphBox(44, glyph: 16)
+                .background(Theme.subtle)
+                .clipShape(Circle())
+                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+        }
+        .accessibilityLabel("More")
+    }
+
+    @ViewBuilder private var dictationButton: some View {
+        if let dictation, canDictate {
+            ToolbarPill(variant: dictation.phase == .listening ? .danger : .normal) {
+                if !focused { focus.wrappedValue = true }
+                dictation.toggle()
+            } label: {
+                Image(systemName: dictation.phase == .listening ? "mic.fill" : "mic")
+                    .scaledGlyph(16)
+                    .symbolEffect(.pulse, isActive: dictation.phase == .listening)
+            }
+            .accessibilityLabel(dictation.phase == .listening ? "Stop dictating" : "Dictate")
+            .disabled(dictation.phase == .starting)
+        }
     }
 
     private var queueLine: some View {

@@ -1,15 +1,52 @@
 import SwiftUI
 
+struct ComposerControls {
+    var model: (_ compact: Bool) -> AnyView = { _ in AnyView(EmptyView()) }
+    var options: AnyView = AnyView(EmptyView())
+}
+
+extension EnvironmentValues {
+    @Entry var composerPillsInMenu = false
+}
+
 struct ComposerLabeledPill<Items: View>: View {
     let icon: String
     let label: String
     @ViewBuilder let items: () -> Items
+    @Environment(\.composerPillsInMenu) private var inMenu
 
     var body: some View {
-        Menu {
-            items()
-        } label: {
-            ComposerPillLabel(icon: icon, label: label)
+        if inMenu {
+            Menu { items() } label: { Label(label, systemImage: icon) }
+        } else {
+            Menu {
+                items()
+            } label: {
+                ComposerPillLabel(icon: icon, label: label)
+            }
+        }
+    }
+}
+
+struct RuntimeModePill: View {
+    let mode: String?
+    let onPick: (String) -> Void
+
+    static let modes: [(String, String)] = [
+        ("approval-required", "Supervised"),
+        ("auto-accept-edits", "Auto-accept edits"),
+        ("auto", "Auto"),
+        ("full-access", "Full access"),
+    ]
+
+    var body: some View {
+        ComposerLabeledPill(
+            icon: "slider.horizontal.3",
+            label: Self.modes.first { $0.0 == mode }?.1 ?? "Configuration"
+        ) {
+            ForEach(Self.modes, id: \.0) { value, label in
+                Button { onPick(value) } label: { composerMenuRow(label, selected: value == mode) }
+            }
         }
     }
 }

@@ -510,7 +510,7 @@ struct SessionView: View {
                 host: SessionComposerHost(store: store),
 
                 api: store.api,
-                controls: AnyView(SessionComposerControls(store: store)),
+                controls: SessionComposerControls.make(store: store),
                 onSend: { pinToTail() }
             )
         }
