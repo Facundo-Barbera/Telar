@@ -15,6 +15,7 @@
     "@base-ui/react": "^1.7.0",
     "@pierre/diffs": "1.4.3",
     "@streamdown/math": "^1.0.2",
+    "@streamdown/mermaid": "1.0.2",
     "@telar/engine-client": "workspace:*",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-image": "^0.9.0",

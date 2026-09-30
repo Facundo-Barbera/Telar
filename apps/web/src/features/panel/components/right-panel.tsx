@@ -3,7 +3,9 @@
 import { Suspense, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import type { EngineEvent, Item, Turn, TurnState } from "@telar/engine-client";
+import type { Artifact } from "@telar/engine-client";
 import { PluginSurface, type PluginPanelSource, isPluginSurface } from "@/features/plugins";
+import { latestArtifacts } from "@/features/agent-tools";
 import { desktopBrowserBridge } from "@/features/browser";
 import { diffTabParams, readDiffTab, type DiffTab, diffTurns, type DiffTurn } from "@/features/git";
 import type { TelarReference } from "@/features/composer";
@@ -37,6 +39,7 @@ const NotebookSurface = dynamic(() => import("@/features/plugins/data-science/no
 const PdfSurface = dynamic(() => import("@/features/files/components/pdf-surface").then((mod) => mod.PdfSurface));
 const TableSurface = dynamic(() => import("@/features/files/components/table-surface").then((mod) => mod.TableSurface));
 const GitHubSurface = dynamic(() => import("@/features/github").then((mod) => mod.GitHubSurface));
+const ArtifactSurface = dynamic(() => import("@/features/agent-tools").then((mod) => mod.ArtifactSurface));
 const TerminalSurface = dynamic(() => import("@/features/terminal").then((mod) => mod.TerminalSurface));
 const ImageLightbox = dynamic(() => import("@/features/plugins/data-science/image-lightbox").then((mod) => mod.ImageLightbox));
 
@@ -88,6 +91,7 @@ type SurfaceProps = Pick<RightPanelProps, Forwarded> & {
   diffTurnList: readonly DiffTurn[];
   tasks: readonly JournalTask[];
   browser: BrowserState | undefined;
+  artifacts: ReadonlyMap<string, Artifact>;
   onTabParams: ((params: PanelTabParams) => void) | undefined;
   onCloseSelf: () => void;
   onOpenImage: (attachmentId: string) => void;
@@ -110,6 +114,8 @@ function workspaceSurface(props: SurfaceProps): ReactNode | undefined {
   if (tablePath !== undefined) return <TableSurface path={tablePath} {...(sessionId ? { sessionId } : {})} {...(active ? { active } : {})} />;
   const pdfPath = model.pdfPanelPath(kind);
   if (pdfPath !== undefined) return <PdfSurface path={pdfPath} {...scoped} {...(active ? { active } : {})} />;
+  const artifactId = model.artifactPanelId(kind);
+  if (artifactId !== undefined) return sessionId ? <ArtifactSurface {...(hostId ? { hostId } : {})} sessionId={sessionId} artifact={props.artifacts.get(artifactId)} /> : null;
   if (kind === "editor")
     return props.editor && props.onEditorChange ? (
       <EditorSurface
@@ -220,6 +226,7 @@ export function RightPanel(props: RightPanelProps) {
   const writes = useMemo(() => journalWrites(items), [items]);
   const diffTurnList = useMemo(() => diffTurns(items, turns), [items, turns]);
   const browser = useMemo(() => latestBrowserState(events), [events]);
+  const artifacts = useMemo(() => latestArtifacts(items), [items]);
   const activeTab = useMemo(() => tabs.find((entry) => entry.id === tab), [tabs, tab]);
   const [lightbox, setLightbox] = useState<string>();
   const keptTerminals = useKeptTerminals(tabs, activeTab);
@@ -233,6 +240,7 @@ export function RightPanel(props: RightPanelProps) {
       diffTurnList={diffTurnList}
       tasks={tasks}
       browser={browser}
+      artifacts={artifacts}
       onTabParams={onTabParams ? (params) => onTabParams(entry.id, params) : undefined}
       onCloseSelf={() => onCloseTab(entry.id)}
       onOpenImage={setLightbox}

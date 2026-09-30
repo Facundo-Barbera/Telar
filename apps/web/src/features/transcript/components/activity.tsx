@@ -9,7 +9,7 @@ import { foldHarnessRows } from "../harness-paths";
 import { ROW, StepFold } from "./transcript-fold";
 import { cn } from "@/ui/utils";
 import { RowGestures, WorkspaceContext } from "./tool-row";
-import { cutAroundLiveAgents, itemFailed, renderable, segmentActivity, tallyParts } from "../model";
+import { cutAroundStandingRows, itemFailed, renderable, segmentActivity, tallyParts } from "../model";
 import { TranscriptItem } from "./transcript-item";
 
 export function LiveActivity({
@@ -63,11 +63,11 @@ export function ActivityGroup({
   const open = { ...(onOpenAgent ? { onOpenAgent } : {}), ...(onInsert ? { onInsert } : {}), ...(onOpenFile ? { onOpenFile } : {}), ...(onOpenFileInNewTab ? { onOpenFileInNewTab } : {}) };
   if (rows.length === 0) return null;
   if (live) return <LiveRun rows={rows} tasks={tasks} {...open} />;
-  const cuts = cutAroundLiveAgents(rows, tasks);
+  const cuts = cutAroundStandingRows(rows, tasks);
   return (
     <div className="flex w-full min-w-0 flex-col gap-0.5 text-xs">
       {cuts.map((cut) =>
-        cut.kind === "agent" ? (
+        cut.kind === "row" ? (
           <TranscriptItem key={cut.item.id} item={cut.item} tasks={tasks} {...open} />
         ) : (
           <SettledRun key={cut.items[0]!.id} rows={cut.items} tasks={tasks} {...open} />
