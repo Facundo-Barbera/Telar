@@ -8,7 +8,7 @@ import { titleContext } from "../src/domains/providers/title-context";
 import { buildRegenerateTitlePrompt, buildTitlePrompt } from "../src/domains/providers/title-prompts";
 import { titleEvalCases, type TitleEvalCase } from "./title-eval-cases";
 
-export type EvalOptions = { provider: ProviderDriverKind; model?: string; effort?: TextGenEffort; out: string; baseline?: string; initial: boolean };
+export type EvalOptions = { provider: ProviderDriverKind; model?: string; effort?: TextGenEffort; out: string; baseline?: string; initial: boolean; second: boolean };
 export type EvalResult = { id: string; title: string | null; latencyMs: number };
 
 const PROVIDERS = ["claude", "codex", "opencode"] as const;
@@ -24,24 +24,27 @@ export function parseEvalArgs(argv: string[]): EvalOptions {
       out: { type: "string" },
       baseline: { type: "string" },
       initial: { type: "boolean", default: false },
+      second: { type: "boolean", default: false },
     },
   });
   const provider = PROVIDERS.find((name) => name === values.provider);
-  if (!provider || !values.out) throw new Error("Use --provider claude|codex|opencode --out <directory> [--model m] [--effort low|medium|high] [--baseline results.json] [--initial].");
+  if (!provider || !values.out) throw new Error("Use --provider claude|codex|opencode --out <directory> [--model m] [--effort low|medium|high] [--baseline results.json] [--initial | --second].");
+  if (values.second && (values.initial || !values.baseline)) throw new Error("--second retitles a --baseline run of --initial titles.");
   const effort = values.effort === undefined ? undefined : EFFORTS.find((name) => name === values.effort);
   if (values.effort !== undefined && !effort) throw new Error("--effort must be low, medium or high.");
   return {
     provider,
     out: values.out,
     initial: values.initial ?? false,
+    second: values.second ?? false,
     ...(values.model ? { model: values.model } : {}),
     ...(effort ? { effort } : {}),
     ...(values.baseline ? { baseline: values.baseline } : {}),
   };
 }
 
-export function evalPrompt(fixture: TitleEvalCase, initial: boolean): string {
-  if (!initial) return buildRegenerateTitlePrompt(fixture.previousTitle, titleContext(fixture.messages));
+export function evalPrompt(fixture: TitleEvalCase, initial: boolean, previousTitle = fixture.previousTitle): string {
+  if (!initial) return buildRegenerateTitlePrompt(previousTitle, titleContext(fixture.messages));
   const first = fixture.messages.find((message) => message.role === "user");
   if (!first) throw new Error(`${fixture.id} has no user message.`);
   return buildTitlePrompt(first.text);
@@ -70,7 +73,7 @@ async function main(options: EvalOptions): Promise<void> {
     const started = performance.now();
     const answer = await runStructured(
       { driver: options.provider, ...(options.model ? { model: options.model } : {}), ...(options.effort ? { effort: options.effort } : {}) },
-      evalPrompt(fixture, options.initial),
+      evalPrompt(fixture, options.initial, options.second ? (baseline.find((entry) => entry.id === fixture.id)?.title ?? undefined) : undefined),
       schema,
     );
     results.push({ id: fixture.id, title: sanitizeTitle(answer?.["title"]) ?? null, latencyMs: Math.round(performance.now() - started) });

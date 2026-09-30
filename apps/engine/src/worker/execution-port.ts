@@ -10,13 +10,17 @@ export type ExecutionPort = Pick<EngineClient,
 type RegistrationPort = Pick<ExecutionPort, "registerWorker" | "workerHeartbeat" | "claimTurn">;
 
 export function createExecutionPort(store: EngineStore, registration: RegistrationPort,
-  assertWorker: (workerId: string) => unknown): ExecutionPort {
+  assertWorker: (workerId: string) => unknown, turnCompleted: (sessionId: string) => void = () => undefined): ExecutionPort {
   return {
     ...registration,
     markTurnRunning: async (sessionId, runId, token) => ({ turn: store.turnLifecycle.markRunning(sessionId, runId, token) }),
     reportObservations: async (sessionId, runId, token, observations) => store.ingest.ingestObservations(sessionId, runId, token, observations),
     openRequest: async (sessionId, runId, token, input) => store.requestGate.open(sessionId, runId, token, input),
-    completeTurn: async (sessionId, runId, token, result) => ({ turn: store.turnLifecycle.completeTurn(sessionId, runId, token, result) }),
+    completeTurn: async (sessionId, runId, token, result) => {
+      const turn = store.turnLifecycle.completeTurn(sessionId, runId, token, result);
+      turnCompleted(sessionId);
+      return { turn };
+    },
     failTurn: async (sessionId, runId, token, failure) => ({ turn: store.turnLifecycle.failTurn(sessionId, runId, token, failure) }),
     ackSteer: async (sessionId, runId, token) => ({ turn: store.turnLifecycle.ackSteer(sessionId, runId, token) }),
     openProviderTurn: async (sessionId, input) => {

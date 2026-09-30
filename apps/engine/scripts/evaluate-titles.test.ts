@@ -10,7 +10,13 @@ describe("parseEvalArgs", () => {
       effort: "medium",
       out: "/tmp/eval",
       initial: false,
+      second: false,
     });
+  });
+
+  test("--second needs the first titles as a baseline", () => {
+    expect(() => parseEvalArgs(["--provider", "claude", "--out", "/tmp/eval", "--second"])).toThrow("--baseline");
+    expect(parseEvalArgs(["--provider", "claude", "--out", "/tmp/eval", "--second", "--baseline", "first.json"])).toMatchObject({ second: true, baseline: "first.json" });
   });
 
   test("refuses an unknown provider, a missing directory and an unknown effort", () => {
@@ -29,6 +35,10 @@ describe("evalPrompt", () => {
     expect(prompt).toContain("USER:\nMake the iOS Live Activity");
     expect(prompt).not.toContain("Orientation");
     expect(prompt).not.toContain("Planning the Live Activity timer");
+  });
+
+  test("a second pass retitles from the first title", () => {
+    expect(evalPrompt(fixture, false, "Live Activity timer")).toContain('The previous title was "Live Activity timer".');
   });
 
   test("--initial titles only the opening request", () => {

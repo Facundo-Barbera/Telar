@@ -96,9 +96,9 @@ export async function runStructuredForPolicy(
 }
 
 export type RetitleStore = TextGenStore & {
-  records: { get(sessionId: string): { title: string; state: string } };
+  records: { get(sessionId: string): { title: string; state: string; autoTitle?: "first" | "second" } };
   lifecycle: {
-    updateSession(sessionId: string, patch: { title: string }): unknown;
+    updateSession(sessionId: string, patch: { title: string; autoTitle?: "first" | "second" }): unknown;
     refreshWorktreeBranchFromTitle(sessionId: string): string | undefined | Promise<string | undefined>;
   };
 };
@@ -125,8 +125,8 @@ export async function maybeRetitleSession(
   if (title === undefined) return;
   try {
     const current = store.records.get(sessionId);
-    if (current.state !== "active" || !titleIsSeed(current.title, firstMessage) || current.title === title) return;
-    store.lifecycle.updateSession(sessionId, { title });
+    if (current.state !== "active" || !titleIsSeed(current.title, firstMessage)) return;
+    store.lifecycle.updateSession(sessionId, { title, autoTitle: "first" });
   } catch {
     return;
   }
@@ -155,4 +155,47 @@ export async function regenerateSessionTitle(
   store.lifecycle.updateSession(sessionId, { title });
   if (policy.renameBranches) await Promise.resolve(store.lifecycle.refreshWorktreeBranchFromTitle(sessionId)).catch(() => undefined);
   return { title, changed: true };
+}
+
+const WORK_ITEMS = new Set<Item["detail"]["type"]>([
+  "command_execution",
+  "file_change",
+  "file_read",
+  "mcp_tool_call",
+  "dynamic_tool_call",
+  "web_search",
+  "browser_action",
+]);
+
+function worthRetitling(items: readonly Item[]): boolean {
+  if (!items.some((item) => item.detail.type === "assistant_message")) return false;
+  return items.filter((item) => item.detail.type === "user_message").length >= 2 || items.some((item) => WORK_ITEMS.has(item.detail.type));
+}
+
+export async function maybeRetitleWithContext(
+  store: RegenerateStore,
+  sessionId: string,
+  run: typeof runStructured = runStructured,
+): Promise<void> {
+  const policy = effectiveTextGenPolicy(store.settings.textGen());
+  if (!policy.titles) return;
+  const session = store.records.get(sessionId);
+  if (session.state !== "active" || session.autoTitle !== "first") return;
+  const items = store.queries.items(sessionId);
+  if (!worthRetitling(items)) return;
+  const driver = driverInput(store, policy);
+  if (!driver) return;
+  const previous = session.title;
+  // Claimed before the call, so a failure or a restart never asks twice.
+  store.lifecycle.updateSession(sessionId, { title: previous, autoTitle: "second" });
+  const result = await run(driver, buildRegenerateTitlePrompt(previous, titleContext(titleMessages(items))), oneStringSchema("title"));
+  const title = sanitizeTitle(result?.["title"]);
+  if (title === undefined) {
+    console.error(`[engine] the second title for ${sessionId} got no answer; keeping "${previous}"`);
+    return;
+  }
+  const current = store.records.get(sessionId);
+  if (title === previous || current.state !== "active" || current.title !== previous || current.autoTitle !== "second") return;
+  store.lifecycle.updateSession(sessionId, { title, autoTitle: "second" });
+  if (policy.renameBranches) await Promise.resolve(store.lifecycle.refreshWorktreeBranchFromTitle(sessionId)).catch(() => undefined);
 }
