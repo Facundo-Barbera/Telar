@@ -55,6 +55,24 @@ import UIKit
         #expect(grown.chrome >= Self.pillChrome, "and is drawn around all of it — \(grown.text)")
     }
 
+    @Test func theTranscriptStaysPutBehindAGrowingPill() async throws {
+        let bench = try await Bench(withTranscript: true)
+        defer { bench.tearDown() }
+
+        bench.type("one line")
+        await bench.settle()
+        let before = bench.model.lastLine
+        let composerTop = bench.host.view.bounds.height - bench.model.footerHeight
+        #expect(before.maxY <= composerTop + 0.5, "the last line scrolls clear of the composer — line \(before), composer top \(composerTop)")
+
+        bench.type("one\ntwo\nthree\nfour")
+        await bench.settle()
+        let after = bench.model.lastLine
+
+        #expect(bench.model.footerHeight > 0 && after.minY == before.minY,
+                "growing the pill leaves the transcript where it was — before \(before), after \(after)")
+    }
+
     @Test func pastSixLinesTheFieldScrollsInsideThePillInsteadOfGrowing() async throws {
         let bench = try await Bench()
         defer { bench.tearDown() }
@@ -140,6 +158,9 @@ import UIKit
         var draft = ""
         var focused = true
         var composerHeight: CGFloat = 0
+        var footerHeight: CGFloat = 0
+        var lastLine: CGRect = .zero
+        var position = ScrollPosition(edge: .bottom)
     }
 
     struct Harness: View {
@@ -147,23 +168,36 @@ import UIKit
         let store: SessionStore
         var withTranscript = false
         var body: some View {
-            VStack(spacing: 0) {
+            Group {
                 if withTranscript {
                     ScrollView {
                         VStack(spacing: 0) {
                             ForEach(0..<40, id: \.self) { i in
                                 Text("transcript line \(i)").frame(maxWidth: .infinity, alignment: .leading)
+                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+                                        if i == 39 { model.lastLine = $0 }
+                                    }
                             }
                         }
                     }
+                    .scrollPosition($model.position)
+                    .floatingComposer(height: $model.footerHeight, onFirstLayout: {
+                        DispatchQueue.main.async { model.position.scrollTo(edge: .bottom) }
+                    }) { composer }
                 } else {
-                    Spacer(minLength: 0)
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        composer
+                    }
                 }
-                ComposerView(draft: $model.draft, focus: $model.focused, host: SessionComposerHost(store: store), onSend: {})
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { model.composerHeight = $0 }
-                    .padding(.horizontal, 16)
             }
             .background(Theme.canvas)
+        }
+
+        private var composer: some View {
+            ComposerView(draft: $model.draft, focus: $model.focused, host: SessionComposerHost(store: store), onSend: {})
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { model.composerHeight = $0 }
+                .padding(.horizontal, 16)
         }
     }
 

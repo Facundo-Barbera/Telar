@@ -3,28 +3,20 @@ import Testing
 @testable import TelarMobile
 
 @Suite struct ComposerSlotTests {
-    @Test func anEmptyFieldOffersTheMic() {
-        #expect(ComposerSlot.resolve(canSend: false, running: false, listening: false, canDictate: true) == .dictate)
+    @Test func anIdleEmptyFieldShowsSendDisabledBesideTheInlineMic() {
+        #expect(ComposerSlot.resolve(canSend: false, running: false) == .send)
     }
 
-    @Test func textTurnsTheMicIntoSend() {
-        #expect(ComposerSlot.resolve(canSend: true, running: false, listening: false, canDictate: true) == .send)
-    }
-
-    @Test func withoutDictationAnEmptyFieldShowsSend() {
-        #expect(ComposerSlot.resolve(canSend: false, running: false, listening: false, canDictate: false) == .send)
+    @Test func textShowsSend() {
+        #expect(ComposerSlot.resolve(canSend: true, running: false) == .send)
     }
 
     @Test func aRunningTurnPutsStopInTheSlot() {
-        #expect(ComposerSlot.resolve(canSend: false, running: true, listening: false, canDictate: true) == .stop)
+        #expect(ComposerSlot.resolve(canSend: false, running: true) == .stop)
     }
 
     @Test func textDuringARunningTurnSteersInsteadOfStopping() {
-        #expect(ComposerSlot.resolve(canSend: true, running: true, listening: false, canDictate: true) == .send)
-    }
-
-    @Test func listeningKeepsTheMicSoDictationCanBeStopped() {
-        #expect(ComposerSlot.resolve(canSend: true, running: true, listening: true, canDictate: true) == .stopDictating)
+        #expect(ComposerSlot.resolve(canSend: true, running: true) == .send)
     }
 
     @Test func thePillIsAtLeastOneLine() {
@@ -41,5 +33,11 @@ import Testing
 
     @Test func thePillNeverTakesMoreThanItIsOffered() {
         #expect(ComposerGrowth.height(content: 400, line: 20, offered: 50) == 50)
+    }
+
+    @Test func onlyTheFirstMeasurementPinsTheTranscriptToItsTail() {
+        #expect(FloatingInset.pinsToTail(from: 0, to: 70))
+        #expect(!FloatingInset.pinsToTail(from: 70, to: 130))
+        #expect(!FloatingInset.pinsToTail(from: 130, to: 70))
     }
 }
