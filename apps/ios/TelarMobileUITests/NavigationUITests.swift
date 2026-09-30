@@ -76,8 +76,7 @@ extension NavigationUITests {
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 10), "the sidebar starts visible")
 
-        app.buttons["Session actions"].tap()
-        app.buttons["Panel"].tap()
+        app.buttons["Show panel"].tap()
         XCTAssertTrue(app.buttons["Diff tab"].waitForExistence(timeout: 10))
         XCTAssertTrue(search.waitForNonExistence(timeout: 5), "portrait has no room for all three — the sidebar stands aside")
         select(app.buttons["Diff tab"])
