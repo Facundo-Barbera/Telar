@@ -68,7 +68,7 @@ struct SidebarModel {
         pinned = SidebarModel.arranged(pins) { row in layouts[row.hostId]?.pinnedOrder.firstIndex(of: row.session.id) }
 
         let ordinary = sessions.filter {
-            $0.session.activity != .blocked && $0.session.settledOverride != "active"
+            $0.session.activity != .blocked && $0.session.settledOverride != "active" && !($0.session.projectId ?? "").isEmpty
         }
         let groups = Dictionary(grouping: ordinary) { row in
             SidebarModel.groupKey(hostId: row.hostId, projectId: row.session.projectId ?? "", remote: remotes(row))
@@ -97,7 +97,9 @@ struct SidebarModel {
             let br = SidebarModel.rank(b, layouts: layouts)
             if ar != br { return ar < br }
             let comparison = a.name.localizedStandardCompare(b.name)
-            return comparison == .orderedSame ? a.id < b.id : comparison == .orderedAscending
+            if comparison != .orderedSame { return comparison == .orderedAscending }
+            let an = hostNames(a.hostId) ?? "", bn = hostNames(b.hostId) ?? ""
+            return an == bn ? a.id < b.id : an.localizedStandardCompare(bn) == .orderedAscending
         }
     }
 
@@ -132,7 +134,7 @@ struct SidebarModel {
             let place = ProjectPlace(
                 hostId: row.hostId,
                 projectId: row.session.projectId ?? "",
-                name: names(row) ?? "Other sessions",
+                name: names(row) ?? row.session.projectId ?? "",
                 mark: marks(row)
             )
             if found[place.id] == nil { found[place.id] = place }
@@ -178,7 +180,7 @@ struct SidebarModel {
         return next
     }
 
-    private static func arranged(_ rows: [HostedSession], rank: (HostedSession) -> Int?) -> [HostedSession] {
+    static func arranged(_ rows: [HostedSession], rank: (HostedSession) -> Int?) -> [HostedSession] {
         var placed: [(at: Int, arrived: Int, row: HostedSession)] = []
         var rest: [HostedSession] = []
         for (arrived, row) in rows.enumerated() {
