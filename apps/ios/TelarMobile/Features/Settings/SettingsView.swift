@@ -4,6 +4,7 @@ struct SettingsView: View {
     let settings: AppSettings
     @State private var pushTarget: PushTarget?
     @State private var openDevicesSeed = UserDefaults.standard.bool(forKey: "openDevices")
+    @AppStorage(SidebarMode.storageKey) private var sidebarMode: SidebarMode = .grouped
 
     enum PushTarget: Hashable {
         case host(HostID)
@@ -18,6 +19,20 @@ struct SettingsView: View {
                     Label("Notifications & activities", systemImage: "bell.badge")
                         .frame(maxWidth: .infinity, alignment: .leading).padding()
                         .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.radiusCard))
+                }
+
+                VStack(spacing: 0) {
+                    SettingsSectionLabel("Session list")
+                    SettingsCard {
+                        CardRow(icon: "list.bullet.indent", title: "Group by") {
+                            Picker("Group by", selection: $sidebarMode) {
+                                ForEach(SidebarMode.allCases) { Text($0.label).tag($0) }
+                            }
+                            .pickerStyle(.segmented)
+                            .fixedSize()
+                        }
+                    }
+                    SettingsFootnote("Project groups conversations under their project; None lists them newest first, with spawned ones under their parent.")
                 }
 
                 VStack(spacing: 0) {
