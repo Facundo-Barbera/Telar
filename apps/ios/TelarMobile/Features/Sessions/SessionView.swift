@@ -4,6 +4,7 @@ struct SessionView: View {
     @State private var store: SessionStore
     @State private var draft = ""
     @State private var height: CGFloat = 0
+    @State private var footerHeight: CGFloat = 0
 
     @State private var composerFocused = false
     @State private var renaming = false
@@ -310,7 +311,7 @@ struct SessionView: View {
         VStack(spacing: 0) {
             statusStrip
             transcript
-            footer
+                .floatingComposer(height: $footerHeight, onFirstLayout: { DispatchQueue.main.async { pinToTail() } }) { footer }
         }
         .background(Theme.canvas)
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
@@ -391,6 +392,7 @@ struct SessionView: View {
                 .opacity(showsJumpButton ? 1 : 0)
                 .allowsHitTesting(showsJumpButton)
                 .animation(.easeInOut(duration: 0.15), value: showsJumpButton)
+                .padding(.bottom, footerHeight)
         }
     }
 
@@ -557,20 +559,15 @@ struct SessionView: View {
 }
 
 struct ComposerScrim: View {
-    @Environment(\.colorScheme) private var scheme
-
     var body: some View {
-        let base: Color = scheme == .dark ? .black : .white
-        LinearGradient(
-            stops: [
-                .init(color: base.opacity(0), location: 0),
-                .init(color: base.opacity(0.6), location: 0.55),
-                .init(color: base.opacity(0.9), location: 1),
-            ],
-            startPoint: .top, endPoint: .bottom
-        )
-        .ignoresSafeArea(edges: .bottom)
-        .allowsHitTesting(false)
+        Rectangle()
+            .fill(.bar)
+            .mask {
+                LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.35)],
+                               startPoint: .top, endPoint: .bottom)
+            }
+            .ignoresSafeArea(edges: .bottom)
+            .allowsHitTesting(false)
     }
 }
 
