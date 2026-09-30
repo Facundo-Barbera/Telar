@@ -6,7 +6,7 @@ import path from "node:path";
 import { DEFAULT_TEXT_GEN_POLICY, type Item, type TextGenPolicy } from "@telar/engine-client";
 import { EngineStore } from "../../state";
 import { EngineStateError } from "../../platform/kernel";
-import { cheapModel, generateSessionTitle, maybeRetitleSession, regenerateSessionTitle, sanitizeTitle, titleIsSeed, type RegenerateStore, type RetitleStore } from "./textgen";
+import { cheapModel, generateSessionTitle, maybeRetitleSession, maybeRetitleWithContext, regenerateSessionTitle, sanitizeTitle, titleIsSeed, type RegenerateStore, type RetitleStore } from "./textgen";
 import { buildTitlePrompt } from "./title-prompts";
 import { OPENCODE_VERSION } from "../../drivers/opencode/version";
 import { worktreeReady } from "../../../test/worktree-ready";
@@ -252,7 +252,7 @@ describe("maybeRetitleSession", () => {
   }>;
 
   function harness(overrides: Overrides = {}) {
-    const calls: { generate: unknown[]; updates: { title: string }[]; renamed: string[] } = { generate: [], updates: [], renamed: [] };
+    const calls: { generate: unknown[]; updates: { title: string; autoTitle?: string }[]; renamed: string[] } = { generate: [], updates: [], renamed: [] };
     let title = overrides.title ?? "fix the thing";
     const store: RetitleStore = {
       settings: { textGen: () => overrides.policy ?? { titles: true, renameBranches: true, driver: "claude", model: "haiku" } },
@@ -281,7 +281,7 @@ describe("maybeRetitleSession", () => {
   test("replaces the seed and renames the branch", async () => {
     const { calls, run } = harness();
     await run();
-    expect(calls.updates).toEqual([{ title: "A Real Title" }]);
+    expect(calls.updates).toEqual([{ title: "A Real Title", autoTitle: "first" }]);
     expect(calls.renamed).toEqual(["session_one"]);
     expect(calls.generate[0]).toMatchObject({ driver: "claude", model: "haiku", env: { A: "b" }, message: "fix the thing" });
   });
@@ -306,7 +306,7 @@ describe("maybeRetitleSession", () => {
     const { calls, run } = harness({ policy: { titles: true, renameBranches: true, driver: "opencode", model: "haiku" }, rows: ["google/gemini-3.1-pro", "anthropic/claude-haiku-4-5"] });
     await run();
     expect(calls.generate[0]).toMatchObject({ driver: "opencode", model: "anthropic/claude-haiku-4-5" });
-    expect(calls.updates).toEqual([{ title: "A Real Title" }]);
+    expect(calls.updates).toEqual([{ title: "A Real Title", autoTitle: "first" }]);
   });
 
   test("an image-only first message keeps its seed — there are no words to title", async () => {
@@ -440,6 +440,108 @@ describe("regenerateSessionTitle", () => {
   test("branch renaming honours its own switch", async () => {
     const { calls, run } = harness({ renameBranches: false });
     await run();
+    expect(calls.renamed).toHaveLength(0);
+  });
+});
+
+describe("maybeRetitleWithContext", () => {
+  let previous: string | undefined;
+  beforeAll(() => {
+    previous = process.env.TELAR_TEXTGEN;
+    delete process.env.TELAR_TEXTGEN;
+  });
+  afterAll(() => {
+    if (previous === undefined) delete process.env.TELAR_TEXTGEN;
+    else process.env.TELAR_TEXTGEN = previous;
+  });
+
+  type Mark = "first" | "second" | undefined;
+  type Overrides = Partial<{ autoTitle: Mark; titles: boolean; items: Item[]; answer: Record<string, unknown> | undefined; renamedMeanwhile: string }>;
+
+  const item = (index: number, detail: Item["detail"]): Item =>
+    ({ id: `item_${index}`, runId: "run_one", sessionId: "session_one", status: "completed", detail, startedAt: index }) as Item;
+  const asked = item(1, { type: "user_message", text: "arregla esto" } as Item["detail"]);
+  const answered = item(3, { type: "assistant_message", text: "The rail re-sorted twice on settle; it now sorts once." });
+  const worked = item(2, { type: "command_execution", command: { command: "bun test rail" } } as Item["detail"]);
+
+  function harness(overrides: Overrides = {}) {
+    const session = { title: "Fix This", state: "active", autoTitle: ("autoTitle" in overrides ? overrides.autoTitle : "first") as Mark };
+    const calls = { prompts: [] as string[], renamed: [] as string[] };
+    const store: RegenerateStore = {
+      settings: { textGen: () => ({ titles: overrides.titles ?? true, renameBranches: true, driver: "claude", model: "haiku" }) },
+      records: { get: () => ({ ...session }) },
+      providers: { resolve: () => ({ enabled: true, env: [] }) },
+      queries: { items: () => overrides.items ?? [asked, worked, answered] },
+      lifecycle: {
+        updateSession: (_id, patch) => {
+          if (patch.autoTitle !== undefined) session.autoTitle = patch.autoTitle;
+          else if (patch.title !== session.title) session.autoTitle = undefined;
+          session.title = patch.title;
+        },
+        refreshWorktreeBranchFromTitle: (id) => {
+          calls.renamed.push(id);
+          return undefined;
+        },
+      },
+    };
+    const run = (_input: unknown, prompt: string) => {
+      calls.prompts.push(prompt);
+      if (overrides.renamedMeanwhile !== undefined) store.lifecycle.updateSession("session_one", { title: overrides.renamedMeanwhile });
+      return Promise.resolve("answer" in overrides ? overrides.answer : { title: "Rail Settle Re-sort" });
+    };
+    return { session, calls, run: () => maybeRetitleWithContext(store, "session_one", run as never) };
+  }
+
+  test("after a turn that did work, retitles the generated title from the conversation, once", async () => {
+    const { session, calls, run } = harness();
+    await run();
+    expect(session).toEqual({ title: "Rail Settle Re-sort", state: "active", autoTitle: "second" });
+    expect(calls.prompts[0]).toContain('The previous title was "Fix This".');
+    expect(calls.prompts[0]).toContain("ASSISTANT:\nThe rail re-sorted twice on settle");
+    expect(calls.renamed).toEqual(["session_one"]);
+    await run();
+    expect(calls.prompts).toHaveLength(1);
+  });
+
+  test("a second message is enough context even without tool calls", async () => {
+    const { session, run } = harness({ items: [asked, answered, item(4, { type: "user_message", text: "y el orden?" } as Item["detail"])] });
+    await run();
+    expect(session.title).toBe("Rail Settle Re-sort");
+  });
+
+  test("waits while there is only the opening message and a bare answer", async () => {
+    const { session, calls, run } = harness({ items: [asked, answered] });
+    await run();
+    expect(calls.prompts).toHaveLength(0);
+    expect(session.autoTitle).toBe("first");
+  });
+
+  test("never touches a title a person or a creating session chose", async () => {
+    const { session, calls, run } = harness({ autoTitle: undefined });
+    await run();
+    expect(calls.prompts).toHaveLength(0);
+    expect(session.title).toBe("Fix This");
+  });
+
+  test("switched off, it does not ask", async () => {
+    const { calls, run } = harness({ titles: false });
+    await run();
+    expect(calls.prompts).toHaveLength(0);
+  });
+
+  test("a failure keeps the title and is not retried", async () => {
+    const { session, calls, run } = harness({ answer: undefined });
+    await run();
+    await run();
+    expect(session).toEqual({ title: "Fix This", state: "active", autoTitle: "second" });
+    expect(calls.prompts).toHaveLength(1);
+    expect(calls.renamed).toHaveLength(0);
+  });
+
+  test("a rename landing while it thinks wins", async () => {
+    const { session, calls, run } = harness({ renamedMeanwhile: "My rail bug" });
+    await run();
+    expect(session).toEqual({ title: "My rail bug", state: "active", autoTitle: undefined });
     expect(calls.renamed).toHaveLength(0);
   });
 });

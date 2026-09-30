@@ -73,6 +73,16 @@ test("a session can be renamed, and a no-op update writes no journal row", () =>
   expect(() => store.lifecycle.updateSession("session_one", { runtimeMode: "yolo" as "auto" })).toThrow(/unknown runtime mode/);
 });
 
+test("a generated title stays marked until someone else renames the session, even across a restart", () => {
+  const { store, root: stateRoot } = readyStore();
+  store.lifecycle.updateSession("session_one", { title: "Parser Fix", autoTitle: "first" });
+  store.lifecycle.updateSession("session_one", { title: "Parser Fix" });
+  expect(new EngineStore(stateRoot, () => 100).records.get("session_one").autoTitle).toBe("first");
+
+  store.lifecycle.updateSession("session_one", { title: "My parser" });
+  expect(new EngineStore(stateRoot, () => 100).records.get("session_one").autoTitle).toBeUndefined();
+});
+
 test("settling is a pin in either direction, and null hands the session back to the clock", () => {
   const { store } = readyStore();
   // Three answers, which is why this is an enum and not a boolean: shelve it,

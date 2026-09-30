@@ -153,8 +153,7 @@ export const ClaudeConversation = z.object({
   /** The working directory the conversation happened in. */
   cwd: z.string().optional(),
   gitBranch: z.string().optional(),
-  /** Transcript size on disk. The rough measure of how much conversation there
-   *  is, and the one that tells a long thread from a one-line question. */
+  /** Transcript size on disk: tells a long thread from a one-line question. */
   bytes: z.number().int().nonnegative().optional(),
 });
 export type ClaudeConversation = z.infer<typeof ClaudeConversation>;
@@ -164,6 +163,9 @@ export const Session = z.object({
   projectId: Id.optional(),
   environmentId: EnvironmentId,
   title: z.string(),
+  /** Present while the title is the engine's own: `first` from the opening message, `second` once retitled with
+   *  more context. Any other title change clears it, so absent means a person or a creator chose the title. */
+  autoTitle: z.enum(["first", "second"]).optional(),
   state: SessionState,
   /** Provenance, never a link — see `SessionOrigin`. Absent is "human". */
   origin: SessionOrigin.optional(),
@@ -185,8 +187,7 @@ export const Session = z.object({
   /** Browser-only conversation. Workspace creation is deferred until first send. */
   draft: z.object({ baseRef: z.string().optional(), branchName: z.string().optional(), branchSlug: z.string().optional() }).optional(),
 
-  /** What this session may do without asking. Set at creation, changeable
-   *  mid-session — a human can hand a running session more rope, or take it. */
+  /** What this session may do without asking; changeable mid-session. */
   runtimeMode: RuntimeMode,
   interactionMode: InteractionMode,
 
