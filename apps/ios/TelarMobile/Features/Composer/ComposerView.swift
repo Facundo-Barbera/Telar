@@ -31,6 +31,7 @@ struct ComposerView: View {
 
     @State private var canDictate = false
     @Environment(\.colorScheme) private var scheme
+    @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 44
 
     private var isRunning: Bool { host.isRunning }
     private var queued: [JournalTurn] { host.queuedTurns }
@@ -39,6 +40,10 @@ struct ComposerView: View {
 
     private var canSend: Bool {
         SessionDraft.canSend(text: draft, mediaTypes: host.pendingAttachments.map(\.mediaType))
+    }
+
+    private var slot: ComposerSlot {
+        ComposerSlot.resolve(canSend: canSend, running: isRunning, listening: isListening, canDictate: dictation != nil && canDictate)
     }
 
     var body: some View {
@@ -61,12 +66,22 @@ struct ComposerView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
-            surface
-            if focused { toolbar }
+            if !host.pendingAttachments.isEmpty || host.uploading {
+                attachmentStrip.padding(.bottom, 8)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                plusMenu
+                pill
+                slotButton
+            }
             if !queued.isEmpty { queueLine }
         }
-        .animation(.linear(duration: 0.22), value: focused)
         .animation(.linear(duration: 0.18), value: queued.count)
+        .animation(.linear(duration: 0.18), value: host.pendingAttachments.count)
+        .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
+            intake(providers)
+            return true
+        }
 
         .onAppear {
             guard dictation == nil, let api else { return }
@@ -116,79 +131,44 @@ struct ComposerView: View {
         }
     }
 
-    private var surface: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if focused && !host.pendingAttachments.isEmpty {
-                attachmentStrip.padding(.bottom, 10)
-            }
-
-            HStack(alignment: focused ? .bottom : .center, spacing: 8) {
-                ComposerTextView(
-                    text: $draft,
-                    placeholder: host.placeholder,
-                    focused: focus,
-                    maxLines: focused ? 7 : 1,
-                    listening: isListening,
-                    interim: interim,
-                    caretRect: $caretRect,
-                    onPaste: { intake($0) }
-                )
-                .frame(minHeight: focused ? 80 : 44, alignment: focused ? .topLeading : .leading)
-                .padding(.vertical, focused ? 8 : 0)
-
-                .overlay(alignment: .topLeading) {
-                    if isListening, let caretRect {
-                        DictationCaretPill(language: dictation?.language)
-                            .offset(
-                                x: DictationCaretPill.origin(for: caretRect).x,
-                                y: DictationCaretPill.origin(for: caretRect).y
-                            )
-                            .transition(.opacity)
-                    }
-                }
-                .animation(.linear(duration: 0.12), value: isListening)
-                if !focused {
-                    if !host.pendingAttachments.isEmpty {
-                        Text("+\(host.pendingAttachments.count)")
-                            .font(.system(Theme.footnote, weight: .bold))
-                            .foregroundStyle(Theme.textMuted)
-                            .frame(width: 30, height: 30)
-                            .background(Theme.subtleStrong)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                    }
-                    if !isRunning { dictationButton }
-                    ControlPillButton(
-                        isRunning: isRunning, canSend: canSend,
-                        action: { isRunning ? stop() : submit() }
+    private var pill: some View {
+        let shape = RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous)
+        return ComposerTextView(
+            text: $draft,
+            placeholder: host.placeholder,
+            focused: focus,
+            maxLines: ComposerGrowth.maxLines,
+            listening: isListening,
+            interim: interim,
+            caretRect: $caretRect,
+            onPaste: { intake($0) }
+        )
+        .overlay(alignment: .topLeading) {
+            if isListening, let caretRect {
+                DictationCaretPill(language: dictation?.language)
+                    .offset(
+                        x: DictationCaretPill.origin(for: caretRect).x,
+                        y: DictationCaretPill.origin(for: caretRect).y
                     )
-                }
+                    .transition(.opacity)
             }
         }
-        .padding(.leading, focused ? 14 : 18)
-        .padding(.trailing, focused ? 14 : 5)
-        .padding(.vertical, focused ? 12 : 5)
-        .composerGlass(cornerRadius: focused ? Theme.radiusComposerFocused : Theme.radiusComposerRest)
+        .animation(.linear(duration: 0.12), value: isListening)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .frame(minHeight: rowHeight)
+        .composerGlass(cornerRadius: Theme.radiusComposer)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
-
-        .contentShape(RoundedRectangle(cornerRadius: focused ? Theme.radiusComposerFocused : Theme.radiusComposerRest, style: .continuous))
+        .contentShape(shape)
         .onTapGesture { focus.wrappedValue = true }
-
         .contextMenu {
             Button("Clear draft", systemImage: "eraser") { clearDraft() }
                 .disabled(draft.isEmpty)
             Button("Stash draft", systemImage: "tray.and.arrow.down", action: stashDraft)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-
-        .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
-            intake(providers)
-            return true
+                .disabled(!hasDraftText)
         }
         .overlay {
-            if dropping {
-                RoundedRectangle(cornerRadius: focused ? Theme.radiusComposerFocused : Theme.radiusComposerRest, style: .continuous)
-                    .strokeBorder(Theme.accent, lineWidth: 2)
-            }
+            if dropping { shape.strokeBorder(Theme.accent, lineWidth: 2) }
         }
     }
 
@@ -223,89 +203,72 @@ struct ComposerView: View {
         }
     }
 
-    private var toolbar: some View {
-        HStack(spacing: 8) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    attachButton
-                    StashButton(hasDraft: hasDraftText, onStash: stashDraft, onOpen: { showingStash = true })
-                    controls.model(false)
-                    controls.options
-                }
-                HStack(spacing: 8) { moreMenu; controls.model(false) }
-                HStack(spacing: 8) { moreMenu; controls.model(true) }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if isRunning {
-                ToolbarPill(variant: .danger) {
-                    stop()
-                } label: {
-                    Image(systemName: "stop.fill").scaledGlyph(14)
-                }
-                .accessibilityLabel("Stop the running turn")
-            }
-            dictationButton
-            Button {
-                submit()
-            } label: {
-                Image(systemName: "arrow.up")
-                    .foregroundStyle(canSend ? Theme.primaryGlyph : Theme.textMuted)
-                    .scaledGlyphBox(44, glyph: 16, weight: .semibold)
-                    .background(canSend ? Theme.primaryFill : Theme.subtleStrong)
-                    .clipShape(Circle())
-            }
-            .disabled(!canSend)
-            .accessibilityLabel(isRunning || !queued.isEmpty ? "Queue" : "Send")
-        }
-        .padding(.top, 8)
-        .padding(.bottom, 2)
-    }
-
     private var hasDraftText: Bool { !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
-    private var attachButton: some View {
-        Button {
-            pickingPhotos = true
-        } label: {
-            Image(systemName: "plus")
-                .foregroundStyle(Theme.text)
-                .scaledGlyphBox(44, glyph: 16)
-                .background(Theme.subtle)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
-        }
-        .accessibilityLabel("Attach photos")
-    }
-
-    private var moreMenu: some View {
+    private var plusMenu: some View {
         Menu {
-            Button("Attach photos", systemImage: "photo") { pickingPhotos = true }
-            if hasDraftText { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
-            Button("Show stashed prompts", systemImage: "tray.full") { showingStash = true }
-            controls.options.environment(\.composerPillsInMenu, true)
+            Section {
+                controls.model
+                controls.options
+            }
+            .environment(\.composerPillsInMenu, true)
+            Section {
+                Button("Attach photos", systemImage: "photo") { pickingPhotos = true }
+                if hasDraftText { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
+                Button("Show stashed prompts", systemImage: "tray.full") { showingStash = true }
+            }
+            if isRunning && slot != .stop {
+                Button("Stop the running turn", systemImage: "stop.fill", role: .destructive, action: stop)
+            }
         } label: {
             Image(systemName: "plus")
                 .foregroundStyle(Theme.text)
-                .scaledGlyphBox(44, glyph: 16)
-                .background(Theme.subtle)
-                .clipShape(Circle())
-                .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
+                .scaledGlyphBox(44, glyph: 18, weight: .medium)
+                .composerGlass(cornerRadius: rowHeight / 2)
         }
+        .menuOrder(.fixed)
         .accessibilityLabel("More")
     }
 
-    @ViewBuilder private var dictationButton: some View {
-        if let dictation, canDictate {
-            ToolbarPill(variant: dictation.phase == .listening ? .danger : .normal) {
+    private var slotButton: some View {
+        let primary = slot == .send && canSend
+        let danger = slot == .stop || slot == .stopDictating
+        return Button {
+            switch slot {
+            case .send: submit()
+            case .stop: stop()
+            case .dictate, .stopDictating:
                 if !focused { focus.wrappedValue = true }
-                dictation.toggle()
-            } label: {
-                Image(systemName: dictation.phase == .listening ? "mic.fill" : "mic")
-                    .scaledGlyph(16)
-                    .symbolEffect(.pulse, isActive: dictation.phase == .listening)
+                dictation?.toggle()
             }
-            .accessibilityLabel(dictation.phase == .listening ? "Stop dictating" : "Dictate")
-            .disabled(dictation.phase == .starting)
+        } label: {
+            Image(systemName: slotGlyph)
+                .contentTransition(.symbolEffect(.replace))
+                .symbolEffect(.pulse, isActive: slot == .stopDictating)
+                .foregroundStyle(primary ? Theme.primaryGlyph : danger ? Theme.dangerGlyph : slot == .send ? Theme.textMuted : Theme.text)
+                .scaledGlyphBox(44, glyph: 17, weight: .semibold)
+                .background(primary ? Theme.primaryFill : danger ? Theme.dangerFill : Theme.subtleStrong, in: Circle())
+        }
+        .disabled((slot == .send && !canSend) || (slot == .dictate && dictation?.phase == .starting))
+        .animation(.spring(duration: 0.25), value: slot)
+        .accessibilityLabel(slotLabel)
+    }
+
+    private var slotGlyph: String {
+        switch slot {
+        case .send: "arrow.up"
+        case .dictate: "mic"
+        case .stopDictating: "mic.fill"
+        case .stop: "stop.fill"
+        }
+    }
+
+    private var slotLabel: String {
+        switch slot {
+        case .send: isRunning || !queued.isEmpty ? "Queue" : "Send"
+        case .dictate: "Dictate"
+        case .stopDictating: "Stop dictating"
+        case .stop: "Stop the running turn"
         }
     }
 

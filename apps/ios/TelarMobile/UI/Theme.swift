@@ -35,8 +35,7 @@ enum Theme {
     static let radiusCard: CGFloat = 14
     static let radiusBubble: CGFloat = 18
 
-    static let radiusComposerRest: CGFloat = 27
-    static let radiusComposerFocused: CGFloat = 20
+    static let radiusComposer: CGFloat = 22
     static let radiusDrawer: CGFloat = 16
 
     static let readingMeasure: CGFloat = 680

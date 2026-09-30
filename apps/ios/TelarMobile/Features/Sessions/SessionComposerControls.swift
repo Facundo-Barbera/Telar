@@ -3,7 +3,7 @@ import SwiftUI
 enum SessionComposerControls {
     @MainActor static func make(store: SessionStore) -> ComposerControls {
         ComposerControls(
-            model: { compact in AnyView(SessionModelPill(store: store, compact: compact)) },
+            model: AnyView(SessionModelMenu(store: store)),
             options: AnyView(RuntimeModePill(mode: store.sync.session?.runtimeMode ?? "approval-required") { mode in
                 Task { await store.setRuntimeMode(mode) }
             })
@@ -11,14 +11,13 @@ enum SessionComposerControls {
     }
 }
 
-private struct SessionModelPill: View {
+private struct SessionModelMenu: View {
     let store: SessionStore
-    let compact: Bool
 
     var body: some View {
         let driver = store.sync.session?.driver ?? "claude"
         let selection = store.sync.session?.model
-        ModelPillView(
+        ModelMenu(
             catalogues: store.catalogue.map { [driver: $0] } ?? [:],
             choice: ModelChoice(
                 driver: driver, model: selection?.model,
@@ -26,7 +25,6 @@ private struct SessionModelPill: View {
                 serviceTier: selection?.serviceTier, ultracode: selection?.ultracode
             ),
             driversSwitchable: false,
-            compact: compact,
             onChange: { next in Task { await store.setModelChoice(next) } }
         )
         .task { await store.loadModels() }

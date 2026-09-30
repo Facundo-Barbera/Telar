@@ -12,7 +12,7 @@ struct StashSheet: View {
                     ContentUnavailableView(
                         "Nothing stashed",
                         systemImage: "tray",
-                        description: Text("Tap the tray in the composer with something in the box to set it aside for another conversation.")
+                        description: Text("Choose Stash this prompt from the composer's + menu to set a draft aside for another conversation.")
                     )
                 } else {
                     List {
@@ -66,42 +66,4 @@ func stashAgo(_ at: Timestamp, now: Date = Date()) -> String {
     let days = hours / 24
     if days < 7 { return "\(days)d ago" }
     return "\(days / 7)w ago"
-}
-
-struct StashButton: View {
-    let hasDraft: Bool
-    let onStash: () -> Void
-    let onOpen: () -> Void
-    private var count: Int { PromptStash.shared.entries.count }
-
-    var body: some View {
-        if hasDraft || count > 0 {
-            Button {
-                if hasDraft { onStash() } else { onOpen() }
-            } label: {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: hasDraft ? "tray.and.arrow.down" : "tray.full")
-                        .foregroundStyle(Theme.text)
-                        .scaledGlyphBox(44, glyph: 15)
-                        .background(Theme.subtle)
-                        .clipShape(Circle())
-                        .overlay(Circle().strokeBorder(Theme.border, lineWidth: 1))
-                    if count > 0 {
-                        Text("\(count)")
-                            .font(.system(Theme.caption, weight: .semibold))
-                            .foregroundStyle(Theme.primaryGlyph)
-                            .padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Theme.accent, in: Capsule())
-                            .offset(x: 4, y: -2)
-                    }
-                }
-            }
-            .accessibilityLabel(hasDraft ? "Stash this prompt" : "Stashed prompts")
-            .contextMenu {
-                if hasDraft { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: onStash) }
-                Button("Show stashed prompts", systemImage: "tray.full", action: onOpen)
-            }
-            .keyboardShortcut("s", modifiers: .command)
-        }
-    }
 }
