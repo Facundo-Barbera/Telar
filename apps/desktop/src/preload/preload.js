@@ -170,6 +170,7 @@ contextBridge.exposeInMainWorld("telarDesktop", {
 
   notifications: {
     onOpen: (listener) => on("telar:notifications:open", listener),
+    test: (sounds) => ipcRenderer.invoke("telar:notifications:test", { sounds }),
   },
 
   keybindings: {

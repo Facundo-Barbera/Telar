@@ -398,7 +398,7 @@ require("./ipc-store").registerWorkspaceAndStoreIpc({ telarHome });
 
 require("./ipc-prefs").registerPrefsIpc();
 
-require("./ipc-app").registerAppIpc({ createWindow });
+require("./ipc-app").registerAppIpc({ createWindow, testNotification: desktopNotifier.test });
 
 const { configureAutoUpdater } = require("./updates").registerUpdates({
   telarHome,

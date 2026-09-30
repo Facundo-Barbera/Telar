@@ -9,7 +9,10 @@ import { NotificationSoundsRow, previewUrl, SOUND_LABELS } from "./notification-
 
 installTestDom();
 const realAudio = globalThis.Audio;
-afterEach(() => { globalThis.Audio = realAudio; });
+afterEach(() => {
+  globalThis.Audio = realAudio;
+  delete (window as { telarDesktop?: unknown }).telarDesktop;
+});
 
 async function mountRow(sounds: NotificationSounds) {
   const calls = stubFetch({ "GET /api/mobile/sounds": () => ({ sounds }), "PUT /api/mobile/sounds": () => ({}) });
@@ -41,6 +44,20 @@ describe("Notification sounds", () => {
     expect(played).toEqual([]);
     expect(calls.filter((call) => call.route.startsWith("PUT")).map((call) => call.body)).toEqual([{ sounds: "hilo" }]);
     expect(host.textContent).toContain("Hilo");
+    unmount();
+  });
+
+  test("in the desktop app, Test sends a notification with the chosen set; a browser has no Test", async () => {
+    const browser = await mountRow("hilo");
+    expect(browser.host.querySelector('[aria-label="Test"]')).toBeNull();
+    browser.unmount();
+
+    const sent: string[] = [];
+    (window as { telarDesktop?: unknown }).telarDesktop = { notifications: { test: (sounds: string) => (sent.push(sounds), Promise.resolve({ ok: true })) } };
+    const { host, played, unmount } = await mountRow("armonico");
+    await click(host.querySelector('[aria-label="Test"]')!);
+    expect(sent).toEqual(["armonico"]);
+    expect(played).toEqual([]);
     unmount();
   });
 });
