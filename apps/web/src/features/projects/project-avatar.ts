@@ -1,3 +1,5 @@
+import { LOCAL_HOST_ID, rewriteApiPath } from "@/platform/engine/host-client";
+
 
 export function projectHue(name: string): number {
   let hash = 0x811c9dc5;
@@ -16,6 +18,6 @@ export function projectInitial(name: string): string {
   return first.toUpperCase();
 }
 
-export function projectIconUrl(projectId: string, icon: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/icon?v=${encodeURIComponent(icon)}`;
+export function projectIconUrl(projectId: string, icon: string, hostId: string = LOCAL_HOST_ID): string {
+  return rewriteApiPath(`/api/projects/${encodeURIComponent(projectId)}/icon?v=${encodeURIComponent(icon)}`, hostId);
 }

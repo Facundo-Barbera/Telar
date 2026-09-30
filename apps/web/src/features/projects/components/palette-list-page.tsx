@@ -38,7 +38,8 @@ function ProjectMatches({
           glyph={
             <ProjectAvatar
               name={target.name}
-              {...(target.hostId ? {} : { projectId: target.id })}
+              projectId={target.id}
+              {...(target.hostId ? { hostId: target.hostId } : {})}
               {...(target.icon ? { icon: target.icon } : {})}
               {...(target.iconName ? { iconName: target.iconName } : {})}
               size={16}

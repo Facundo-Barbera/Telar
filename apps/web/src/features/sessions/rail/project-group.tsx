@@ -167,6 +167,7 @@ export function ProjectGroupSection({
               <ProjectAvatar
                 name={group.name}
                 projectId={group.projectId}
+                {...(group.hostId ? { hostId: group.hostId } : {})}
                 {...(group.icon ? { icon: group.icon } : {})}
                 {...(group.iconName ? { iconName: group.iconName } : {})}
                 size={16}

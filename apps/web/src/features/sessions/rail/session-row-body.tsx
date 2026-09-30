@@ -15,6 +15,7 @@ function RowAvatar({ session, size }: { session: SidebarSession & { projectName:
     <ProjectAvatar
       name={session.projectName}
       {...(session.projectId ? { projectId: session.projectId } : {})}
+      {...(session.hostId ? { hostId: session.hostId } : {})}
       {...(session.projectIcon ? { icon: session.projectIcon } : {})}
       {...(session.projectIconName ? { iconName: session.projectIconName } : {})}
       size={size}

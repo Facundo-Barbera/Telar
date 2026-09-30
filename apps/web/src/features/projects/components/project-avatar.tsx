@@ -10,6 +10,7 @@ import { cn } from "@/ui/utils";
 export function ProjectAvatar({
   name,
   projectId,
+  hostId,
   icon,
   iconName,
   iconEmoji,
@@ -18,6 +19,7 @@ export function ProjectAvatar({
 }: {
   name?: string;
   projectId?: string;
+  hostId?: string;
   icon?: string;
   iconName?: string;
   iconEmoji?: string;
@@ -49,7 +51,7 @@ export function ProjectAvatar({
     return (
       // eslint-disable-next-line @next/next/no-img-element -- engine-served bytes with an immutable cache key; nothing for next/image to add
       <img
-        src={projectIconUrl(projectId, icon)}
+        src={projectIconUrl(projectId, icon, hostId)}
         alt=""
         aria-hidden
         style={box}

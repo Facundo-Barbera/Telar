@@ -71,7 +71,8 @@ export function SidebarProjectFilter({
                     <span className="flex size-4 shrink-0 items-center justify-center">{on && <CheckIcon className="size-3.5" />}</span>
                     <ProjectAvatar
                       name={target.name}
-                      {...(target.hostId ? {} : { projectId: target.id })}
+                      projectId={target.id}
+                      {...(target.hostId ? { hostId: target.hostId } : {})}
                       {...(target.icon ? { icon: target.icon } : {})}
                       {...(target.iconName ? { iconName: target.iconName } : {})}
                       size={14}
