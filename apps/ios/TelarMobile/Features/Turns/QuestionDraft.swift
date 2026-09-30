@@ -9,7 +9,6 @@ struct QuestionPage: Equatable {
     let multiple: Bool
 }
 
-/// One question per page; `nil` when a field needs the plain form (a secret or a toggle).
 struct QuestionDraft: Equatable {
     let pages: [QuestionPage]
     private(set) var index = 0
@@ -72,7 +71,6 @@ struct QuestionDraft: Equatable {
         return page.multiple ? .list(page.choices.filter(chosen.contains)) : .text(first)
     }
 
-    /// Every page's answer keyed by field, or `nil` while one is unanswered.
     var answers: [String: AnswerValue]? {
         var all: [String: AnswerValue] = [:]
         for page in pages {
