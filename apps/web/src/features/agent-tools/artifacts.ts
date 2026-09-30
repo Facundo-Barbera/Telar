@@ -1,6 +1,5 @@
 import type { Artifact, ArtifactKind, Item } from "@telar/engine-client";
 
-/** Nothing leaves the frame: no fetch, no image or font from the network, no form post. */
 const ARTIFACT_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; form-action 'none'; base-uri 'none'";
 
 export const ARTIFACT_SANDBOX = "allow-scripts";
@@ -17,7 +16,6 @@ export function clampFrameHeight(height: unknown): number | undefined {
 
 const escapeScript = (value: string) => JSON.stringify(value).replaceAll("<", "\\u003c");
 
-/** A whole document for a sandboxed frame; it reports its height to the parent under `frame`. */
 export function artifactDocument(kind: Extract<ArtifactKind, "html" | "svg">, content: string, frame: string): string {
   const body = content.replace(/^\s*<!doctype[^>]*>/i, "");
   const svg = kind === "svg" ? "<style>body{display:flex;justify-content:center}svg{max-width:100%;height:auto}</style>" : "";
@@ -25,7 +23,6 @@ export function artifactDocument(kind: Extract<ArtifactKind, "html" | "svg">, co
   return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}"><meta charset="utf-8"><style>html,body{margin:0;background:transparent}</style>${svg}${body}${report}`;
 }
 
-/** The newest version of every artifact among these items, by artifact id. */
 export function latestArtifacts(items: Iterable<Pick<Item, "detail">>): Map<string, Artifact> {
   const latest = new Map<string, Artifact>();
   for (const item of items) {

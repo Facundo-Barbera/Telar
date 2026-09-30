@@ -12,14 +12,12 @@ type Shelf = { latest: ReadonlyMap<string, Artifact>; hostId?: string; onOpen?: 
 
 const ShelfContext = createContext<Shelf>({ latest: new Map() });
 
-/** What every card in one conversation needs: each artifact's newest version, and a way into the panel. */
 export function ArtifactShelf({ items, hostId, onOpen, children }: { items: Iterable<Pick<Item, "detail">>; hostId?: string; onOpen?: (artifactId: string) => void; children: ReactNode }) {
   const latest = useMemo(() => latestArtifacts(items), [items]);
   const shelf = useMemo(() => ({ latest, ...(hostId ? { hostId } : {}), ...(onOpen ? { onOpen } : {}) }), [latest, hostId, onOpen]);
   return <ShelfContext.Provider value={shelf}>{children}</ShelfContext.Provider>;
 }
 
-/** An earlier version folds to its header; the newest one draws the artifact. */
 export function ArtifactCard({ sessionId, artifact }: { sessionId: string; artifact: Artifact }) {
   const { latest, hostId, onOpen } = useContext(ShelfContext);
   const newest = latest.get(artifact.id) ?? artifact;

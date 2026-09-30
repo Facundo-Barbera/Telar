@@ -28,7 +28,6 @@ function useArtifactText(hostId: string, sessionId: string, attachmentId: string
   return loaded.attachmentId === attachmentId ? loaded : { attachmentId };
 }
 
-/** Html and svg run in an opaque-origin frame: it cannot reach the cockpit, its cookies or the network. */
 function SandboxFrame({ kind, content, title, fill }: { kind: "html" | "svg"; content: string; title: string; fill: boolean }) {
   const frame = useId();
   const ref = useRef<HTMLIFrameElement>(null);
