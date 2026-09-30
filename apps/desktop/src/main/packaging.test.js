@@ -248,3 +248,12 @@ describe("the password-manager extension ships with what it needs", () => {
     expect(fs.existsSync(preload)).toBe(true);
   });
 });
+
+describe("the packaged app owns the group container its sounds install into", () => {
+  test("the main app is entitled to the team-prefixed group the chime writes to", () => {
+    const { APP_GROUP } = require("./notification-sound");
+    const plist = fs.readFileSync(path.join(__dirname, "..", "..", "assets", "entitlements.mac.plist"), "utf8");
+    expect(plist).toMatch(new RegExp(`<key>com\\.apple\\.security\\.application-groups</key>\\s*<array>\\s*<string>${APP_GROUP.replaceAll(".", "\\.")}</string>`));
+    expect(APP_GROUP).toBe(`MM74W7WGAM.${manifest.build.appId}`);
+  });
+});

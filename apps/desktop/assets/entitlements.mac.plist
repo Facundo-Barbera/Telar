@@ -37,5 +37,13 @@
 	<true/>
 	<key>com.apple.security.device.audio-input</key>
 	<true/>
+	<!--
+	  NotificationCenter resolves a banner's custom sound from the app group's
+	  Library/Sounds, not from the bundle. Team-prefixed, so Developer ID needs no profile.
+	-->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>MM74W7WGAM.io.github.novarix.telar</string>
+	</array>
 </dict>
 </plist>
