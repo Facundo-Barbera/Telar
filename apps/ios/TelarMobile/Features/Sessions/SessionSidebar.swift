@@ -223,7 +223,7 @@ struct SessionSidebar: View {
             settings.host(draft.hostId) != nil && (inbox.filter == nil || inbox.filter == draft.hostId)
         }) { draft in
             Button { resumeDraft(draft) } label: {
-                Label(draft.title.isEmpty ? String(draft.prompt.prefix(60)) : draft.title, systemImage: "pencil")
+                Label(String(draft.prompt.prefix(60)), systemImage: "pencil")
                     .font(.subheadline).lineLimit(1)
             }.contextMenu {
                 Button("Discard draft", role: .destructive) { MobileDrafts.shared.remove(host: draft.hostId, project: draft.project.id) }
@@ -425,7 +425,7 @@ struct SessionSidebar: View {
         resumeDraft(MobileDraft(hostId: place.hostId,
                                 project: ProjectRef(id: place.projectId, name: place.name, icon: place.mark.icon,
                                                     iconName: place.mark.iconName, iconEmoji: place.mark.iconEmoji),
-                                prompt: "", title: ""))
+                                prompt: ""))
     }
 
     private enum RowVariant { case card, slim }
@@ -519,7 +519,7 @@ struct SessionSidebar: View {
         case .newSession(let projectId, let baseRef):
             let project = inbox.project(row)
                 ?? ProjectRef(id: projectId, name: inbox.projectName(row) ?? "Project")
-            resumeDraft(MobileDraft(hostId: row.hostId, project: project, prompt: "", title: "", baseRef: baseRef))
+            resumeDraft(MobileDraft(hostId: row.hostId, project: project, prompt: "", baseRef: baseRef))
         case .pin(let pinned):
             Task { await patch(row, pinned ? SessionPatch(settledOverride: "active") : SessionPatch(clearSettledOverride: true)) }
         case .settle(let settled):

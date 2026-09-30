@@ -3,26 +3,18 @@ import Testing
 
 @Suite struct SessionDraftTests {
     @Test func derivedTitleCollapsesWhitespaceLikeTheWebCanvas() {
-        #expect(SessionDraft.title(explicit: "", prompt: "fix   the\n\nlogin   bug") == "fix the login bug")
+        #expect(SessionDraft.title(prompt: "fix   the\n\nlogin   bug") == "fix the login bug")
     }
 
     @Test func derivedTitleCapsAtEightyCharacters() {
         let long = String(repeating: "a", count: 200)
-        #expect(SessionDraft.title(explicit: "", prompt: long).count == 80)
-    }
-
-    @Test func explicitTitleWins() {
-        #expect(SessionDraft.title(explicit: "  Auth refactor  ", prompt: "do things") == "Auth refactor")
-    }
-
-    @Test func allWhitespaceExplicitTitleFallsBackToThePrompt() {
-        #expect(SessionDraft.title(explicit: "   \n ", prompt: "hello world") == "hello world")
+        #expect(SessionDraft.title(prompt: long).count == 80)
     }
 
     @Test func anImageOnlyMessageIsTitledByItsPicture() {
-        #expect(SessionDraft.title(explicit: "", prompt: " ", imageNames: ["Screenshot.png"]) == "Screenshot.png")
-        #expect(SessionDraft.title(explicit: "", prompt: "", imageNames: ["a.png", "b.png"]) == "2 images")
-        #expect(SessionDraft.title(explicit: "", prompt: "words win", imageNames: ["a.png"]) == "words win")
+        #expect(SessionDraft.title(prompt: " ", imageNames: ["Screenshot.png"]) == "Screenshot.png")
+        #expect(SessionDraft.title(prompt: "", imageNames: ["a.png", "b.png"]) == "2 images")
+        #expect(SessionDraft.title(prompt: "words win", imageNames: ["a.png"]) == "words win")
     }
 
     @Test func textAloneCanBeSent() {

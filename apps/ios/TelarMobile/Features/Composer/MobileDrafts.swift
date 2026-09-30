@@ -5,7 +5,6 @@ struct MobileDraft: Codable, Identifiable {
     var hostId: HostID
     var project: ProjectRef
     var prompt: String
-    var title: String
     var createdSessionId: String?
     var submissionRunId: String?
     var baseRef: String?
@@ -21,7 +20,7 @@ struct MobileDraft: Codable, Identifiable {
     func draft(host: HostID, project: String) -> MobileDraft? { drafts.first { $0.hostId == host && $0.project.id == project } }
     func save(_ draft: MobileDraft) {
         drafts.removeAll { $0.id == draft.id }
-        if !draft.prompt.isEmpty || !draft.title.isEmpty { drafts.append(draft) }
+        if !draft.prompt.isEmpty || draft.createdSessionId != nil { drafts.append(draft) }
         persist()
     }
     func remove(host: HostID, project: String? = nil) {
