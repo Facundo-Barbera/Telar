@@ -16,6 +16,7 @@ struct ComposerTextView: UIViewRepresentable {
     var interim: Range<Int>?
 
     var caretRect: Binding<CGRect?>?
+    var caret: ComposerCaret?
     let onPaste: ([NSItemProvider]) -> Void
 
     func makeUIView(context: Context) -> ComposerUITextView {
@@ -41,6 +42,7 @@ struct ComposerTextView: UIViewRepresentable {
         context.coordinator.focused = $focused
         context.coordinator.caretRect = caretRect
         view.onPaste = onPaste
+        caret?.view = view
         context.coordinator.sync(view, to: text)
 
         let font = UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: fontSize))
@@ -180,9 +182,9 @@ final class ComposerUITextView: UITextView {
         replace(span, withText: edit.text)
         inputDelegate?.textDidChange(self)
 
-        if let kept = ComposerTextEdit.selection(selection, after: edit.range, replacedBy: edit.text) {
-            selectedRange = kept
-        }
+        let written = edit.range.location + (edit.text as NSString).length
+        selectedRange = ComposerTextEdit.selection(selection, after: edit.range, replacedBy: edit.text)
+            ?? NSRange(location: min(selection.location, written), length: 0)
 
         dimmed = nil
         return true

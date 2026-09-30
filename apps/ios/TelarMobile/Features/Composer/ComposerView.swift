@@ -28,6 +28,7 @@ struct ComposerView: View {
     @State private var interim: Range<Int>?
 
     @State private var caretRect: CGRect?
+    @State private var caret = ComposerCaret()
 
     @State private var canDictate = false
     @Environment(\.colorScheme) private var scheme
@@ -91,8 +92,10 @@ struct ComposerView: View {
             let box = $draft
 
             let words = DictationDraftBox()
+            let probe = caret
             live.onWords = { heard in
-                box.wrappedValue = words.write(heard, into: box.wrappedValue)
+                let draft = box.wrappedValue
+                box.wrappedValue = words.write(heard, into: draft, caret: probe.location(in: draft))
 
                 interim = words.unconfirmed
             }
@@ -142,6 +145,7 @@ struct ComposerView: View {
             listening: isListening,
             interim: interim,
             caretRect: $caretRect,
+            caret: caret,
             onPaste: { intake($0) }
         )
         .overlay(alignment: .topLeading) {
