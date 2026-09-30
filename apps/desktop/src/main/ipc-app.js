@@ -5,11 +5,13 @@ const { lastWindowUrl } = require("./browser-hosts");
 const { linkRouting } = require("./window-links");
 const { lastRunawayNotice, processMetricsReader } = require("./renderer-watch");
 
-function registerAppIpc({ createWindow }) {
+function registerAppIpc({ createWindow, testNotification }) {
   ipcMain.handle("telar:app:relaunch", () => {
     app.relaunch();
     app.quit();
   });
+
+  ipcMain.handle("telar:notifications:test", (_event, input) => testNotification(input?.sounds));
 
   ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
 

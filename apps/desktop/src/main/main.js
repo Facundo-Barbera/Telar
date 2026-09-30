@@ -9,7 +9,7 @@ const { startRunTerminalServer } = require("../terminal/run-terminal-server");
 const { publishTailscaleServe, serveEnv, unpublishTailscaleServe } = require("./tailscale");
 const { windowTargetUrl } = require("./window-target");
 const { createDesktopNotifier } = require("./desktop-notifications");
-const { createChime, DEV_SOUNDS } = require("./notification-sound");
+const { createChime } = require("./notification-sound");
 const { watchVolumes } = require("./volume-watch");
 const { awaitStore } = require("../store/store-gate");
 const { createStoreGateWindow } = require("../store/store-gate-window");
@@ -147,7 +147,7 @@ function startServer(port, home) {
 }
 
 const desktopNotifier = createDesktopNotifier({
-  Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath, chime: createChime({ dir: app.isPackaged ? process.resourcesPath : DEV_SOUNDS }),
+  Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath, chime: createChime({ packaged: app.isPackaged }),
 });
 const presence = createPresence({ send: engineNotices.send });
 
@@ -398,7 +398,7 @@ require("./ipc-store").registerWorkspaceAndStoreIpc({ telarHome });
 
 require("./ipc-prefs").registerPrefsIpc();
 
-require("./ipc-app").registerAppIpc({ createWindow });
+require("./ipc-app").registerAppIpc({ createWindow, testNotification: desktopNotifier.test });
 
 const { configureAutoUpdater } = require("./updates").registerUpdates({
   telarHome,

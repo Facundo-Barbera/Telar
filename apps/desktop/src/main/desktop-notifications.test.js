@@ -36,7 +36,7 @@ function harness(context = {}) {
     send: (message) => sent.push(message),
     context: () => context,
     open: (route) => opened.push(route),
-    chime() {},
+    chime: { options: () => ({ silent: true }), shown() {} },
   });
   return { notifier, sent, opened };
 }

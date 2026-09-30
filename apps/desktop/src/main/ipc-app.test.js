@@ -5,10 +5,12 @@ const { rememberWindowUrl } = require("./browser-hosts");
 const { linkRouting } = require("./window-links");
 
 let opened;
+let tested;
 beforeEach(() => {
   resetElectron();
   opened = [];
-  registerAppIpc({ createWindow: (url) => opened.push(url) });
+  tested = [];
+  registerAppIpc({ createWindow: (url) => opened.push(url), testNotification: (sounds) => (tested.push(sounds), { ok: true }) });
 });
 
 function cockpitAt(url) {
@@ -43,6 +45,14 @@ describe("telar:app:open-window", () => {
     expect(() => electron.ipcMain.invoke("telar:app:open-window", eventFrom(win, { frame: { name: "sub" } }), { path: "/spool" })).toThrow("Only a Telar window");
     expect(() => electron.ipcMain.invoke("telar:app:open-window", { sender: new FakeWebContents(), senderFrame: {} }, { path: "/spool" })).toThrow("Only a Telar window");
     expect(opened).toEqual([]);
+  });
+});
+
+describe("telar:notifications:test", () => {
+  test("sends the chosen set to the notifier", async () => {
+    const win = cockpitAt("http://127.0.0.1:42731/");
+    expect(await electron.ipcMain.invoke("telar:notifications:test", eventFrom(win), { sounds: "felt" })).toEqual({ ok: true });
+    expect(tested).toEqual(["felt"]);
   });
 });
 
