@@ -17,6 +17,11 @@ providers (claude, codex, opencode) are child processes of the worker
 - A turn goes: cockpit → engine `/v2` → queued in the journal → claimed by the worker → driver → provider. The worker streams observations back into the journal, and the cockpit folds them into the transcript.
 - The cockpit's `src/proxy.ts` gates every request, but the engine makes the decision (`decideAccess`). If the engine can't answer, the request is denied.
 
+### Mac notification sounds
+
+- A banner's custom sound is resolved by NotificationCenter, and on macOS it does not look in the app bundle: bundle-only `.caf` files play the default alert. Desktop main copies them into `~/Library/Sounds` at startup and names that copy in the notification.
+- NotificationCenter caches each sound name's resolution until it restarts. A name that once failed keeps playing the default, and a cached file that disappears plays nothing. So installed names carry a content hash, and installed files are never deleted.
+
 ## Domains
 
 A domain is one feature, and it has the same name in every app:

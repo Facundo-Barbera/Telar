@@ -1,5 +1,6 @@
 const { describe, expect, test } = require("bun:test");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { DEV_SOUNDS, createChime } = require("./notification-sound");
 const { createDesktopNotifier, DESKTOP_NOTICE } = require("./desktop-notifications");
@@ -71,6 +72,70 @@ describe("a banner's sound", () => {
         expect(played).toEqual([]);
       }
     }
+  });
+});
+
+function tempHome() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "telar-sounds-"));
+  const from = path.join(home, "Resources");
+  fs.mkdirSync(from);
+  for (const file of fs.readdirSync(IOS_SOUNDS).filter((name) => name.endsWith(".caf"))) fs.copyFileSync(path.join(IOS_SOUNDS, file), path.join(from, file));
+  fs.writeFileSync(path.join(from, "unrelated.caf"), "x");
+  return { from, to: path.join(home, "Library", "Sounds") };
+}
+
+function installed(locations, packaged = true) {
+  const logs = [];
+  const chime = createChime({ packaged, play() {} });
+  chime.install({ ...locations, log: (line) => logs.push(line) });
+  return { chime, logs };
+}
+
+describe("installing the sounds into the user's Sounds folder", () => {
+  test("packaged, every sound lands in the folder under a content-named file the banner then uses", () => {
+    const locations = tempHome();
+    const { chime, logs } = installed(locations);
+    const files = fs.readdirSync(locations.to).sort();
+    expect(files).toHaveLength(9);
+    expect(files.every((name) => /^telar-(hilo|armonico|felt)-(done|needs|error)-[0-9a-f]{8}\.caf$/.test(name))).toBe(true);
+    const { sound } = chime.options("telar-hilo-done");
+    expect(files).toContain(sound);
+    expect(fs.readFileSync(path.join(locations.to, sound))).toEqual(fs.readFileSync(path.join(locations.from, "telar-hilo-done.caf")));
+    expect(logs).toEqual([]);
+  });
+
+  test("the name is stable across launches and changes when the sound does, keeping the old file", () => {
+    const locations = tempHome();
+    const first = installed(locations).chime.options("telar-felt-needs").sound;
+    expect(installed(locations).chime.options("telar-felt-needs").sound).toBe(first);
+    fs.writeFileSync(path.join(locations.from, "telar-felt-needs.caf"), "a new take");
+    const second = installed(locations).chime.options("telar-felt-needs").sound;
+    expect(second).not.toBe(first);
+    expect(fs.readFileSync(path.join(locations.to, second), "utf8")).toBe("a new take");
+    expect(fs.existsSync(path.join(locations.to, first))).toBe(true);
+  });
+
+  test("a file damaged in place is rewritten", () => {
+    const locations = tempHome();
+    const { sound } = installed(locations).chime.options("telar-hilo-error");
+    fs.writeFileSync(path.join(locations.to, sound), "");
+    installed(locations);
+    expect(fs.readFileSync(path.join(locations.to, sound))).toEqual(fs.readFileSync(path.join(locations.from, "telar-hilo-error.caf")));
+  });
+
+  test("when the folder can't be written, it logs and falls back to the bundled name", () => {
+    const locations = tempHome();
+    fs.mkdirSync(path.dirname(locations.to), { recursive: true });
+    fs.writeFileSync(locations.to, "not a folder");
+    const { chime, logs } = installed(locations);
+    expect(chime.options("telar-armonico-done")).toEqual({ sound: "telar-armonico-done.caf" });
+    expect(logs).toHaveLength(1);
+  });
+
+  test("in dev, nothing is installed", () => {
+    const locations = tempHome();
+    installed(locations, false);
+    expect(fs.existsSync(locations.to)).toBe(false);
   });
 });
 
