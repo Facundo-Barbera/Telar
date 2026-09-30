@@ -43,6 +43,12 @@ Processes lists what the agent left running in the background, such as a watch l
 
 An agent can put a file in front of you, such as a report, a guide it wrote or a plot it rendered. It opens in the panel with a viewer that suits it. Browser tabs and terminals an agent opens are added to the panel's tabs, but they never open the panel or switch the tab you're looking at.
 
+## Artifacts in the conversation
+
+An agent can also draw something straight into the conversation: a chart, a diagram, a UI mockup or a comparison. It appears as a card with a title. **Open in panel** shows it in a panel tab with more room. When the agent revises it, the newest version is drawn and the earlier cards fold to their titles.
+
+Html artifacts run in a sealed frame with no network, so an agent's chart can't load anything from the internet or see the rest of Telar. Ask for one by describing what you want to see.
+
 ## What's not obvious
 
 - Panel tabs belong to the session. Switching conversations switches the whole panel.
