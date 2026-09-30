@@ -1,4 +1,4 @@
-import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot } from "@telar/engine-client";
+import type { AutoCompact, Item, McpServer, NotificationDetail, TaskSeed, TurnAttachment, RequestDecision, RequestDefault, RequestDetail, RequestKind, TurnObservation, UsageSnapshot, UserInputField } from "@telar/engine-client";
 import type { SessionsCapability } from "../domains/sessions";
 import type { NotesCapability } from "../domains/notes";
 import type { PromptsCapability } from "../domains/prompts";
@@ -88,6 +88,25 @@ export type TurnDriver = {
   dispose?(): void;
   stopTask?(sessionId: string, providerTaskId: string): Promise<boolean>;
 };
+
+export function questionChoices(question: Record<string, unknown>): { choices: string[] } & Pick<UserInputField, "header" | "descriptions"> {
+  const options = Array.isArray(question.options) ? question.options : [];
+  const choices: string[] = [];
+  const descriptions: Record<string, string> = {};
+  for (const option of options) {
+    if (typeof option !== "object" || option === null) continue;
+    const { label, description } = option as Record<string, unknown>;
+    if (typeof label !== "string" || !label) continue;
+    choices.push(label);
+    if (typeof description === "string" && description) descriptions[label] = description;
+  }
+  const header = typeof question.header === "string" && question.header ? question.header : undefined;
+  return {
+    choices,
+    ...(header ? { header } : {}),
+    ...(Object.keys(descriptions).length > 0 ? { descriptions } : {}),
+  };
+}
 
 export function requireCwd(cwd: string | undefined, provider: string): string {
   if (cwd === undefined) {

@@ -49,6 +49,8 @@ export const UserInputField = z.object({
    *  see the answer-shape rule above, which is the whole point of the flag. */
   multiple: z.boolean().optional(),
   required: z.boolean().optional(),
+  header: z.string().optional(),
+  descriptions: z.record(z.string(), z.string()).optional(),
 });
 export type UserInputField = z.infer<typeof UserInputField>;
 

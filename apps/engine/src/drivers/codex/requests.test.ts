@@ -126,7 +126,15 @@ test("the app-server's requestUserInput becomes a user_input request, and the an
   expect(seen).toHaveLength(1);
   const detail = seen[0]!.detail;
   expect(detail.kind === "user_input" && detail.fields).toEqual([
-    { key: "q-color", label: "Which color should the button be?", kind: "choice", choices: ["Red", "Blue"], required: true },
+    {
+      key: "q-color",
+      label: "Which color should the button be?",
+      kind: "choice",
+      choices: ["Red", "Blue"],
+      header: "Color",
+      descriptions: { Red: "The warning color.", Blue: "The calm color." },
+      required: true,
+    },
   ]);
 });
 

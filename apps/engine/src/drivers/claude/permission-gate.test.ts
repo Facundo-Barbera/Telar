@@ -66,7 +66,11 @@ test("AskUserQuestion parks as a user_input request and the answers ride back in
   const detail = asked[0]!.detail as { kind: string; fields: Array<{ key: string; choices: string[] }> };
   expect(detail.kind).toBe("user_input");
   expect(detail.fields[0]!.key).toBe("Which color do you prefer?");
-  expect(detail.fields[0]!.choices).toEqual(["Red", "Blue"]);
+  expect(detail.fields[0]).toMatchObject({
+    choices: ["Red", "Blue"],
+    header: "Color",
+    descriptions: { Red: "warm", Blue: "cool" },
+  });
   expect(seen.permission).toEqual({
     behavior: "allow",
     updatedInput: { ...COLOR_QUESTION, answers: { "Which color do you prefer?": "Blue" } },

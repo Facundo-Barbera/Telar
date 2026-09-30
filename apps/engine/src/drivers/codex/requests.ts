@@ -1,6 +1,6 @@
 import type { RequestDecision, UserInputField } from "@telar/engine-client";
 import { TELAR_BROWSER_MCP_SERVER } from "@telar/engine-client";
-import { normalizeOutcome, type DriverRequest, type DriverRequestOutcome, type DriverRun } from "../contract";
+import { normalizeOutcome, questionChoices, type DriverRequest, type DriverRequestOutcome, type DriverRun } from "../contract";
 import type { CodexAppServer, CodexServerRequest } from "./app-server";
 import { codexApprovalRequest, MCP_ELICITATION, record, str } from "./items";
 
@@ -34,11 +34,9 @@ function userInputFields(params: Record<string, unknown>): UserInputField[] {
     const id = str(question.id);
     const text = str(question.question);
     if (!id || !text) return [];
-    const choices = Array.isArray(question.options)
-      ? question.options.map(record).flatMap((option) => (str(option.label) ? [str(option.label)!] : []))
-      : [];
+    const { choices, ...presentation } = questionChoices(question);
     const kind = question.isSecret === true ? ("secret" as const) : choices.length > 0 ? ("choice" as const) : ("text" as const);
-    return [{ key: id, label: text, kind, ...(choices.length > 0 ? { choices } : {}), required: true }];
+    return [{ key: id, label: text, kind, ...(choices.length > 0 ? { choices } : {}), ...presentation, required: true }];
   });
 }
 
