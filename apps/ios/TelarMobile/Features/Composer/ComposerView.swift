@@ -32,6 +32,7 @@ struct ComposerView: View {
     @State private var canDictate = false
     @Environment(\.colorScheme) private var scheme
     @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 44
+    @ScaledMetric(relativeTo: .body) private var pillInset: CGFloat = 12.5
 
     private var isRunning: Bool { host.isRunning }
     private var queued: [JournalTurn] { host.queuedTurns }
@@ -155,7 +156,7 @@ struct ComposerView: View {
         }
         .animation(.linear(duration: 0.12), value: isListening)
         .padding(.horizontal, 16)
-        .padding(.vertical, 11)
+        .padding(.vertical, pillInset)
         .frame(minHeight: rowHeight)
         .composerGlass(cornerRadius: Theme.radiusComposer)
         .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
