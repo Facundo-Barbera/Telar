@@ -146,9 +146,8 @@ function startServer(port, home) {
   return child;
 }
 
-const desktopNotifier = createDesktopNotifier({
-  Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath, chime: createChime({ packaged: app.isPackaged }),
-});
+const chime = createChime({ packaged: app.isPackaged });
+const desktopNotifier = createDesktopNotifier({ Notification, send: engineNotices.send, context: cockpitFocus, open: openNotificationPath, chime });
 const presence = createPresence({ send: engineNotices.send });
 
 function openNotificationPath(route) {
@@ -440,6 +439,7 @@ if (SMOKE) {
     app.whenReady().then(async () => {
       try {
         wireShellDiagnostics();
+        chime.install({ from: process.resourcesPath, home: os.homedir(), log: (line) => logShell("warn", line) });
 
         startHeapLog(() => currentHost()?.diagnostics() ?? null);
 
