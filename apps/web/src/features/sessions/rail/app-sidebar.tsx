@@ -153,7 +153,7 @@ function SidebarBody() {
           />
         </Suspense>
       )}
-      <TelarSidebarHeader mode={view.layout.mode} onModeChange={(next) => void view.layout.setMode(next)} />
+      <TelarSidebarHeader />
       <SidebarContent>
         <RailSearch
           query={query}

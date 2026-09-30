@@ -1,6 +1,4 @@
 import { ChevronRightIcon } from "lucide-react";
-import type { SidebarMode } from "@telar/engine-client";
-import { RailModeSwitch } from "./flat-session-list";
 import { KeyHint } from "@/features/commands";
 import { SidebarGroup, SidebarGroupContent, SidebarHeader, SidebarTrigger } from "@/ui/sidebar";
 import { CAPTION } from "./idiom";
@@ -23,15 +21,13 @@ export function jumpProp(env: RowEnv, key: string): { jumpSlot?: RailJumpSlot } 
   return slot === undefined ? {} : { jumpSlot: slot };
 }
 
-export function TelarSidebarHeader({ mode, onModeChange }: { mode: SidebarMode; onModeChange: (next: SidebarMode) => void }) {
+export function TelarSidebarHeader() {
   return (
     <SidebarHeader className="app-drag h-[var(--titlebar-height)] justify-center rounded-t-lg border-b border-sidebar-border/60 py-0 pr-2 pl-[max(8px,var(--titlebar-inset))] md:h-[var(--titlebar-band-height)]">
-      <div className="@container/rail-header flex min-w-0 items-center gap-1">
+      <div className="flex min-w-0 items-center gap-1">
         <SidebarTrigger aria-label="Hide sidebar" title="Hide sidebar" className="app-no-drag shrink-0" />
         <KeyHint command="toggle-rail" />
         <span className="min-w-0 truncate px-1.5 font-heading text-lg font-semibold tracking-tight">Telar</span>
-        <span className="ml-auto" />
-        <RailModeSwitch mode={mode} onChange={onModeChange} />
       </div>
     </SidebarHeader>
   );

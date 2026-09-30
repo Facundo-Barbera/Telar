@@ -1,7 +1,6 @@
 "use client";
 
 import { ChevronDownIcon } from "lucide-react";
-import type { SidebarMode } from "@telar/engine-client";
 import { SessionRow } from "./session-row";
 import { summarizeChildren, type ChildSummary, type FlatEntry } from "./flat-rail";
 import type { RailJumpSlot } from "../session-groups";
@@ -102,32 +101,6 @@ export function FlatSessionList({
           </div>
         );
       })}
-    </div>
-  );
-}
-
-export function RailModeSwitch({ mode, onChange }: { mode: SidebarMode; onChange: (next: SidebarMode) => void }) {
-  const option = (value: SidebarMode, label: string, title: string) => (
-    <button
-      type="button"
-      aria-pressed={mode === value}
-      title={title}
-      onClick={() => mode !== value && onChange(value)}
-      className={cn(
-        "rounded px-1.5 py-0.5 text-2xs leading-4",
-        mode === value ? "bg-sidebar-accent text-sidebar-foreground" : "text-sidebar-foreground/55 hover:text-sidebar-foreground",
-      )}
-    >
-      {label}
-    </button>
-  );
-  return (
-    <div role="group" aria-label="Group by" className="app-no-drag flex shrink-0 items-center gap-1">
-      <span className="hidden text-2xs text-sidebar-foreground/45 @[15rem]/rail-header:inline">Group by</span>
-      <div className="flex items-center rounded-md border border-sidebar-border/60 p-px">
-        {option("grouped", "Project", "Group conversations under their project.")}
-        {option("flat", "None", "One list, newest first, with spawned conversations under their parent.")}
-      </div>
     </div>
   );
 }
