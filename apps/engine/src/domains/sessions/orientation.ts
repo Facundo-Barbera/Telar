@@ -260,6 +260,9 @@ Tools: \`notes_list\`, \`notes_write\`, \`notes_delete\`.
 
 - \`display_open\` — show one file from this session's checkout in the panel,
   rendered. At most once or twice a turn.
+- \`display_inline\` — draw an html page, svg, mermaid diagram or markdown as a
+  card in the conversation: a diagram, a chart, a UI mockup, a comparison, a
+  visual explanation. Html is sandboxed with no network. Reuse an id to revise.
 - **Terminals** — anything that keeps running (a dev server, a watcher, a
   long build) goes in a terminal in the panel, opened with \`terminal_open\`,
   so the person sees it and can close it. Never start one with a background

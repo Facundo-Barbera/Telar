@@ -73,7 +73,11 @@ export function telarCapabilities(host: TurnHost, claim: WorkerClaim, runId: str
   const display =
     cwd === undefined
       ? undefined
-      : createDisplayCapability({ cwd, report: (observation) => report([{ kind: "display.opened", ...observation }]).then(() => undefined) });
+      : createDisplayCapability({
+          cwd,
+          report: (observation) => report([observation]).then(() => undefined),
+          upload: async (file) => (await client.uploadAttachment(sessionId, file)).attachment,
+        });
   const run = projectId && cwd ? clientRunCapability(client, sessionId) : undefined;
   return {
     sessions,

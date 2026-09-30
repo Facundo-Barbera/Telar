@@ -146,3 +146,29 @@ test("a delta for an item that was never opened is dropped rather than journalle
   ]);
   expect(store.queries.readEvents("session_one").some((event) => event.type === "content.delta")).toBe(false);
 });
+
+test("an artifact published under one id again, even a turn later, journals as the next version", () => {
+  const { store } = readyStore();
+  const publish = (runId: string, artifacts: Array<{ id: string; attachmentId: string }>) => {
+    store.intake.submitTurn("session_one", { runId, input: "Draw" });
+    const token = store.claims.claimTurn("session_one", "worker_one")!.claim!.token;
+    store.turnLifecycle.markRunning("session_one", runId, token);
+    store.ingest.ingestObservations(
+      "session_one",
+      runId,
+      token,
+      artifacts.map((artifact) => ({ kind: "artifact.published", artifact: { ...artifact, kind: "svg", title: "Chart" } })),
+    );
+    store.turnLifecycle.completeTurn("session_one", runId, token, { text: "drawn" });
+  };
+  publish("run_one", [{ id: "chart", attachmentId: "att_1" }, { id: "chart", attachmentId: "att_2" }]);
+  publish("run_two", [{ id: "chart", attachmentId: "att_3" }, { id: "other", attachmentId: "att_4" }]);
+
+  const artifacts = store.queries.items("session_one").flatMap((item) => (item.detail.type === "artifact" ? [{ item: item.id, run: item.runId, ...item.detail.artifact }] : []));
+  expect(artifacts.map(({ item, run, id, version, attachmentId }) => ({ item, run, id, version, attachmentId }))).toEqual([
+    { item: "artifact_chart_v1", run: "run_one", id: "chart", version: 1, attachmentId: "att_1" },
+    { item: "artifact_chart_v2", run: "run_one", id: "chart", version: 2, attachmentId: "att_2" },
+    { item: "artifact_chart_v3", run: "run_two", id: "chart", version: 3, attachmentId: "att_3" },
+    { item: "artifact_other_v1", run: "run_two", id: "other", version: 1, attachmentId: "att_4" },
+  ]);
+});
