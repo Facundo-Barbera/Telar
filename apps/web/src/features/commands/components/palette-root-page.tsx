@@ -37,7 +37,8 @@ function RootResult({ row, id, on, onPick, onHover }: { row: RootRow; id: string
         glyph={
           <ProjectAvatar
             name={row.target.name}
-            {...(row.target.hostId ? {} : { projectId: row.target.id })}
+            projectId={row.target.id}
+            {...(row.target.hostId ? { hostId: row.target.hostId } : {})}
             {...(row.target.icon ? { icon: row.target.icon } : {})}
             {...(row.target.iconName ? { iconName: row.target.iconName } : {})}
             size={16}
