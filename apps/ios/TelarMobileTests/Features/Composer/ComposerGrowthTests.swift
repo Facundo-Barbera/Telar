@@ -50,6 +50,8 @@ import UIKit
         #expect(grown.lines == 3, "the draft takes three lines — \(grown.text)")
         #expect(grown.field.height >= grown.content - 0.5, "the field's frame holds all of its text — \(grown.text)")
         #expect(grown.composer > short.composer, "the pill grows — one line: \(short.text) / three: \(grown.text)")
+        #expect(abs(grown.field.maxY - short.field.maxY) < 0.5, "upward, its bottom edge staying where it was")
+        #expect(grown.field.minY < short.field.minY - 1, "so the top edge is what moves")
         #expect(grown.chrome >= Self.pillChrome, "and is drawn around all of it — \(grown.text)")
     }
 
