@@ -3,7 +3,7 @@ import { apnsPriority, signalKey, type Delivery, type DeliveryResult, type PushR
 import { v2Body } from "./relay-v2";
 import type { LiveSessionRow, Project } from "@telar/engine-client";
 import { deliverRecord, signals } from "./worker";
-import { CARD_ROWS, ROW_DONE_S, automaticActivityDelivery, cardRows } from "./card";
+import { CARD_ROWS, ROW_DONE_S, automaticActivityDelivery, cardRows, type CardRow } from "./card";
 
 const now = 1_800_000_000;
 const ms = (s: number) => s * 1000;
@@ -47,6 +47,55 @@ describe("the card's session rows", () => {
   test("a full card stays well under Apple's 4 KB", () => {
     const many = Array.from({ length: 20 }, (_, i) => session(`session_${"x".repeat(40)}${i}`, "working", { title: "t".repeat(500), project: "p".repeat(500) }));
     expect(new TextEncoder().encode(JSON.stringify(automaticActivityDelivery(record(), many, "c".repeat(64), now, now).payload)).length).toBeLessThan(2048);
+  });
+});
+
+describe("sub-sessions on the card", () => {
+  const state = (sessions: SessionSignal[], r = record()) => automaticActivityDelivery(r, sessions, "d".repeat(64), now, now).payload.aps["content-state"] as { title: string; activeCount: number; sessionId?: string; rows: CardRow[] };
+  const orchestrator = session("orch", "working", { title: "Ship the release" });
+  const worker = (id: string, activity: string, patch: Partial<SessionSignal> = {}) => session(id, activity, { parentId: "orch", hasParent: true, project: "ozom-gv", ...patch });
+
+  test("workers fold into their orchestrator's row, which counts as one active session", () => {
+    const card = state([orchestrator, worker("a", "working"), worker("b", "working"), worker("c", "queued"), session("solo", "working")]);
+    expect(card.rows).toEqual([
+      { id: "orch", status: "Working", title: "Ship the release", project: "web", workers: 3 },
+      { id: "solo", status: "Working", title: "Title solo", project: "web" },
+    ]);
+    expect(card.activeCount).toBe(2);
+    expect(card.title).toBe("2 active sessions");
+  });
+
+  test("the row takes the most urgent state of the family, and a child's request points at the root", () => {
+    const status = (sessions: SessionSignal[]) => cardRows(sessions, now, true).map(r => [r.id, r.status]);
+    expect(status([orchestrator, worker("a", "blocked")])).toEqual([["orch", "Needs you"]]);
+    expect(status([orchestrator, worker("a", "idle", { lastTurnEndedAt: ms(now - 30), lastTurnFailed: true })])).toEqual([["orch", "Failed"]]);
+    expect(status([session("orch", "idle", { lastTurnEndedAt: ms(now - 60) }), worker("a", "working")])).toEqual([["orch", "Working"]]);
+    expect(status([session("orch", "idle"), worker("a", "idle", { lastTurnEndedAt: ms(now - 60) })])).toEqual([["orch", "Done"]]);
+    expect(state([orchestrator, worker("a", "blocked")]).sessionId).toBe("orch");
+  });
+
+  test("a child whose parent is not on the card's list stands as its own row", () => {
+    expect(cardRows([worker("a", "working", { title: "Fix login" })], now, true)).toEqual([{ id: "a", status: "Working", title: "Fix login", project: "ozom-gv" }]);
+  });
+
+  test("an untitled session is named by its project, or its workers' project", () => {
+    expect(cardRows([session("u", "working", { title: "  " })], now, true)).toEqual([{ id: "u", status: "Working", project: "web" }]);
+    const bare = session("orch", "working", { title: "", project: undefined });
+    expect(cardRows([bare, worker("a", "working")], now, true)).toEqual([{ id: "orch", status: "Working", project: "ozom-gv", workers: 1 }]);
+    expect(state([bare, worker("a", "working")]).title).toBe("Telar work");
+  });
+
+  test("only a live parent adopts: settled, archived, snoozed or deleted parents leave the child a root", () => {
+    const row = (id: string, patch: Partial<LiveSessionRow> = {}) => ({ id, title: id, activity: "working", state: "active", ...patch }) as LiveSessionRow;
+    const child = row("child", { startedFrom: { sessionId: "parent" } });
+    const parentOf = (parent?: Partial<LiveSessionRow>) => signals(parent ? [row("parent", parent), child] : [child], {}, [], ms(now)).find(s => s.id === "child")!.parentId;
+    expect(parentOf({})).toBe("parent");
+    expect(parentOf({ settledOverride: "settled" })).toBeUndefined();
+    expect(parentOf({ state: "archived" } as Partial<LiveSessionRow>)).toBeUndefined();
+    expect(parentOf({ snoozedUntil: ms(now + 60) })).toBeUndefined();
+    expect(parentOf()).toBeUndefined();
+    const assigned = signals([row("parent"), row("child")], { child: [{ fromSessionId: "parent", receivedAt: 1, taskRunId: "r", runId: "r" }] }, [], ms(now));
+    expect(assigned.find(s => s.id === "child")!.parentId).toBe("parent");
   });
 });
 

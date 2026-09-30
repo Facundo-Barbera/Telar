@@ -27,7 +27,7 @@ export type RelayCredential = { handle: string; keyId: string; sendKey: string }
 export interface SessionSignal {
   id: string; title: string; activity: string; activityAt?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean; lastTurnOrigin?: Turn["origin"];
-  hasParent?: boolean; delegating?: boolean;
+  hasParent?: boolean; delegating?: boolean; parentId?: string;
   projectId?: string;
   project?: string;
   lastTurnSequence?: number; lastReadTurnSequence?: number;

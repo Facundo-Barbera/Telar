@@ -47,6 +47,25 @@ struct AutomaticActivityTests {
         #expect(long[0].title?.count == 60 && long[0].title?.hasSuffix("…") == true)
     }
 
+    @Test func workersFoldIntoTheirOrchestratorsRow() throws {
+        func session(_ id: String, _ activity: String, parent: String? = nil, title: String? = nil) throws -> Session {
+            let from = parent.map { #","startedFrom":{"sessionId":"\#($0)"}"# } ?? ""
+            return try JSONDecoder().decode(Session.self, from: Data("""
+            {"id":"\(id)","title":"\(title ?? "Title \(id)")","createdAt":1,"updatedAt":1,"activity":"\(activity)","activityAt":1,
+             "driver":"claude","workspace":{"mode":"worktree","path":"/tmp/x"}\(from)}
+            """.utf8))
+        }
+        let sessions = [try session("orch", "idle", title: ""), try session("a", "working", parent: "orch"), try session("b", "blocked", parent: "orch"),
+                        try session("c", "queued", parent: "orch"), try session("orphan", "working", parent: "gone")]
+        let rows = AutomaticCard.rows(sessions, previews: true, carried: [SessionActivityRow(id: "orch", status: "Working", project: "ozom-gv")])
+        #expect(rows.map(\.id) == ["orch", "orphan"])
+        #expect(rows[0].status == "Needs you" && rows[0].workers == 3 && rows[0].workersLabel == "3 workers")
+        #expect(rows[0].title == nil && rows[0].project == "ozom-gv")
+        #expect(rows[1].workers == nil && rows[1].title == "Title orphan")
+        let state = AutomaticCard.initialState(sessions, previews: true, now: Date(timeIntervalSince1970: 1_800_000_000))
+        #expect(state.activeCount == 2 && state.sessionId == "orch")
+    }
+
     @Test func thePhoneStartsACardOnlyForAWorkingMacWithoutOneThatCannotPushIt() {
         let (a, b, c, d) = (UUID(), UUID(), UUID(), UUID())
         #expect(AutomaticCard.hostsToStart(enabled: true, working: [a, b, c, d], carded: [b], dismissed: [c], engineStarts: [d]) == [a])

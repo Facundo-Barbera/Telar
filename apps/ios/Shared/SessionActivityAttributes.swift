@@ -6,9 +6,11 @@ struct SessionActivityRow: Codable, Hashable, Identifiable {
     var status: String
     var title: String? = nil
     var project: String? = nil
+    var workers: Int? = nil
 
     var needsYou: Bool { status == "Needs you" }
     var over: Bool { status == "Done" || status == "Failed" }
+    var workersLabel: String? { workers.flatMap { $0 > 0 ? ($0 == 1 ? "1 worker" : "\($0) workers") : nil } }
 
     static func clip(_ text: String, _ max: Int) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
