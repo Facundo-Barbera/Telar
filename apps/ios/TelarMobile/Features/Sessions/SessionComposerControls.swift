@@ -1,16 +1,24 @@
 import SwiftUI
 
-struct SessionComposerControls: View {
-    let store: SessionStore
-
-    private var runtimeMode: String {
-        store.sync.session?.runtimeMode ?? "approval-required"
+enum SessionComposerControls {
+    @MainActor static func make(store: SessionStore) -> ComposerControls {
+        ComposerControls(
+            model: { compact in AnyView(SessionModelPill(store: store, compact: compact)) },
+            options: AnyView(RuntimeModePill(mode: store.sync.session?.runtimeMode ?? "approval-required") { mode in
+                Task { await store.setRuntimeMode(mode) }
+            })
+        )
     }
+}
 
-    private var modelPill: some View {
+private struct SessionModelPill: View {
+    let store: SessionStore
+    let compact: Bool
+
+    var body: some View {
         let driver = store.sync.session?.driver ?? "claude"
         let selection = store.sync.session?.model
-        return ModelPillView(
+        ModelPillView(
             catalogues: store.catalogue.map { [driver: $0] } ?? [:],
             choice: ModelChoice(
                 driver: driver, model: selection?.model,
@@ -18,31 +26,9 @@ struct SessionComposerControls: View {
                 serviceTier: selection?.serviceTier, ultracode: selection?.ultracode
             ),
             driversSwitchable: false,
+            compact: compact,
             onChange: { next in Task { await store.setModelChoice(next) } }
         )
         .task { await store.loadModels() }
     }
-
-    var body: some View {
-        modelPill
-        ComposerLabeledPill(
-            icon: "slider.horizontal.3",
-            label: SessionComposerControls.runtimeModes.first { $0.0 == runtimeMode }?.1 ?? "Configuration"
-        ) {
-            ForEach(SessionComposerControls.runtimeModes, id: \.0) { mode, label in
-                Button {
-                    Task { await store.setRuntimeMode(mode) }
-                } label: {
-                    composerMenuRow(label, selected: mode == runtimeMode)
-                }
-            }
-        }
-    }
-
-    static let runtimeModes: [(String, String)] = [
-        ("approval-required", "Supervised"),
-        ("auto-accept-edits", "Auto-accept edits"),
-        ("auto", "Auto"),
-        ("full-access", "Full access"),
-    ]
 }

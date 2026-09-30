@@ -8,6 +8,7 @@ struct SessionView: View {
     @State private var composerFocused = false
     @State private var renaming = false
     @State private var renameDraft = ""
+    @State private var projectName: String?
 
     @State private var panel: PanelModel
 
@@ -400,6 +401,7 @@ struct SessionView: View {
             projectId = (try? await api.session(sessionId, window: SnapshotWindow(turns: 1)))?.session.projectId
         }
         guard let projectId, let projects = try? await panelAPI.projects(), let project = projects.first(where: { $0.id == projectId }) else { return }
+        projectName = project.name
         panel.setPlugins(project.enabledPlugins)
     }
 
@@ -510,7 +512,7 @@ struct SessionView: View {
                 host: SessionComposerHost(store: store),
 
                 api: store.api,
-                controls: AnyView(SessionComposerControls(store: store)),
+                controls: SessionComposerControls.make(store: store),
                 onSend: { pinToTail() }
             )
         }
@@ -522,8 +524,8 @@ struct SessionView: View {
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
-        if wantsColumn {
-            ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItem(placement: .topBarTrailing) {
+            if wantsColumn {
                 Button {
                     panel.toggle()
                 } label: {
@@ -532,69 +534,25 @@ struct SessionView: View {
                 }
                 .accessibilityLabel(panel.isOpen ? "Hide panel" : "Show panel")
                 .accessibilityAddTraits(panel.isOpen ? .isSelected : [])
-
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            } else {
+                Button { panel.open() } label: {
+                    Image(systemName: "sidebar.trailing").foregroundStyle(Theme.textMuted)
+                }
+                .accessibilityLabel("Panel")
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            Menu {
-                if let hostId, let session = store.sync.session {
-                    let ref = ScopedSessionID(hostId: hostId, sessionId: sessionId)
-                    Button(MobileNotifications.shared.isMuted(ref) ? "Unmute notifications" : "Mute notifications", systemImage: "bell.slash") {
-                        Task { await MobileNotifications.shared.toggleMute(ref) }
-                    }
-                    if let base = cockpitBaseURL {
-                        ShareLink(item: session.cockpitURL(base: base)) { Label("Continue on your Mac", systemImage: "desktopcomputer") }
-                    }
-                }
-
-                if Talkback.shared.isSpeaking(spokenSession) {
-                    Button("Stop speaking", systemImage: "speaker.slash") {
-                        Talkback.shared.stop()
-                    }
-                } else if let source = lastReplySource(of: visibleTurns) {
-                    Button("Speak the last reply", systemImage: "speaker.wave.2") {
-                        Talkback.shared.speak(speakableText(source), for: spokenSession)
-                    }
-                }
-                Button("Panel", systemImage: "sidebar.trailing") {
-                    panel.open()
-                }
-                Button("Rename", systemImage: "pencil") {
+            SessionActionsMenu(
+                store: store, ref: hostId.map { ScopedSessionID(hostId: $0, sessionId: sessionId) },
+                hostName: hostName, projectName: projectName, cockpitBaseURL: cockpitBaseURL,
+                spoken: spokenSession, lastReply: lastReplySource(of: visibleTurns),
+                onRename: {
                     renameDraft = store.sync.session?.title ?? ""
                     renaming = true
                 }
-                if store.sync.session?.settledOverride == "settled" {
-                    Button("Un-settle", systemImage: "arrow.uturn.backward") {
-                        Task { await store.setSettled(false) }
-                    }
-                } else {
-                    Button("Settle", systemImage: "checkmark") {
-                        Task { await store.setSettled(true) }
-                    }
-                }
-                if let usage = store.sync.session?.usage {
-                    Section {
-                        Text(usageLine(usage))
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle")
-                    .foregroundStyle(Theme.textMuted)
-            }
-            .accessibilityLabel("Session actions")
+            )
         }
-    }
-
-    private func usageLine(_ usage: UsageSnapshot) -> String {
-        let total = usage.tokens.input + usage.tokens.output + usage.tokens.cacheRead + usage.tokens.cacheCreate
-        let tokens = total >= 1_000_000
-            ? String(format: "%.1fM tokens", Double(total) / 1_000_000)
-            : "\(total / 1000)k tokens"
-        if let cost = usage.costUsd {
-            return tokens + String(format: " · $%.2f", cost)
-        }
-        return tokens
     }
 }
 

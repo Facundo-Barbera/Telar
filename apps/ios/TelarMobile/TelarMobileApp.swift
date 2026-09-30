@@ -29,10 +29,9 @@ struct TelarMobileApp: App {
 struct RootView: View {
     let settings: AppSettings
     @State private var inbox = MergedInbox()
-    @State private var resumedDraft: MobileDraft?
+    @State private var composing: Composing?
     @State private var selection: ScopedSessionID?
     @State private var showSettings = UserDefaults.standard.bool(forKey: "openSettings")
-    @State private var showNewSession = UserDefaults.standard.bool(forKey: "newSession")
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var preferredColumn: NavigationSplitViewColumn = .sidebar
     @Environment(\.scenePhase) private var scenePhase
@@ -46,12 +45,18 @@ struct RootView: View {
             } else {
                 NavigationSplitView(columnVisibility: $columnVisibility, preferredCompactColumn: $preferredColumn) {
                     SessionSidebar(settings: settings, inbox: inbox, selection: $selection,
-                        newSession: { resumedDraft = nil; showNewSession = true }, openSettings: { showSettings = true },
-                        resumeDraft: { resumedDraft = $0; showNewSession = true })
+                        newSession: { compose(nil) }, openSettings: { showSettings = true },
+                        resumeDraft: { compose($0) })
                         .navigationSplitViewColumnWidth(300)
                 } detail: {
                     NavigationStack {
-                        if let ref = selection, let api = settings.api(for: ref.hostId) {
+                        if let composing {
+                            NewConversationView(settings: settings, seed: composing.seed) { ref in
+                                self.composing = nil
+                                selection = ref
+                            }
+                            .id(composing.id)
+                        } else if let ref = selection, let api = settings.api(for: ref.hostId) {
                             SessionView(api: api, sessionId: ref.sessionId, hostId: ref.hostId,
                                         hostName: settings.host(ref.hostId)?.name, hostCount: settings.hosts.count,
                                         cockpitBaseURL: settings.host(ref.hostId)?.baseURL, cache: settings.snapshotCache(for: ref.hostId),
@@ -74,7 +79,7 @@ struct RootView: View {
                             } description: {
                                 Text("Choose a session from the sidebar, or start a conversation.")
                             } actions: {
-                                Button("New conversation") { showNewSession = true }.buttonStyle(.borderedProminent)
+                                Button("New conversation") { compose(nil) }.buttonStyle(.borderedProminent)
                             }
                         }
                     }
@@ -88,18 +93,8 @@ struct RootView: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showSettings = false } } }
             }
         }
-        .sheet(isPresented: $showNewSession) {
-            NavigationStack {
-                NewSessionView(settings: settings, draft: resumedDraft) { ref in
-                    showNewSession = false
-                    selection = ref
-                    preferredColumn = .detail
-                }
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { showNewSession = false } } }
-            }.interactiveDismissDisabled(false)
-        }
         .onChange(of: selection) { _, next in
-            if next != nil { preferredColumn = .detail }
+            if next != nil { composing = nil; preferredColumn = .detail }
         }
         .onOpenURL { url in
             guard let ref = ScopedSessionID(url: url), settings.host(ref.hostId) != nil else { return }
@@ -107,7 +102,7 @@ struct RootView: View {
         }
         .onChange(of: MobileNotifications.shared.destination) { _, ref in
             guard let ref, settings.host(ref.hostId) != nil else { return }
-            showSettings = false; showNewSession = false
+            showSettings = false; composing = nil
             selection = ref; preferredColumn = .detail
             MobileNotifications.shared.destination = nil
         }
@@ -142,6 +137,7 @@ struct RootView: View {
                     hostHint: UserDefaults.standard.string(forKey: "openSessionHost"), hosts: settings.hosts)
                 if selection != nil { preferredColumn = .detail }
             }
+            if UserDefaults.standard.bool(forKey: "newSession") { compose(nil) }
             if let pending = MobileNotifications.shared.destination, settings.host(pending.hostId) != nil {
                 selection = pending; preferredColumn = .detail
                 MobileNotifications.shared.destination = nil
@@ -149,6 +145,17 @@ struct RootView: View {
             await settings.refreshAddresses()
         }
     }
+
+    private func compose(_ seed: MobileDraft?) {
+        selection = nil
+        composing = Composing(seed: seed)
+        preferredColumn = .detail
+    }
+}
+
+private struct Composing: Identifiable {
+    let id = UUID()
+    let seed: MobileDraft?
 }
 
 extension ScopedSessionID {

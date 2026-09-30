@@ -23,7 +23,7 @@ If a connection fails, check the obvious things first. For a local address, the 
 - Dictate into the message box, and have the last reply read aloud (Speak the last reply).
 - Check a Mac's usage for the day, week or month.
 - Manage paired devices under Settings → Devices, if the phone has full access.
-- Use **Continue on your Mac** to hand a conversation over to the Mac.
+- Use **Open on Mac** to hand a conversation over to the Mac.
 
 ## Notifications
 

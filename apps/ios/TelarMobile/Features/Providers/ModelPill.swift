@@ -41,10 +41,10 @@ struct ModelPillView: View {
     let choice: ModelChoice
 
     let driversSwitchable: Bool
+    var compact = false
     let onChange: (ModelChoice) -> Void
 
     @ScaledMetric(relativeTo: .subheadline) private var height: CGFloat = 44
-    @ScaledMetric(relativeTo: .subheadline) private var cap: CGFloat = 200
 
     @ScaledMetric(relativeTo: .subheadline) private var badge: CGFloat = 16
 
@@ -69,6 +69,7 @@ struct ModelPillView: View {
 
     private var label: String {
         var parts: [String] = [selectedFamily?.label ?? "Model"]
+        if compact { return parts[0] }
         if let level = ModelOptions.levelLabel(choice: choice, row: selectedRow) { parts.append(level) }
         if ModelFamilies.windows(of: selectedFamily).count > 1 { parts.append(window.label) }
         if choice.fastMode == true { parts.append("Fast") }
@@ -103,7 +104,6 @@ struct ModelPillView: View {
             .foregroundStyle(Theme.text)
             .padding(.horizontal, 14)
             .frame(height: height)
-            .frame(maxWidth: cap)
             .background(Theme.subtle)
             .clipShape(Capsule())
             .overlay(Capsule().strokeBorder(Theme.border, lineWidth: 1))

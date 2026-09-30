@@ -5,9 +5,7 @@ enum SessionDraft {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || mediaTypes.contains { $0.hasPrefix("image/") }
     }
 
-    static func title(explicit: String, prompt: String, imageNames: [String] = []) -> String {
-        let chosen = explicit.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !chosen.isEmpty { return String(chosen.prefix(80)) }
+    static func title(prompt: String, imageNames: [String] = []) -> String {
         let collapsed = prompt
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { !$0.isEmpty }
