@@ -93,14 +93,16 @@ struct ComposerView: View {
 
             let words = DictationDraftBox()
             let probe = caret
+            live.onStart = { words.begin() }
             live.onWords = { heard in
                 let draft = box.wrappedValue
-                box.wrappedValue = words.write(heard, into: draft, caret: probe.location(in: draft))
+                guard let next = words.write(heard, into: draft, caret: probe.location(in: draft)) else { return }
+                box.wrappedValue = next
 
                 interim = words.unconfirmed
             }
             live.onEnd = {
-                words.forget()
+                words.end()
 
                 interim = nil
             }

@@ -10,13 +10,6 @@ struct DictationDraftWriter {
 
     init() {}
 
-    mutating func forget() {
-        span = nil
-        anchor = nil
-        committed = nil
-        spent = 0
-    }
-
     mutating func write(_ words: DictationWords, into draft: String, caret: Int? = nil) -> String {
         if let committed {
             if committed != draft { absorb(from: committed, to: draft) }
@@ -88,17 +81,21 @@ struct DictationDraftWriter {
 }
 
 @MainActor final class DictationDraftBox {
-    private var writer = DictationDraftWriter()
+    private var writer: DictationDraftWriter?
 
     init() {}
 
-    var unconfirmed: Range<Int>? { writer.unconfirmed }
+    var unconfirmed: Range<Int>? { writer?.unconfirmed }
 
-    func write(_ words: DictationWords, into draft: String, caret: Int?) -> String {
-        writer.write(words, into: draft, caret: caret)
+    func begin() {
+        writer = DictationDraftWriter()
     }
 
-    func forget() {
-        writer.forget()
+    func write(_ words: DictationWords, into draft: String, caret: Int?) -> String? {
+        writer?.write(words, into: draft, caret: caret)
+    }
+
+    func end() {
+        writer = nil
     }
 }

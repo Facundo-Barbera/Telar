@@ -129,13 +129,46 @@ import Testing
         #expect(draft == "hello there World")
     }
 
-    @Test func forgettingLeavesTheWordsAndOnlyDropsTheSpan() {
-        var writer = DictationDraftWriter()
-        var draft = writer.write(guess("said out loud"), into: "")
-        writer.forget()
-        #expect(writer.unconfirmed == nil)
-        draft = writer.write(guess("more"), into: draft)
-        #expect(draft == "said out loud more")
+    @MainActor @Test func nothingIsWrittenBeforeADictationBegins() {
+        let box = DictationDraftBox()
+        #expect(box.write(guess("stray"), into: "typed", caret: 5) == nil)
+        #expect(box.unconfirmed == nil)
+    }
+
+    @MainActor @Test func afterStopTheWordsStayAndLateResultsTouchNothing() {
+        let box = DictationDraftBox()
+        box.begin()
+        var draft = box.write(guess("said out loud"), into: "", caret: 0) ?? ""
+        box.end()
+        #expect(draft == "said out loud")
+        #expect(box.unconfirmed == nil)
+
+        draft = "said out lou"
+        #expect(box.write(guess("said out loud more"), into: draft, caret: 12) == nil)
+        #expect(box.write(settled("said out loud"), into: draft, caret: 12) == nil)
+        #expect(draft == "said out lou")
+    }
+
+    @MainActor @Test func aCancelBeforeAnyWordsLeavesTheDraftAlone() {
+        let box = DictationDraftBox()
+        box.begin()
+        box.end()
+        #expect(box.write(guess("late"), into: "typed", caret: 5) == nil)
+    }
+
+    @MainActor @Test func aSecondDictationStartsFreshAtTheNewCaret() {
+        let box = DictationDraftBox()
+        box.begin()
+        var draft = box.write(guess("first"), into: "", caret: 0) ?? ""
+        box.end()
+
+        draft = "typed " + draft
+        box.begin()
+        draft = box.write(guess("second"), into: draft, caret: 0) ?? draft
+        #expect(draft == "second typed first")
+        #expect(box.unconfirmed == 0 ..< 6)
+        draft = box.write(settled("second one"), into: draft, caret: 0) ?? draft
+        #expect(draft == "second one typed first")
     }
 
     @Test func anEmptyGuessWithNoSpanOpenWritesNothingAtAll() {

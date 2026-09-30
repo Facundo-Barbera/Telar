@@ -53,6 +53,8 @@ struct ComposerTextView: UIViewRepresentable {
 
         view.tintColor = listening ? UIColor(Theme.accent) : nil
         view.applyInterim(interim, font: font, color: UIColor(Theme.text))
+        if context.coordinator.listening, !listening { context.coordinator.settle(view) }
+        context.coordinator.listening = listening
         if view.placeholderLabel.text != placeholder {
             view.placeholderLabel.text = placeholder
             view.accessibilityLabel = placeholder
@@ -89,6 +91,13 @@ struct ComposerTextView: UIViewRepresentable {
 
         private var applying = false
 
+        var listening = false
+
+        func settle(_ view: ComposerUITextView) {
+            published = view.text
+            view.resync()
+        }
+
         init(text: Binding<String>, focused: Binding<Bool>) {
             self.text = text
             self.focused = focused
@@ -100,6 +109,7 @@ struct ComposerTextView: UIViewRepresentable {
             let moved = view.apply(next)
             applying = false
             guard moved else { return }
+            published = view.text
 
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self, let view else { return }
@@ -169,25 +179,29 @@ final class ComposerUITextView: UITextView {
 
     @discardableResult func apply(_ next: String) -> Bool {
         guard let edit = ComposerTextEdit.replacement(from: text, to: next) else { return false }
-        guard let start = position(from: beginningOfDocument, offset: edit.range.location),
-              let end = position(from: start, offset: edit.range.length),
-              let span = textRange(from: start, to: end)
-        else {
-            text = next
-            dimmed = nil
-            return true
-        }
         let selection = selectedRange
-        inputDelegate?.textWillChange(self)
-        replace(span, withText: edit.text)
-        inputDelegate?.textDidChange(self)
-
         let written = edit.range.location + (edit.text as NSString).length
-        selectedRange = ComposerTextEdit.selection(selection, after: edit.range, replacedBy: edit.text)
+        let caret = ComposerTextEdit.selection(selection, after: edit.range, replacedBy: edit.text)
             ?? NSRange(location: min(selection.location, written), length: 0)
+
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        textStorage.replaceCharacters(in: edit.range, with: NSAttributedString(string: edit.text, attributes: typingAttributes))
+        selectedRange = caret
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
+        undoManager?.removeAllActions()
+        scrollRangeToVisible(caret)
 
         dimmed = nil
         return true
+    }
+
+    func resync() {
+        inputDelegate?.selectionWillChange(self)
+        inputDelegate?.textWillChange(self)
+        inputDelegate?.textDidChange(self)
+        inputDelegate?.selectionDidChange(self)
     }
 
     private var dimmed: Range<Int>?

@@ -16,6 +16,8 @@ import Foundation
 
     private(set) var language: String?
 
+    var onStart: (() -> Void)?
+
     var onWords: ((DictationWords) -> Void)?
 
     var onEnd: (() -> Void)?
@@ -69,6 +71,7 @@ import Foundation
                 stop()
                 return
             }
+            onStart?()
             phase = .listening
             listen()
         } catch {
