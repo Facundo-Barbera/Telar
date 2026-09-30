@@ -194,22 +194,35 @@ export async function markApprovable(
   }
 }
 
-export function signals(sessions: readonly LiveSessionRow[], assignments: Record<string, SessionAssignment[]> = {}, projects: readonly Project[] = []): SessionSignal[] {
+function liveParent(session: LiveSessionRow, rows: ReadonlyMap<string, LiveSessionRow>, assignments: SessionAssignment[] = [], now: number): string | undefined {
+  const assigned = assignments.filter(task => task.outcome !== "detached").sort((a, b) => a.receivedAt - b.receivedAt)[0];
+  const parent = rows.get(session.startedFrom?.sessionId ?? assigned?.fromSessionId ?? "");
+  if (!parent || parent.id === session.id || parent.state === "archived" || parent.settledOverride === "settled") return;
+  return parent.snoozedUntil !== undefined && parent.snoozedUntil > now ? undefined : parent.id;
+}
+
+export function signals(sessions: readonly LiveSessionRow[], assignments: Record<string, SessionAssignment[]> = {}, projects: readonly Project[] = [], now = Date.now()): SessionSignal[] {
   const delegating = new Set(Object.values(assignments).flat().filter(task => task.outcome === undefined).map(task => task.fromSessionId));
   const names = new Map(projects.map(p => [p.id, p.name]));
-  return sessions.map(({ id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, lastTurnOrigin, startedFrom, projectId, lastTurnSequence, lastReadTurnSequence }) => ({
-    id, title, activity,
-    ...(startedFrom !== undefined || assignments[id]?.some(task => task.outcome !== "detached") ? { hasParent: true } : {}),
-    ...(delegating.has(id) ? { delegating: true } : {}),
-    ...(lastTurnOrigin === undefined ? {} : { lastTurnOrigin }),
-    ...(projectId === undefined ? {} : { projectId }),
-    ...(projectId !== undefined && names.has(projectId) ? { project: names.get(projectId)! } : {}),
-    ...(activityAt === undefined ? {} : { activityAt }),
-    ...(lastTurnSequence === undefined ? {} : { lastTurnSequence }),
-    ...(lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence }),
-    ...(lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt }),
-    ...(lastTurnFailed === undefined ? {} : { lastTurnFailed }),
-  }));
+  const rows = new Map(sessions.map(s => [s.id, s]));
+  return sessions.map(session => {
+    const { id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, lastTurnOrigin, startedFrom, projectId, lastTurnSequence, lastReadTurnSequence } = session;
+    const parentId = liveParent(session, rows, assignments[id], now);
+    return {
+      id, title, activity,
+      ...(startedFrom !== undefined || assignments[id]?.some(task => task.outcome !== "detached") ? { hasParent: true } : {}),
+      ...(parentId === undefined ? {} : { parentId }),
+      ...(delegating.has(id) ? { delegating: true } : {}),
+      ...(lastTurnOrigin === undefined ? {} : { lastTurnOrigin }),
+      ...(projectId === undefined ? {} : { projectId }),
+      ...(projectId !== undefined && names.has(projectId) ? { project: names.get(projectId)! } : {}),
+      ...(activityAt === undefined ? {} : { activityAt }),
+      ...(lastTurnSequence === undefined ? {} : { lastTurnSequence }),
+      ...(lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence }),
+      ...(lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt }),
+      ...(lastTurnFailed === undefined ? {} : { lastTurnFailed }),
+    };
+  });
 }
 
 export function heartbeatWanted(records: PushRecord[], sessions: SessionSignal[]): boolean {
