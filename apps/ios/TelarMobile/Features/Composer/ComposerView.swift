@@ -45,7 +45,7 @@ struct ComposerView: View {
     }
 
     private var slot: ComposerSlot {
-        ComposerSlot.resolve(canSend: canSend, running: isRunning, listening: isListening, canDictate: dictation != nil && canDictate)
+        ComposerSlot.resolve(canSend: canSend, running: isRunning)
     }
 
     var body: some View {
@@ -137,7 +137,28 @@ struct ComposerView: View {
 
     private var pill: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous)
-        return ComposerTextView(
+        return HStack(alignment: .bottom, spacing: 0) {
+            field
+            micButton
+        }
+        .frame(minHeight: rowHeight)
+        .composerGlass(cornerRadius: Theme.radiusComposer)
+        .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
+        .contentShape(shape)
+        .onTapGesture { focus.wrappedValue = true }
+        .contextMenu {
+            Button("Clear draft", systemImage: "eraser") { clearDraft() }
+                .disabled(draft.isEmpty)
+            Button("Stash draft", systemImage: "tray.and.arrow.down", action: stashDraft)
+                .disabled(!hasDraftText)
+        }
+        .overlay {
+            if dropping { shape.strokeBorder(Theme.accent, lineWidth: 2) }
+        }
+    }
+
+    private var field: some View {
+        ComposerTextView(
             text: $draft,
             placeholder: host.placeholder,
             focused: focus,
@@ -159,21 +180,27 @@ struct ComposerView: View {
             }
         }
         .animation(.linear(duration: 0.12), value: isListening)
-        .padding(.horizontal, 16)
+        .padding(.leading, 16)
+        .padding(.trailing, showsMic ? 0 : 16)
         .padding(.vertical, pillInset)
-        .frame(minHeight: rowHeight)
-        .composerGlass(cornerRadius: Theme.radiusComposer)
-        .shadow(color: .black.opacity(scheme == .dark ? 0.35 : 0.12), radius: 14, y: 6)
-        .contentShape(shape)
-        .onTapGesture { focus.wrappedValue = true }
-        .contextMenu {
-            Button("Clear draft", systemImage: "eraser") { clearDraft() }
-                .disabled(draft.isEmpty)
-            Button("Stash draft", systemImage: "tray.and.arrow.down", action: stashDraft)
-                .disabled(!hasDraftText)
-        }
-        .overlay {
-            if dropping { shape.strokeBorder(Theme.accent, lineWidth: 2) }
+    }
+
+    private var showsMic: Bool { dictation != nil && canDictate }
+
+    @ViewBuilder private var micButton: some View {
+        if let dictation, canDictate {
+            Button {
+                if !focused { focus.wrappedValue = true }
+                dictation.toggle()
+            } label: {
+                Image(systemName: isListening ? "mic.fill" : "mic")
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.pulse, isActive: isListening)
+                    .foregroundStyle(isListening ? Theme.statusRed : Theme.textMuted)
+                    .scaledGlyphBox(44, glyph: 17, weight: .medium)
+            }
+            .disabled(dictation.phase == .starting)
+            .accessibilityLabel(isListening ? "Stop dictating" : "Dictate")
         }
     }
 
@@ -237,44 +264,20 @@ struct ComposerView: View {
 
     private var slotButton: some View {
         let primary = slot == .send && canSend
-        let danger = slot == .stop || slot == .stopDictating
+        let danger = slot == .stop
         return Button {
-            switch slot {
-            case .send: submit()
-            case .stop: stop()
-            case .dictate, .stopDictating:
-                if !focused { focus.wrappedValue = true }
-                dictation?.toggle()
-            }
+            slot == .stop ? stop() : submit()
         } label: {
-            Image(systemName: slotGlyph)
+            Image(systemName: slot == .stop ? "stop.fill" : "arrow.up")
                 .contentTransition(.symbolEffect(.replace))
-                .symbolEffect(.pulse, isActive: slot == .stopDictating)
-                .foregroundStyle(primary ? Theme.primaryGlyph : danger ? Theme.dangerGlyph : slot == .send ? Theme.textMuted : Theme.text)
+                .foregroundStyle(primary ? Theme.primaryGlyph : danger ? Theme.dangerGlyph : Theme.textMuted)
                 .scaledGlyphBox(44, glyph: 17, weight: .semibold)
                 .background(primary ? Theme.primaryFill : danger ? Theme.dangerFill : Theme.subtleStrong, in: Circle())
         }
-        .disabled((slot == .send && !canSend) || (slot == .dictate && dictation?.phase == .starting))
+        .disabled(slot == .send && !canSend)
         .animation(.spring(duration: 0.25), value: slot)
-        .accessibilityLabel(slotLabel)
-    }
-
-    private var slotGlyph: String {
-        switch slot {
-        case .send: "arrow.up"
-        case .dictate: "mic"
-        case .stopDictating: "mic.fill"
-        case .stop: "stop.fill"
-        }
-    }
-
-    private var slotLabel: String {
-        switch slot {
-        case .send: isRunning || !queued.isEmpty ? "Queue" : "Send"
-        case .dictate: "Dictate"
-        case .stopDictating: "Stop dictating"
-        case .stop: "Stop the running turn"
-        }
+        .animation(.spring(duration: 0.25), value: canSend)
+        .accessibilityLabel(slot == .stop ? "Stop the running turn" : isRunning || !queued.isEmpty ? "Queue" : "Send")
     }
 
     private var queueLine: some View {

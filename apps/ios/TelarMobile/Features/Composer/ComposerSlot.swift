@@ -2,15 +2,10 @@ import CoreGraphics
 
 enum ComposerSlot: Equatable {
     case send
-    case dictate
-    case stopDictating
     case stop
 
-    static func resolve(canSend: Bool, running: Bool, listening: Bool, canDictate: Bool) -> ComposerSlot {
-        if listening { return .stopDictating }
-        if canSend { return .send }
-        if running { return .stop }
-        return canDictate ? .dictate : .send
+    static func resolve(canSend: Bool, running: Bool) -> ComposerSlot {
+        running && !canSend ? .stop : .send
     }
 }
 
