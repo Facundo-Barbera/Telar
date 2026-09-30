@@ -73,7 +73,7 @@ function createDesktopNotifier({ Notification, send, context, open, chime }) {
     const banner = new Notification({
       title: notice.title,
       body: notice.body,
-      silent: true,
+      ...chime.options(notice.sound),
       actions: approvable ? [{ type: "button", text: "Approve" }, { type: "button", text: "Open" }] : [{ type: "button", text: "Open" }],
     });
     const forget = () => {
@@ -92,7 +92,7 @@ function createDesktopNotifier({ Notification, send, context, open, chime }) {
       } else open(notice.path);
     });
     banner.on("close", forget);
-    banner.on("show", () => chime(notice.sound));
+    banner.on("show", () => chime.shown(notice.sound));
     live.set(notice.sessionId, banner);
     banner.show();
   }
@@ -113,6 +113,14 @@ function createDesktopNotifier({ Notification, send, context, open, chime }) {
       const notice = parseNotice(message);
       if (!notice || !shouldNotifyDesktop(notice, context())) return;
       show(notice);
+    },
+    test(sounds) {
+      const sound = `telar-${sounds}-done`;
+      if (!SOUND.test(sound)) return { ok: false };
+      const banner = new Notification({ title: "Telar", body: "This is how your alerts sound on this Mac.", ...chime.options(sound) });
+      banner.on("show", () => chime.shown(sound));
+      banner.show();
+      return { ok: true };
     },
     liveCount: () => live.size,
   };

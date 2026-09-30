@@ -55,6 +55,15 @@ function verifyPackagedComputerUse(appPath, pin, deps = {}) {
   return { helper, binary };
 }
 
+const SOUND_NAMES = ["hilo", "armonico", "felt"].flatMap((set) => ["done", "needs", "error"].map((kind) => `telar-${set}-${kind}.caf`));
+
+function verifyPackagedSounds(appPath) {
+  const dir = path.join(appPath, "Contents", "Resources");
+  const missing = SOUND_NAMES.filter((name) => !fs.existsSync(path.join(dir, name)));
+  if (missing.length) throw new Error(`packaged app is missing notification sounds in ${dir}: ${missing.join(", ")} — macOS would play its default sound instead.`);
+  return SOUND_NAMES.length;
+}
+
 const ARCH_NAMES = ["ia32", "x64", "armv7l", "arm64", "universal"];
 
 exports.default = async function afterPack(context) {
@@ -64,6 +73,7 @@ exports.default = async function afterPack(context) {
   const arch = ARCH_NAMES[context.arch] ?? process.arch;
   const found = verifyPackagedPty(appPath, { arch });
   console.log(`  • node-pty unpacked and runnable from ${found.from}${found.chmodded ? " (spawn-helper made executable)" : ""}`);
+  console.log(`  • ${verifyPackagedSounds(appPath)} notification sounds in Contents/Resources`);
   const pin = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "src", "main", "computer-use-helper.json"), "utf8"));
   const helper = verifyPackagedComputerUse(appPath, pin, { required: process.env.TELAR_REQUIRE_COMPUTER_USE_HELPER === "1" });
   console.log(helper ? `  • computer-use helper ${pin.bundleId} (cua-driver ${pin.version}) packaged` : "  • no computer-use helper in this build (not required)");
@@ -71,4 +81,5 @@ exports.default = async function afterPack(context) {
 
 exports.verifyPackagedPty = verifyPackagedPty;
 exports.verifyPackagedComputerUse = verifyPackagedComputerUse;
+exports.verifyPackagedSounds = verifyPackagedSounds;
 exports.UNPACKED = UNPACKED;

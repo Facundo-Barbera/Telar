@@ -79,10 +79,10 @@
         "to": "engine/node_modules"
       },
       {
-        "from": "../web/public/sounds",
+        "from": "../ios/TelarMobile/Sounds",
         "to": ".",
         "filter": [
-          "*.wav"
+          "telar-*.caf"
         ]
       },
       {
