@@ -40,7 +40,8 @@ export const MessageContent = ({
   </div>
 );
 
-const STREAMDOWN_LIST_SPACING = "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5";
+const STREAMDOWN_LIST_SPACING =
+  "[&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:list-outside [&_ol]:pl-[max(1.25rem,3ch)] [&_ol:has(>li:nth-child(10))]:pl-[max(1.25rem,4ch)]";
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
