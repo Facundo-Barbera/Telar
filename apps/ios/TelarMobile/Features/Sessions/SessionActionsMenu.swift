@@ -40,9 +40,9 @@ struct SessionActionsMenu: View {
             }
             Section {
                 if store.sync.session?.settledOverride == "settled" {
-                    Button("Unarchive", systemImage: "arrow.uturn.backward") { Task { await store.setSettled(false) } }
+                    Button("Un-settle", systemImage: "arrow.uturn.backward") { Task { await store.setSettled(false) } }
                 } else {
-                    Button("Archive", systemImage: "archivebox") { Task { await store.setSettled(true) } }
+                    Button("Settle", systemImage: "checkmark") { Task { await store.setSettled(true) } }
                 }
             }
             if let usage = store.sync.session?.usage {

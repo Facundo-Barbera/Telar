@@ -18,7 +18,7 @@ If a connection fails, check the obvious things first. For a local address, the 
 - Start a conversation in any project, choose the model, and attach photos.
 - Reply, queue a message, or send one into a running turn without stopping it. You can also stop a turn.
 - Answer approvals and questions from agents.
-- Pin, snooze, settle, rename or delete conversations. In a conversation, **Archive** in the ⋯ menu settles it.
+- Pin, snooze, settle, rename or delete conversations.
 - Open the **Panel** to see the diff and browse files. Markdown and text files can be edited. Data and LaTeX show up when the project uses those plugins.
 - Dictate into the message box, and have the last reply read aloud (Speak the last reply).
 - Check a Mac's usage for the day, week or month.
