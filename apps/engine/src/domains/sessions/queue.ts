@@ -159,10 +159,17 @@ export class SessionQueues {
 
   liveSessionIds(): Set<string> {
     if (this.liveIndex) return this.liveIndex;
+    const store = this.kernel.executionStore;
+    const stored = store.liveQueueIds();
+    const persisted = new Set(stored);
+    const candidates = stored === undefined ? this.deps.sessionIds() : new Set([...persisted, ...store.unfinishedSessionIds()]);
     const index = new Set<string>();
-    for (const sessionId of this.deps.sessionIds()) {
-      if (queueConcernsAWorker(this.scan(sessionId))) index.add(sessionId);
+    for (const sessionId of candidates) {
+      const live = queueConcernsAWorker(this.scan(sessionId));
+      if (live) index.add(sessionId);
+      if (live !== persisted.has(sessionId)) store.markLiveQueue(sessionId, live);
     }
+    if (stored === undefined) store.markLiveQueuesIndexed();
     this.liveIndex = index;
     for (const sessionId of this.cache.keys()) {
       if (!index.has(sessionId)) this.cache.delete(sessionId);
@@ -187,8 +194,10 @@ export class SessionQueues {
     this.cache.delete(sessionId);
     this.announceChange();
     this.deps.afterWrite(sessionId, queue.turns);
+    const live = queueConcernsAWorker(queue);
+    this.kernel.executionStore.markLiveQueue(sessionId, live);
     if (!this.liveIndex) return;
-    if (queueConcernsAWorker(queue)) this.liveIndex.add(sessionId);
+    if (live) this.liveIndex.add(sessionId);
     else this.liveIndex.delete(sessionId);
   }
 

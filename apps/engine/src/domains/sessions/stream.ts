@@ -5,6 +5,8 @@ import type { EngineStore } from "../../state";
 /** A stream the engine must be able to end on shutdown; `end` also closes the response. */
 export type OpenStream = (() => void) & { end?: () => void };
 
+const MAX_BUFFERED_BYTES = 1024 * 1024;
+
 /**
  * Holds an SSE response open: headers flushed with `: open` (writeHead alone doesn't send them),
  * a 25 s `: beat` so proxies keep it, and registration in `openStreams` so `close()` can end it.
@@ -17,20 +19,17 @@ export function holdEventStream(
 ): void {
   response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive" });
   response.write(": open\n\n");
-  const stop = subscribe((data) => {
+  let stop = (): void => {};
+  const write = (chunk: string): void => {
+    if (!openStreams.has(finish)) return;
     try {
-      response.write(`data: ${JSON.stringify(data)}\n\n`);
+      response.write(chunk);
     } catch {
       /* the socket has gone; the close handler unsubscribes */
     }
-  });
-  const beat = setInterval(() => {
-    try {
-      response.write(": beat\n\n");
-    } catch {
-      /* the close handler tidies up */
-    }
-  }, 25_000);
+    if (response.writableLength > MAX_BUFFERED_BYTES) finish.end?.();
+  };
+  const beat = setInterval(() => write(": beat\n\n"), 25_000);
   beat.unref();
   const finish: OpenStream = () => {
     clearInterval(beat);
@@ -48,6 +47,8 @@ export function holdEventStream(
       /* already gone */
     }
   };
+  stop = subscribe((data) => write(`data: ${JSON.stringify(data)}\n\n`));
+  if (!openStreams.has(finish)) stop();
 }
 
 /**

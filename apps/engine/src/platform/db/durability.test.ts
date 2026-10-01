@@ -24,7 +24,7 @@ function open(): { root: string; store: ExecutionStore } {
 
 test("the durability pragmas are the ones in effect on the live connection, read back as values", () => {
   const { store } = open();
-  expect(durabilityPragmas(store)).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
+  expect(durabilityPragmas(store)).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0, journalSizeLimit: 32 * 1024 * 1024 });
 });
 
 test("checkpoint_fullfsync moves in both directions on a raw connection, so the pragma is what sets it", () => {
@@ -106,7 +106,7 @@ test("a rolled-back turn issues no barrier, because it never settled", () => {
 test("the barrier leaves the connection exactly as it found it", () => {
   const { store } = watching([]);
   store.transaction("end", () => { store.append(event(1, "turn.completed")); });
-  expect(durabilityPragmas(store)).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0 });
+  expect(durabilityPragmas(store)).toEqual({ synchronous: 1, checkpointFullfsync: 1, fullfsync: 0, journalSizeLimit: 32 * 1024 * 1024 });
 });
 
 test("the barrier records where durability reached, and the row survives a reopen", () => {

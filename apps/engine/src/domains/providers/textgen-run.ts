@@ -20,6 +20,7 @@ export type TextGenDriverInput = {
 type Structured = Record<string, unknown>;
 
 const DEFAULT_TIMEOUT_MS = 120_000;
+const MAX_STDOUT_BYTES = 4 * 1024 * 1024;
 const DEFAULT_EFFORT: TextGenEffort = "low";
 const SYSTEM_PROMPT = "Answer with the requested JSON only.";
 
@@ -199,6 +200,9 @@ function runToCompletion(executable: string, args: string[], cwd: string, input:
     child.on("error", (error) => finish(undefined, `could not start: ${error.message}`));
     child.stdout.on("data", (chunk: Buffer) => {
       out += chunk.toString("utf8");
+      if (out.length <= MAX_STDOUT_BYTES) return;
+      child.kill("SIGKILL");
+      finish(undefined, `output passed ${MAX_STDOUT_BYTES / 1024 / 1024} MB`);
     });
     child.stderr.on("data", (chunk: Buffer) => {
       err = (err + chunk.toString("utf8")).slice(-4000);

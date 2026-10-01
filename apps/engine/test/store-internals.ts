@@ -83,9 +83,9 @@ export function turnPolicyRequests(store: ExecutionStore, sessionId: string, run
 }
 
 /** Pragmas are per connection, so they are read on the store's own. */
-export function durabilityPragmas(store: ExecutionStore): { synchronous: number; checkpointFullfsync: number; fullfsync: number } {
+export function durabilityPragmas(store: ExecutionStore): { synchronous: number; checkpointFullfsync: number; fullfsync: number; journalSizeLimit: number } {
   const read = (name: string): number => Number(Object.values(db(store).prepare(`PRAGMA ${name}`).get() ?? {})[0] ?? 0);
-  return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync") };
+  return { synchronous: read("synchronous"), checkpointFullfsync: read("checkpoint_fullfsync"), fullfsync: read("fullfsync"), journalSizeLimit: read("journal_size_limit") };
 }
 
 /** `<sessionId>:<eventId>` of the last turn a device barrier persisted. */

@@ -397,6 +397,24 @@ export function grepEvents(store: ExecutionStore, sessionId: string, needle: str
 
 export const ITEMS_ROWS_PREFIX = "items-rows/";
 
+export const LIVE_QUEUE_PREFIX = "live-queue/";
+const LIVE_QUEUES_INDEXED = "live-queues-indexed";
+
+export function liveQueueIds(store: ExecutionStore): string[] | undefined {
+  if (!store.statement("SELECT 1 FROM metadata WHERE key=?").get(LIVE_QUEUES_INDEXED)) return undefined;
+  const [low, high] = prefixRange(LIVE_QUEUE_PREFIX);
+  return store.statement("SELECT key FROM metadata WHERE key >= ? AND key < ?").all(low, high).map((row) => String(row.key).slice(LIVE_QUEUE_PREFIX.length));
+}
+
+export function markLiveQueue(store: ExecutionStore, sessionId: string, live: boolean): void {
+  if (live) store.setMetadata(`${LIVE_QUEUE_PREFIX}${sessionId}`, "1");
+  else store.statement("DELETE FROM metadata WHERE key=?").run(`${LIVE_QUEUE_PREFIX}${sessionId}`);
+}
+
+export function markLiveQueuesIndexed(store: ExecutionStore): void {
+  store.setMetadata(LIVE_QUEUES_INDEXED, "1");
+}
+
 /** Exported so a test can hold the query plan to the `items_run` index. */
 export const ITEM_ROWS_FOR_RUNS_SQL =
   "SELECT value FROM items WHERE session_id=? AND run_id IN (SELECT value FROM json_each(?)) ORDER BY ord";
