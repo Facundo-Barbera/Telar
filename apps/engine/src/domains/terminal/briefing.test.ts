@@ -26,7 +26,7 @@ import { createClaudeDriver } from "../../drivers/claude";
 import { BROWSER_BRIEFING } from "../browser";
 import { BROWSER_TOOLS } from "../browser";
 import { RUN_BRIEFING } from "./briefing";
-import { toolInputSchema } from "../agent-tools";
+import { DISPLAY_BRIEFING, toolInputSchema } from "../agent-tools";
 import { TELAR_ORIENTATION, TELAR_SKILL } from "../sessions";
 import { parseFrontMatter } from "../providers";
 import type { DriverRun } from "../../drivers";
@@ -100,7 +100,8 @@ async function measureFirstRequest() {
     { component: "append: orientation", chars: TELAR_ORIENTATION.length },
     { component: "append: browser briefing", chars: BROWSER_BRIEFING.length },
     { component: "append: run briefing", chars: RUN_BRIEFING.length },
-    { component: "append: separators", chars: captured.append.length - TELAR_ORIENTATION.length - BROWSER_BRIEFING.length - RUN_BRIEFING.length },
+    { component: "append: display briefing", chars: DISPLAY_BRIEFING.length },
+    { component: "append: separators", chars: captured.append.length - TELAR_ORIENTATION.length - BROWSER_BRIEFING.length - RUN_BRIEFING.length - DISPLAY_BRIEFING.length },
     { component: "deferred-tools header", chars: DEFERRED_HEADER.length },
     { component: `telar tool names (${telarNames.length}, deferred)`, chars: listed(telarNames) },
     { component: `telar-browser tool names (${browserNames.length}, deferred)`, chars: listed(browserNames) },
@@ -143,7 +144,7 @@ test("the fixture's first request carries only names for Telar's MCP tools, and 
   // Deferral is what keeps the schemas out; without it every row above is a schema.
   expect(captured.env.ENABLE_TOOL_SEARCH).toBe("true");
   expect(captured.servers).toEqual(["telar-browser", "telar"]);
-  expect(captured.append).toBe([TELAR_ORIENTATION, BROWSER_BRIEFING, RUN_BRIEFING].join("\n\n"));
+  expect(captured.append).toBe([TELAR_ORIENTATION, BROWSER_BRIEFING, RUN_BRIEFING, DISPLAY_BRIEFING].join("\n\n"));
   // The wall really was captured, so the name rows are not vacuously small.
   expect(captured.telar.length).toBeGreaterThan(20);
   expect(schemas.telar).toBeGreaterThan(10 * listed(captured.telar.map((tool) => tool.name)));

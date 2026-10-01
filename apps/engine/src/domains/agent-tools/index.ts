@@ -1,4 +1,4 @@
-export { createDisplayCapability, type DisplayCapability, displayTools } from "./display-tools";
+export { createDisplayCapability, DISPLAY_BRIEFING, type DisplayCapability, displayTools } from "./display-tools";
 export { advertiseLeanSchemas, collectTools, connectCard, ensureSecretFile, handleSocketMessage, readSocketBody, type SocketTool, toolInputSchema } from "./mcp-socket";
 export { BUNDLED_SKILLS, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME } from "./orchestrate-skill";
 export { mcpOAuthRoutes } from "./routes";

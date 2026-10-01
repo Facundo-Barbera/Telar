@@ -6,7 +6,7 @@ import { claimHasComputerUse } from "../../domains/computer-use";
 import { pluginBriefings } from "../../domains/plugins";
 import type { DriverRun } from "../contract";
 import { RUN_BRIEFING } from "../../domains/terminal";
-import { TELAR_TOOL_CALL_TIMEOUT_MS } from "../../domains/agent-tools";
+import { DISPLAY_BRIEFING, TELAR_TOOL_CALL_TIMEOUT_MS } from "../../domains/agent-tools";
 
 export type CodexThreadConfig = {
   approvalPolicy: "untrusted" | "on-request" | "never";
@@ -113,6 +113,7 @@ function codexBriefings(run: DriverRun): string[] {
     ...(run.mainBriefing ? [run.mainBriefing] : []),
     ...(run.browserSocket ? [BROWSER_BRIEFING] : []),
     ...(run.run ? [RUN_BRIEFING] : []),
+    ...(run.display ? [DISPLAY_BRIEFING] : []),
     ...pluginBriefings(Object.keys(run.plugins ?? {})),
     ...(run.notification ? [codexNotificationInstruction(run.notification, run.prompt)] : []),
   ];
