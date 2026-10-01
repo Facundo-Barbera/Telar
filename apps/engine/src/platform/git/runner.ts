@@ -1,4 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
+import { mountPointForRoot } from "../fs/volumes";
+import { gitChildren, type GitChildren } from "./children";
 
 export type GitResult = {
   status: number;
@@ -25,47 +27,52 @@ export const GIT_TIMEOUT_STATUS = 124;
 
 export const DEFAULT_GIT_ADMISSION_MS = 60_000;
 
+export const STUCK_CHILD_REPORT_MS = 10_000;
+
 export type GitRunnerDeps = {
   /** Which binary to run; `git` from PATH by default. Tests point it at a stalled fake. */
   gitBin?: string;
   defaultTimeoutMs?: number;
-  /** ASYNC RUNNER ONLY — how long a call of this pool's may wait for a slot.
-   *  See `DEFAULT_GIT_ADMISSION_MS`. */
+  /** Async runner only: how long a call may wait for a slot. */
   defaultAdmissionMs?: number;
+  children?: GitChildren;
+  spawn?: typeof spawn;
+  warn?: (message: string) => void;
 };
+
+const overCap = (children: GitChildren, cwd: string, args: string[]): string =>
+  `git ${args.join(" ")} in ${cwd} was refused: ${children.live()} git processes are alive and the cap is ${children.cap}`;
 
 export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
   const gitBin = deps.gitBin ?? "git";
+  const children = deps.children ?? gitChildren;
   return (cwd, args, options) => {
+    if (!children.tryAcquire()) return { status: 1, stdout: "", stderr: overCap(children, cwd, args) };
     const timeout = Math.max(1, options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv());
-    const run = spawnSync(gitBin, args, {
-      cwd,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
-      timeout,
-      // SIGKILL, NOT SIGTERM: the stall this guards against is a child stuck
-      // in a syscall, and a signal git may handle politely is a signal it may
-      // never get around to handling.
-      killSignal: "SIGKILL",
-    });
+    let run: ReturnType<typeof spawnSync>;
+    try {
+      run = spawnSync(gitBin, args, {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+        timeout,
+        // SIGKILL: the stall this guards against is a child stuck in a syscall.
+        killSignal: "SIGKILL",
+      });
+    } finally {
+      children.release();
+    }
+    const stdout = String(run.stdout ?? "");
     const failure = run.error as { code?: string } | undefined;
     if (failure?.code === "ENOBUFS") {
-      return {
-        status: 1,
-        stdout: run.stdout ?? "",
-        stderr: `git ${args.join(" ")} in ${cwd} wrote more than this runner's output bound`,
-        overflowed: true,
-      };
+      return { status: 1, stdout, stderr: `git ${args.join(" ")} in ${cwd} wrote more than this runner's output bound`, overflowed: true };
     }
-    // The second clause is the one `execFileSync` used to need and is kept: a
-    // child that died on SIGKILL with no status is one this runner killed, even
-    // where the platform did not also hand back an ETIMEDOUT.
     if (failure?.code === "ETIMEDOUT" || (run.status == null && run.signal === "SIGKILL")) {
       const killed = typeof run.pid === "number" && run.pid > 0 ? run.pid : undefined;
       return {
         status: GIT_TIMEOUT_STATUS,
-        stdout: run.stdout ?? "",
+        stdout,
         stderr:
           `git ${args.join(" ")} in ${cwd} did not finish within ${timeout}ms and was killed` +
           (killed === undefined ? "" : ` (pid ${killed})`),
@@ -73,14 +80,12 @@ export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
         killedPid: killed,
       };
     }
-    if (run.status === 0) return { status: 0, stdout: run.stdout ?? "", stderr: "" };
+    if (run.status === 0) return { status: 0, stdout, stderr: "" };
     return {
       status: run.status ?? 1,
-      stdout: run.stdout ?? "",
-      // `spawnSync` reports a failure to START in `error` with no stderr at all —
-      // a missing binary arrives as ENOENT and `stderr: null` — so the error is
-      // what stands in for a message the child never got to write.
-      stderr: run.stderr || (run.error ? String(run.error) : `git ${args.join(" ")} in ${cwd} exited with status ${run.status}`),
+      stdout,
+      // A failure to start (ENOENT) arrives in `error` with no stderr.
+      stderr: String(run.stderr ?? "") || (run.error ? String(run.error) : `git ${args.join(" ")} in ${cwd} exited with status ${run.status}`),
     };
   };
 }
@@ -96,7 +101,9 @@ export type AsyncGitRunner = (cwd: string, args: string[], options?: GitRunOptio
 
 const MAX_GIT_OUTPUT_CHARS = 1024 * 1024;
 
-function killGroup(child: { pid?: number; kill: (signal: NodeJS.Signals) => boolean } | undefined): number | undefined {
+type Child = ReturnType<typeof spawn>;
+
+function killGroup(child: Child | undefined): number | undefined {
   const pid = child?.pid;
   if (child === undefined || typeof pid !== "number" || pid <= 0) return undefined;
   try {
@@ -107,21 +114,33 @@ function killGroup(child: { pid?: number; kill: (signal: NodeJS.Signals) => bool
   return pid;
 }
 
+const boundOr = (requested: number, fallback: number): number => (Number.isFinite(requested) ? Math.max(1, requested) : fallback);
+
 export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: number } = {}): AsyncGitRunner {
   const requestedLimit = deps.concurrency ?? 4;
   const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.floor(requestedLimit)) : 4;
+  const children = deps.children ?? gitChildren;
+  const spawnChild = deps.spawn ?? spawn;
+  const warn = deps.warn ?? console.warn;
   let active = 0;
   const queue: Array<() => void> = [];
+  const admit = (): boolean => {
+    if (active >= limit || !children.tryAcquire()) return false;
+    active++;
+    return true;
+  };
+  const drain = () => {
+    while (queue.length > 0 && admit()) queue.shift()!();
+  };
+  children.onRelease(drain);
+
   return (cwd, args, options) => new Promise((resolve) => {
-    const requested = options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv();
-    const timeout = Number.isFinite(requested) ? Math.max(1, requested) : DEFAULT_GIT_TIMEOUT_MS;
-    const requestedAdmission = options?.admissionMs ?? deps.defaultAdmissionMs ?? DEFAULT_GIT_ADMISSION_MS;
-    const admission = Number.isFinite(requestedAdmission) ? Math.max(1, requestedAdmission) : DEFAULT_GIT_ADMISSION_MS;
+    const timeout = boundOr(options?.timeoutMs ?? deps.defaultTimeoutMs ?? gitTimeoutFromEnv(), DEFAULT_GIT_TIMEOUT_MS);
+    const admission = boundOr(options?.admissionMs ?? deps.defaultAdmissionMs ?? DEFAULT_GIT_ADMISSION_MS, DEFAULT_GIT_ADMISSION_MS);
     let settled = false;
-    let child: ReturnType<typeof spawn> | undefined;
+    let child: Child | undefined;
     let runTimer: ReturnType<typeof setTimeout> | undefined;
-    /** Armed ONLY when this call is actually queued — see the bottom of this
-     *  function. A call that gets a slot immediately never waited for one. */
+    let stuckTimer: ReturnType<typeof setTimeout> | undefined;
     let admissionTimer: ReturnType<typeof setTimeout> | undefined;
     const finish = (result: GitResult) => {
       if (settled) return;
@@ -130,31 +149,39 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
       clearTimeout(runTimer);
       resolve(result);
     };
-    let acquired = false;
     let released = false;
     const release = () => {
-      if (!acquired || released) return;
+      if (released) return;
       released = true;
+      clearTimeout(stuckTimer);
       active--;
-      queue.shift()?.();
+      children.release();
+      drain();
     };
     const expireAdmission = () => {
       const index = queue.indexOf(start);
       if (index !== -1) queue.splice(index, 1);
-      // Nothing to kill and nothing to release: this call never held a slot.
       finish({
         status: GIT_TIMEOUT_STATUS,
         stdout: "",
-        stderr: `git ${args.join(" ")} in ${cwd} waited ${admission}ms for a slot and never started`,
+        stderr:
+          `git ${args.join(" ")} in ${cwd} waited ${admission}ms for a slot and never started ` +
+          `(${children.live()} git processes alive, cap ${children.cap})`,
         timedOut: true,
       });
     };
     const start = () => {
-      if (settled) return;
+      if (settled) {
+        release();
+        return;
+      }
       clearTimeout(admissionTimer);
       runTimer = setTimeout(() => {
         const killed = killGroup(child);
-        release();
+        stuckTimer = setTimeout(() => {
+          warn(`[git] killed git ${args[0] ?? ""} (pid ${killed}) on ${mountPointForRoot(cwd) ?? "the boot volume"} has not exited after ${STUCK_CHILD_REPORT_MS}ms; its slot stays held`);
+        }, STUCK_CHILD_REPORT_MS);
+        stuckTimer.unref?.();
         finish({
           status: GIT_TIMEOUT_STATUS,
           stdout: "",
@@ -165,71 +192,59 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
           killedPid: killed,
         });
       }, timeout);
-      active++;
-      acquired = true;
       try {
-        child = spawn(deps.gitBin ?? "git", args, {
+        child = spawnChild(deps.gitBin ?? "git", args, {
           cwd,
-          // Merged over the engine's own, never replacing it — see the note on
-          // `GitRunOptions.env` and the synchronous runner above.
           ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
-          // THE ONE LINE THIS ISSUE IS ABOUT: git leads its own process group, so
-          // the timeout path can reap what git spawned. `execFile` accepts this
-          // option and ignores it (see the header) — the spawn is the fix.
+          // git leads its own process group so the timeout can reap what git spawned.
           detached: true,
-          // `ignore` matches the synchronous runner: nothing here feeds git on
-          // stdin, and /dev/null turns a would-be prompt into an immediate EOF.
           stdio: ["ignore", "pipe", "pipe"],
         });
-        let stdout = "";
-        let stderr = "";
-        let overflowed = false;
-        const collect = (into: "stdout" | "stderr") => (chunk: string) => {
-          if (overflowed) return;
-          if ((into === "stdout" ? stdout : stderr).length + chunk.length > MAX_GIT_OUTPUT_CHARS) {
-            overflowed = true;
-            killGroup(child);
-            return;
-          }
-          if (into === "stdout") stdout += chunk;
-          else stderr += chunk;
-        };
-        child.stdout?.setEncoding("utf8");
-        child.stderr?.setEncoding("utf8");
-        child.stdout?.on("data", collect("stdout"));
-        child.stderr?.on("data", collect("stderr"));
-        // Anything that goes wrong before the child exists — a missing binary,
-        // an unreadable cwd — arrives here rather than as a throw.
-        child.on("error", (error) => {
-          release();
-          finish({ status: 1, stdout, stderr: stderr || String(error) });
-        });
-        // `close` rather than `exit`: it waits for the stdio pipes as `execFile`'s
-        // callback did, which is the semantics every caller was written against.
-        // The difference is that a timed-out read no longer waits here at all.
-        child.on("close", (code) => {
-          release();
-          if (overflowed) {
-            finish({
-              status: 1,
-              stdout,
-              stderr: `git ${args.join(" ")} in ${cwd} wrote more than ${MAX_GIT_OUTPUT_CHARS} characters`,
-              overflowed: true,
-            });
-            return;
-          }
-          finish({ status: code ?? 1, stdout, stderr });
-        });
+        collect(child, args, cwd, release, finish);
       } catch (error) {
         release();
         finish({ status: 1, stdout: "", stderr: String(error) });
       }
     };
-    if (active < limit) start();
+    if (admit()) start();
     else {
       queue.push(start);
       admissionTimer = setTimeout(expireAdmission, admission);
     }
+  });
+}
+
+/** The slot is released only when the child has exited; a killed child stuck in I/O keeps it. */
+function collect(child: Child, args: string[], cwd: string, release: () => void, finish: (result: GitResult) => void): void {
+  let stdout = "";
+  let stderr = "";
+  let overflowed = false;
+  const append = (into: "stdout" | "stderr") => (chunk: string) => {
+    if (overflowed) return;
+    if ((into === "stdout" ? stdout : stderr).length + chunk.length > MAX_GIT_OUTPUT_CHARS) {
+      overflowed = true;
+      killGroup(child);
+      return;
+    }
+    if (into === "stdout") stdout += chunk;
+    else stderr += chunk;
+  };
+  child.stdout?.setEncoding("utf8");
+  child.stderr?.setEncoding("utf8");
+  child.stdout?.on("data", append("stdout"));
+  child.stderr?.on("data", append("stderr"));
+  child.on("error", (error) => {
+    if (child.pid === undefined) release();
+    finish({ status: 1, stdout, stderr: stderr || String(error) });
+  });
+  child.on("exit", release);
+  child.on("close", (code) => {
+    release();
+    if (overflowed) {
+      finish({ status: 1, stdout, stderr: `git ${args.join(" ")} in ${cwd} wrote more than ${MAX_GIT_OUTPUT_CHARS} characters`, overflowed: true });
+      return;
+    }
+    finish({ status: code ?? 1, stdout, stderr });
   });
 }
 

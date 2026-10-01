@@ -1,8 +1,11 @@
-import { afterEach, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { afterEach, describe, expect, jest, test } from "bun:test";
+import { execFileSync, type spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import fs from "node:fs";
 import path from "node:path";
-import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS } from "./runner";
+import { createGitChildren } from "./children";
+import { createAsyncGitRunner, defaultAsyncGitRunner, createGitRunner, DEFAULT_GIT_TIMEOUT_MS, defaultGitRunner, GIT_TIMEOUT_STATUS, STUCK_CHILD_REPORT_MS } from "./runner";
 import { tmp, removeTmp, until, repo } from "../../../test/worktree-fixtures";
 
 afterEach(removeTmp);
@@ -255,3 +258,115 @@ test("a call that spawns and then hangs is killed at its run deadline and report
   await until(() => !alive(hung.killedPid as number), 5_000);
   expect(alive(hung.killedPid as number)).toBe(false);
 }, 15_000);
+
+class FakeChild extends EventEmitter {
+  readonly pid = undefined;
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  kills = 0;
+  kill(): boolean {
+    this.kills++;
+    return true;
+  }
+  exit(code = 0): void {
+    this.emit("exit", code, null);
+    this.emit("close", code);
+  }
+}
+
+function fakeSpawn(): { spawn: typeof spawn; spawned: FakeChild[] } {
+  const spawned: FakeChild[] = [];
+  const fake = () => {
+    const child = new FakeChild();
+    spawned.push(child);
+    return child;
+  };
+  return { spawn: fake as unknown as typeof spawn, spawned };
+}
+
+const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve));
+
+describe("live git children", () => {
+  afterEach(() => jest.useRealTimers());
+
+  test("a killed child that never exits keeps its slot, and the pool stays within its limit", async () => {
+    jest.useFakeTimers();
+    const warnings: string[] = [];
+    const { spawn, spawned } = fakeSpawn();
+    const run = createAsyncGitRunner({ spawn, concurrency: 2, children: createGitChildren(16), warn: (m) => warnings.push(m) });
+    const first = run("/tmp", ["status"], { timeoutMs: 100 });
+    const second = run("/tmp", ["status"], { timeoutMs: 100 });
+    const third = run("/tmp", ["status"], { timeoutMs: 100, admissionMs: 60_000 });
+    expect(spawned).toHaveLength(2);
+    jest.advanceTimersByTime(100);
+    expect((await first).timedOut).toBe(true);
+    expect((await second).timedOut).toBe(true);
+    expect(spawned).toHaveLength(2);
+    jest.advanceTimersByTime(STUCK_CHILD_REPORT_MS);
+    expect(warnings.some((m) => m.includes("git status") && m.includes("has not exited"))).toBe(true);
+    spawned[0]!.exit(137);
+    expect(spawned).toHaveLength(3);
+    spawned[2]!.stdout.end("ok");
+    spawned[2]!.exit(0);
+    await flush();
+    expect((await third).status).toBe(0);
+  });
+
+  test("slots are freed when the child exits", async () => {
+    const { spawn, spawned } = fakeSpawn();
+    const children = createGitChildren(16);
+    const run = createAsyncGitRunner({ spawn, concurrency: 1, children });
+    const first = run("/tmp", ["status"]);
+    const second = run("/tmp", ["status"]);
+    expect(children.live()).toBe(1);
+    spawned[0]!.exit(0);
+    expect(await first).toEqual({ status: 0, stdout: "", stderr: "" });
+    expect(spawned).toHaveLength(2);
+    spawned[1]!.exit(0);
+    await second;
+    expect(children.live()).toBe(0);
+  });
+
+  test("the global cap holds across pools under 500 queued calls", async () => {
+    jest.useFakeTimers();
+    const warnings: string[] = [];
+    const children = createGitChildren(16, (m) => warnings.push(m));
+    const { spawn, spawned } = fakeSpawn();
+    const pools = Array.from({ length: 5 }, () => createAsyncGitRunner({ spawn, concurrency: 8, children }));
+    const calls = Array.from({ length: 500 }, (_, i) => pools[i % pools.length]!("/tmp", ["status"], { timeoutMs: 100, admissionMs: 1_000 }));
+    expect(spawned).toHaveLength(16);
+    expect(children.live()).toBe(16);
+    expect(warnings).toHaveLength(1);
+    jest.advanceTimersByTime(100);
+    expect(spawned).toHaveLength(16);
+    for (const child of spawned.slice(0, 40)) {
+      child.exit(0);
+      expect(children.live()).toBeLessThanOrEqual(16);
+    }
+    expect(spawned.length).toBeGreaterThan(16);
+    jest.advanceTimersByTime(1_000);
+    const results = await Promise.all(calls);
+    const refused = results.filter((r) => r.stderr.includes("never started"));
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused[0]!.stderr).toContain("cap 16");
+    expect(children.live()).toBeLessThanOrEqual(16);
+  });
+
+  test("the sync runner counts toward the cap and refuses past it without spawning", () => {
+    const root = tmp("telar-git-cap-");
+    const marker = path.join(root, "ran");
+    const bin = path.join(root, "git");
+    fs.writeFileSync(bin, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+    const children = createGitChildren(1, () => {});
+    const git = createGitRunner({ gitBin: bin, children });
+    expect(children.tryAcquire()).toBe(true);
+    const refused = git(root, ["status"]);
+    expect(refused.status).not.toBe(0);
+    expect(refused.stderr).toContain("cap is 1");
+    expect(fs.existsSync(marker)).toBe(false);
+    children.release();
+    expect(git(root, ["status"]).status).toBe(0);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(children.live()).toBe(0);
+  });
+});
