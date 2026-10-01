@@ -65,18 +65,20 @@ import Observation
         await deliver(pending)
     }
 
-    func attach(data: Data, name: String, mediaType: String) async {
+    func attach(data: Data, name: String, mediaType: String) async -> String? {
         uploading = true
         defer { uploading = false }
         do {
             let attachment = try await api.uploadAttachment(sessionId, name: name, mediaType: mediaType, data: data)
+            AttachmentCache.shared.store(data, host: hostId, session: sessionId, attachmentId: attachment.id, name: attachment.name)
             pendingAttachments.append(attachment)
             if mediaType.hasPrefix("image/"), data.count <= ComposerIntake.previewCap {
                 attachmentPreviews[attachment.id] = data
             }
-            actionError = nil
+            return nil
         } catch {
-            actionError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+            let why = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
+            return "Couldn't upload \(name): \(why)"
         }
     }
 

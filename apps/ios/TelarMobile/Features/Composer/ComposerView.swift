@@ -1,5 +1,4 @@
 import SwiftUI
-import PhotosUI
 
 struct ComposerView: View {
     @Binding var draft: String
@@ -16,8 +15,7 @@ struct ComposerView: View {
 
     private var focused: Bool { focus.wrappedValue }
     @State private var managingQueue = false
-    @State private var pickedPhotos: [PhotosPickerItem] = []
-    @State private var pickingPhotos = false
+    @State private var picking: ComposerPicker?
     @State private var showingStash = false
 
     @State private var note: String?
@@ -136,22 +134,7 @@ struct ComposerView: View {
         .sheet(isPresented: $showingStash) {
             StashSheet { entry in restore(entry) }
         }
-        .photosPicker(isPresented: $pickingPhotos, selection: $pickedPhotos, maxSelectionCount: 8, matching: .images)
-        .onChange(of: pickedPhotos) { _, items in
-            guard !items.isEmpty else { return }
-            pickedPhotos = []
-            Task {
-                for item in items {
-                    if let data = try? await item.loadTransferable(type: Data.self) {
-                        await host.attach(
-                            data: data,
-                            name: (item.itemIdentifier ?? "photo") + ".jpg",
-                            mediaType: item.supportedContentTypes.first?.preferredMIMEType ?? "image/jpeg"
-                        )
-                    }
-                }
-            }
-        }
+        .modifier(ComposerPickers(picking: $picking) { results in Task { await attach(results) } })
     }
 
     private var pill: some View {
@@ -257,11 +240,16 @@ struct ComposerView: View {
     private func intake(_ providers: [NSItemProvider]) {
         Task {
             let (files, refusals) = await composerFiles(from: providers)
-            for file in files {
-                await host.attach(data: file.data, name: file.name, mediaType: file.mediaType)
-            }
-            note = refusals.isEmpty ? nil : refusals.joined(separator: " ")
+            await attach(files.map(ComposerIntakeResult.file) + refusals.map(ComposerIntakeResult.refused))
         }
+    }
+
+    private func attach(_ results: [ComposerIntakeResult]) async {
+        var problems = results.compactMap(\.refusal)
+        for file in results.compactMap(\.file) {
+            if let failed = await host.attach(data: file.data, name: file.name, mediaType: file.mediaType) { problems.append(failed) }
+        }
+        note = problems.isEmpty ? nil : problems.joined(separator: " ")
     }
 
     private var attachmentStrip: some View {
@@ -296,7 +284,11 @@ struct ComposerView: View {
             .environment(\.composerPillsInMenu, true)
             Section {
                 Button("Commands and skills", systemImage: "command", action: openCommands)
-                Button("Attach photos", systemImage: "photo") { pickingPhotos = true }
+                Menu("Attach", systemImage: "paperclip") {
+                    Button("Photos", systemImage: "photo.on.rectangle") { picking = .photos }
+                    if ComposerPicker.hasCamera { Button("Camera", systemImage: "camera") { picking = .camera } }
+                    Button("Files", systemImage: "folder") { picking = .files }
+                }
                 if hasDraftText { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
                 Button("Show stashed prompts", systemImage: "tray.full") { showingStash = true }
             }

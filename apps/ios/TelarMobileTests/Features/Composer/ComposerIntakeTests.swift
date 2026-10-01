@@ -107,4 +107,30 @@ import UniformTypeIdentifiers
     @Test func thePreviewCapIsBelowTheUploadCap() {
         #expect(ComposerIntake.previewCap < ComposerIntake.byteCap)
     }
+
+    private func tempFile(_ name: String, bytes: Int) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory.appending(path: "intake-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appending(path: name)
+        try Data(repeating: 1, count: bytes).write(to: url)
+        return url
+    }
+
+    @Test func aPickedFileKeepsItsNameAndType() throws {
+        let file = ComposerIntake.take(fileAt: try tempFile("report.pdf", bytes: 10)).file
+        #expect(file?.name == "report.pdf")
+        #expect(file?.mediaType == "application/pdf")
+        #expect(file?.data.count == 10)
+    }
+
+    @Test func aPickedFileOverTheEngineLimitIsRefusedByName() throws {
+        let result = ComposerIntake.take(fileAt: try tempFile("film.mov", bytes: ComposerIntake.byteCap + 1))
+        #expect(result.file == nil)
+        #expect(result.refusal?.hasPrefix("film.mov is") == true)
+    }
+
+    @Test func aPickedFileThatVanishedIsRefused() {
+        let gone = FileManager.default.temporaryDirectory.appending(path: "missing-\(UUID().uuidString).txt")
+        #expect(ComposerIntake.take(fileAt: gone).refusal?.contains("could not be read") == true)
+    }
 }
