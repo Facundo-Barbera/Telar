@@ -48,6 +48,8 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
   const items = useMemo(() => shown.flatMap((turn) => turn.items), [shown]);
   const openTab = props.turn.onOpenTab;
   const openArtifact = useMemo(() => (openTab ? (artifactId: string) => openTab(artifactPanelTab(artifactId)) : undefined), [openTab]);
+  const sessionId = session?.id;
+  const transcriptSource = useMemo(() => (sessionId ? { sessionId, hostId: props.hostId } : undefined), [sessionId, props.hostId]);
   const turnRow = (turn: JournalTurn, { absorbed, covered, peerTitle }: TurnView) => (
     <Fragment key={turn.runId}>
       {!absorbed && <TurnFrame skippable={turn.runId !== active?.runId}>
@@ -93,7 +95,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
               </Button>
             </div>
           </ConversationTopEdge>
-          <TranscriptSession.Provider value={session?.id}>
+          <TranscriptSession.Provider value={transcriptSource}>
           <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
             <ArtifactShelf items={items} hostId={props.hostId} {...(openArtifact ? { onOpen: openArtifact } : {})}>
             <TranscriptTurns

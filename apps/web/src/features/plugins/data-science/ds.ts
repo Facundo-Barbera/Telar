@@ -1,3 +1,5 @@
+import { rewriteApiPath } from "@/platform/engine/host-client";
+
 export type CellOutput =
   | { kind: "text"; stream: "stdout" | "stderr" | "result"; text: string; truncated?: boolean }
   | { kind: "html"; html: string; truncated?: boolean }
@@ -40,8 +42,9 @@ export type VarRow = { name: string; type: string; shape?: number[]; len?: numbe
 
 export type TableWindow = { path: string; columns: string[]; dtypes?: string[]; total: number; offset: number; rows: unknown[][]; truncated?: boolean };
 
-export function attachmentUrl(sessionId: string, attachmentId: string): string {
-  return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`;
+export function attachmentUrl(sessionId: string, attachmentId: string, options: { display?: boolean; hostId?: string } = {}): string {
+  const path = `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}${options.display ? "?variant=display" : ""}`;
+  return options.hostId ? rewriteApiPath(path, options.hostId) : path;
 }
 
 export function humanBytes(bytes: number): string {

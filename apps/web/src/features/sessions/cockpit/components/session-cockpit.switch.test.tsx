@@ -37,6 +37,7 @@ const turn = (id: string, said: string): Turn => ({
   acceptedAt: STARTED,
   updatedAt: STARTED,
   resultText: said,
+  attachments: [{ id: `att_${id}`, name: "image.png", mediaType: "image/png", bytes: 4, path: "/tmp/image.png" }],
 });
 
 /** Enough of a session for the cockpit to draw one. Everything the masthead
@@ -83,10 +84,10 @@ function wire() {
     }
     if (url.includes("/events")) return Response.json({ events: [], cursor: 1, more: false });
     if (url.includes("/browser")) return Response.json({ browser: { tabs: [], canStart: false } });
-    if (url.includes("/api/projects")) return Response.json({ projects: [{ id: "project_1", name: "exoplanets", root: "/tmp" }] });
-    if (url.includes("/api/session-defaults")) return Response.json({ sessionDefaults: { envMode: "local" } });
-    if (url.includes("/api/inbox")) return Response.json({ inbox: {} });
-    if (url.includes("/api/models")) return Response.json({ catalogue: { models: [] } });
+    if (url.includes("/projects")) return Response.json({ projects: [{ id: "project_1", name: "exoplanets", root: "/tmp" }] });
+    if (url.includes("/session-defaults")) return Response.json({ sessionDefaults: { envMode: "local" } });
+    if (url.includes("/inbox")) return Response.json({ inbox: {} });
+    if (url.includes("/models")) return Response.json({ catalogue: { models: [] } });
     return Response.json({});
   }) as typeof fetch;
 }
@@ -122,8 +123,8 @@ async function settle() {
 
 /** Render the cockpit at one conversation, moving the address bar with it —
  *  the same pair of facts a route change hands this component. */
-async function show(sessionId: string) {
-  pathname = `/projects/project_1/sessions/${sessionId}`;
+async function show(sessionId: string, at = "") {
+  pathname = `${at}/projects/project_1/sessions/${sessionId}`;
   await act(async () => {
     root!.render(
       <SidebarProvider>
@@ -175,5 +176,20 @@ describe("switching back to a conversation this tab already read", () => {
     // `/bootstrap` once per conversation: the warm connection tails from the
     // cursor it already holds rather than opening again.
     expect(opened).toEqual(["session_c", "session_d"]);
+  });
+});
+
+describe("a sent image on a conversation from another host", () => {
+  test("is still drawn through that host after leaving the conversation and coming back", async () => {
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    const thumbnail = () => host!.querySelector('button[aria-label="Open image.png"] img')?.getAttribute("src");
+
+    await show("session_e", "/hosts/host_mini");
+    expect(thumbnail()).toBe("/api/hosts/host_mini/sessions/session_e/attachments/att_session_e?variant=display");
+    await show("session_f", "/hosts/host_mini");
+    await show("session_e", "/hosts/host_mini");
+    expect(thumbnail()).toBe("/api/hosts/host_mini/sessions/session_e/attachments/att_session_e?variant=display");
   });
 });

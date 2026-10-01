@@ -4,6 +4,7 @@ import type { BrowserSocketLease, BrowserToolSocket } from "../domains/browser";
 import { RateLimitedError } from "../drivers/claude";
 import { ProviderUnavailableError, type DriverResult, type DriverRun, type DriverSessionHooks, type ProviderTurnBinding } from "../drivers";
 import { providerProcessEnv } from "../domains/providers";
+import { webImageOf } from "../domains/sessions";
 import { framedTurnInput, SteerMailbox, withTurnNotes } from "../domains/turns";
 import { UnsupportedDriverError } from "./options";
 import { isConnectivityLoss } from "./lease";
@@ -184,7 +185,7 @@ function driverRun(
     ...(model?.fastMode === undefined ? {} : { fastMode: model.fastMode }),
     ...(model?.serviceTier ? { serviceTier: model.serviceTier } : {}),
     ...(model?.ultracode === undefined ? {} : { ultracode: model.ultracode }),
-    ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments } : {}),
+    ...(claim.turn.attachments?.length ? { attachments: claim.turn.attachments.map(webImageOf) } : {}),
     ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
     ...(claim.tasks?.length ? { tasks: claim.tasks } : {}),
     ...(claim.orientation ? { orientation: claim.orientation } : {}),

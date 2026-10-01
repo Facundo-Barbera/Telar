@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useContext, useState } from "react";
 import {
 BotIcon,
 CheckIcon,
@@ -19,6 +19,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { Shimmer } from "@/ui/shimmer";
 import { ROW } from "./transcript-fold";
 import { AgentMessageBubble, ConversationMessage, type OpenTab } from "./conversation-message";
+import { TranscriptSession } from "./message-attachments";
 import { cn } from "@/ui/utils";
 import { notificationLabel, reasoningPaints, reasoningTokens, running } from "../model";
 import { RowGestures } from "./tool-row";
@@ -351,10 +352,11 @@ export function SteeredMessageRow({ item, onOpenTab, onInsert }: { item: Journal
  * large. The bytes come from the attachment route — nothing is inlined.
  */
 export function PlotRow({ item, attachmentId }: { item: JournalItem; attachmentId: string }) {
+  const hostId = useContext(TranscriptSession)?.hostId;
   return (
     <figure className="my-1 max-w-md overflow-hidden rounded-md border border-border bg-white">
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={attachmentUrl(item.sessionId, attachmentId)} alt={itemLabel(item)} className="block max-h-72 w-full object-contain" loading="lazy" />
+      <img src={attachmentUrl(item.sessionId, attachmentId, hostId ? { hostId } : {})} alt={itemLabel(item)} className="block max-h-72 w-full object-contain" loading="lazy" />
       <figcaption className="border-t border-border bg-background px-2 py-0.5 text-3xs text-muted-foreground">{itemLabel(item)}</figcaption>
     </figure>
   );

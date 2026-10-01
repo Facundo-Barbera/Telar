@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, typ
 import dynamic from "next/dynamic";
 import type { EngineEvent, Item, Turn, TurnState } from "@telar/engine-client";
 import type { Artifact } from "@telar/engine-client";
-import { PluginSurface, type PluginPanelSource, isPluginSurface } from "@/features/plugins";
+import { attachmentUrl, PluginSurface, type PluginPanelSource, isPluginSurface } from "@/features/plugins";
 import { latestArtifacts } from "@/features/agent-tools";
 import { desktopBrowserBridge } from "@/features/browser";
 import { diffTabParams, readDiffTab, type DiffTab, diffTurns, type DiffTurn } from "@/features/git";
@@ -294,7 +294,7 @@ export function RightPanel(props: RightPanelProps) {
         )}
         {activeTab && sessionId && (
           <Suspense fallback={null}>
-            <ImageLightbox sessionId={sessionId} {...(lightbox ? { attachmentId: lightbox } : {})} onClose={() => setLightbox(undefined)} />
+            <ImageLightbox {...(lightbox ? { src: attachmentUrl(sessionId, lightbox, props.hostId ? { hostId: props.hostId } : {}) } : {})} onClose={() => setLightbox(undefined)} />
           </Suspense>
         )}
       </div>

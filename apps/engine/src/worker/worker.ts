@@ -2,6 +2,7 @@ import type { ProviderDriverKind, WorkerClaim } from "@telar/engine-client";
 import { EngineClientError } from "@telar/engine-client";
 import { createOnePasswordSecrets, type SecretsProvider } from "../domains/browser";
 import { ratifiedReadTools } from "../domains/plugins";
+import { webImageOf } from "../domains/sessions";
 import { setPluginReadTools } from "../drivers/claude";
 import type { DriverRequestOutcome, TurnDriver } from "../drivers";
 import { defaultWorkerConcurrency } from "./concurrency";
@@ -407,7 +408,7 @@ export class EngineWorker {
       if (
         !entry?.mailbox.push({
           text: delivery.text,
-          ...(delivery.attachments?.length ? { attachments: delivery.attachments } : {}),
+          ...(delivery.attachments?.length ? { attachments: delivery.attachments.map(webImageOf) } : {}),
           ...(delivery.sender ? { sender: delivery.sender } : {}),
           ...(delivery.notice ? { notice: delivery.notice } : {}),
           ...(delivery.wakeReason ? { wakeReason: delivery.wakeReason } : {}),

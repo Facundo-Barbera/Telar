@@ -182,9 +182,9 @@ export const sessionsClient = {
     return this.request("PATCH", `${sessionPath(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`, { tags });
   },
 
-  /** Immutable: the id is minted per write. */
-  attachmentBytes(this: EngineTransport, sessionId: string, attachmentId: string): Promise<{ data: Uint8Array; contentType: string }> {
-    return this.readBytes(`${sessionPath(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`);
+  /** Immutable: the id is minted per write. `display` asks for a variant a browser can draw (HEIC comes back as JPEG). */
+  attachmentBytes(this: EngineTransport, sessionId: string, attachmentId: string, options: { display?: boolean } = {}): Promise<{ data: Uint8Array; contentType: string }> {
+    return this.readBytes(`${sessionPath(sessionId)}/attachments/${encodeURIComponent(attachmentId)}${queryOf({ variant: options.display ? "display" : undefined })}`);
   },
 
   subscribe(
