@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import type { Session } from "@telar/engine-client";
 import { activeComposer } from "@/features/composer";
@@ -91,6 +91,43 @@ async function type(editor: HTMLElement, text: string) {
     entry.replace(0, 0, text);
   });
   await flush();
+}
+
+const layout = { width: 0, observers: new Set<() => void>() };
+
+beforeAll(() => {
+  globalThis.ResizeObserver = class {
+    readonly fire: () => void;
+    constructor(callback: () => void) {
+      this.fire = () => callback();
+    }
+    observe() {
+      layout.observers.add(this.fire);
+    }
+    unobserve() {}
+    disconnect() {
+      layout.observers.delete(this.fire);
+    }
+  } as unknown as typeof ResizeObserver;
+  Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => layout.width });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => (layout.width ? 40 : 0) });
+});
+
+afterEach(() => {
+  layout.width = 0;
+});
+
+async function narrowable(props: BoxProps, width: number) {
+  layout.width = width;
+  const mounted = await composer(props);
+  const resize = async (next: number) => {
+    layout.width = next;
+    act(() => {
+      for (const fire of [...layout.observers]) fire();
+    });
+    await flush();
+  };
+  return { ...mounted, resize };
 }
 
 const stashed = () => JSON.parse(localStorage.getItem(STASH) ?? "[]") as { prompt: string }[];
@@ -266,5 +303,59 @@ describe("the compact composer, while reading back", () => {
     await click(expand(host)!);
     expect(expand(host)).toBeNull();
     expect(editor.style.maxHeight).toBe("");
+  });
+});
+
+describe("a composer too narrow for its controls", () => {
+  const session = { id: "session_a", driver: "claude", projectId: "project_a", workspace: { mode: "local", path: "/work" } } as Session;
+  const shot = () => new File(["x"], "shot.png", { type: "image/png" });
+  const model = (root: ParentNode) => root.querySelector('[aria-label^="Model:"]');
+  const tray = (host: HTMLElement) => host.querySelector("[data-slot=composer-foot]")!;
+  const oneLine = (host: HTMLElement) => model(tray(host)) !== null;
+
+  test("narrow puts the controls on one line, with the model in the tray below", async () => {
+    const { host } = await narrowable({ session }, 100);
+    expect(oneLine(host)).toBe(true);
+    expect(host.querySelector('button[aria-label="Send"]')).not.toBeNull();
+    expect(host.querySelector('button[aria-label="Add context"]')).not.toBeNull();
+  });
+
+  test("wide keeps the full composer, with the model in the card", async () => {
+    const { host } = await narrowable({ session }, 2000);
+    expect(oneLine(host)).toBe(false);
+    expect(model(host)).not.toBeNull();
+  });
+
+  test("the words, the attachments and the focus survive switching both ways", async () => {
+    const { host, editor, resize } = await narrowable({ session, initial: "half a thought", files: [shot()] }, 2000);
+    act(() => editor.focus());
+    await resize(100);
+    expect(oneLine(host)).toBe(true);
+    expect(host.querySelector("[data-slot=composer-editor]")).toBe(editor);
+    expect(editor.textContent).toBe("half a thought");
+    expect(host.textContent).toContain("shot.png");
+    expect(document.activeElement).toBe(editor);
+    await resize(2000);
+    expect(oneLine(host)).toBe(false);
+    expect(editor.textContent).toBe("half a thought");
+    expect(host.textContent).toContain("shot.png");
+    expect(document.activeElement).toBe(editor);
+  });
+
+  test("hovering at the boundary does not flicker", async () => {
+    const { host, resize } = await narrowable({ session }, 2000);
+    let edge = 1000;
+    while (!oneLine(host) && edge > 0) await resize((edge -= 10));
+    expect(edge).toBeGreaterThan(100);
+    const flips: boolean[] = [];
+    for (const width of [edge + 4, edge, edge + 8, edge + 2, edge + 12, edge]) {
+      await resize(width);
+      flips.push(oneLine(host));
+    }
+    expect(flips.every(Boolean)).toBe(true);
+    await resize(edge + 40);
+    expect(oneLine(host)).toBe(false);
+    await resize(edge + 10);
+    expect(oneLine(host)).toBe(false);
   });
 });
