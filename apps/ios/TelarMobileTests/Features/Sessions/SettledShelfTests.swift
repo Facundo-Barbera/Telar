@@ -7,9 +7,10 @@ private func tempCache() -> SnapshotCache {
 }
 
 private func body(_ rows: [(id: String, settled: Bool)]) -> Data {
+    let now = Int(Date().timeIntervalSince1970 * 1000)
     let sessions = rows.map { row in
         """
-        {"id":"\(row.id)","projectId":"p","title":"\(row.id)","state":"active","createdAt":1,"updatedAt":2,
+        {"id":"\(row.id)","projectId":"p","title":"\(row.id)","state":"active","createdAt":\(now),"updatedAt":\(now),
          "driver":"claude","workspace":{"mode":"local","path":"/x"},"activity":"idle"\(row.settled ? #","settledOverride":"settled""# : "")}
         """
     }
