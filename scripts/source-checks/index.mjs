@@ -2,6 +2,7 @@ import { commentRatchet } from "../comment-ratchet.mjs";
 import { sizeLimits } from "../size-limits.mjs";
 import { contextMenusCheck } from "./context-menus.mjs";
 import { dropdownLabelsCheck } from "./dropdown-labels.mjs";
+import { engineSyncIoCheck } from "./engine-sync-io.mjs";
 import { ROOT } from "./files.mjs";
 import { invisibleCharactersCheck } from "./invisible-characters.mjs";
 import { nativeViewMenusCheck } from "./native-view-menus.mjs";
@@ -24,6 +25,7 @@ export const SOURCE_CHECKS = [
   radiusUsageCheck,
   titlebarBandCheck,
   webStylePipelineCheck,
+  engineSyncIoCheck,
   {
     name: "comment-ratchet",
     protects: "no change raises a workspace's comment-line count over its merge base, and no change adds a comment over 6 lines",
