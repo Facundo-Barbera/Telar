@@ -11,7 +11,6 @@ const needsConversion = (attachment: TurnAttachment): boolean => attachment.medi
 const jpegFile = (attachment: TurnAttachment): string => path.join(path.dirname(attachment.path), `${attachment.id}.display.jpg`);
 const asJpeg = (attachment: TurnAttachment, file: string): TurnAttachment => ({ ...attachment, path: file, mediaType: "image/jpeg" });
 
-/** The attachment as a browser or model can draw it: its cached JPEG when it is HEIC or another non-web image and one exists. */
 export function webImageOf(attachment: TurnAttachment): TurnAttachment {
   if (!needsConversion(attachment)) return attachment;
   const file = jpegFile(attachment);
@@ -28,7 +27,6 @@ const release = (): void => {
 };
 const pending = new Map<string, Promise<TurnAttachment>>();
 
-/** Makes the JPEG once per attachment, whose bytes never change. Off macOS, or when conversion fails, the original. */
 export function ensureWebImage(attachment: TurnAttachment): Promise<TurnAttachment> {
   const ready = webImageOf(attachment);
   if (ready !== attachment || !needsConversion(attachment) || process.platform !== "darwin") return Promise.resolve(ready);
