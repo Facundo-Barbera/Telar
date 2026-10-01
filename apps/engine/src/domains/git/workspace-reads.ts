@@ -5,7 +5,8 @@ import type { AsyncGitRunner } from "../../platform/git/runner";
 import { EngineStateError } from "../../platform/kernel";
 import { listWorkspaceFilesAsync } from "../files";
 import { workspaceRootOf } from "../sessions";
-import { dirtyCountAsync, gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "./session";
+import { FolderStatus, type FolderStatusRead } from "./folder-status";
+import { gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "./session";
 
 const MAX_CACHED_READS = 64;
 const CACHED_READ_MS = 2_000;
@@ -42,11 +43,14 @@ function sharedCheckout<T extends object>(value: T, session: Pick<Session, "work
  */
 export class WorkspaceReads {
   private readonly cache = new Map<string, { until: number; value: Promise<unknown> }>();
+  private readonly status: FolderStatus;
 
   constructor(
     private readonly git: AsyncGitRunner,
     private readonly host: WorkspaceReadsHost,
-  ) {}
+  ) {
+    this.status = new FolderStatus(git, () => host.now());
+  }
 
   private cached<T>(key: string, read: () => Promise<T>): Promise<T> {
     const now = this.host.now();
@@ -67,6 +71,7 @@ export class WorkspaceReads {
     for (const key of this.cache.keys()) {
       if (key.includes(root)) this.cache.delete(key);
     }
+    this.status.markStaleUnder(root);
   }
 
   private async withAvailability<T extends object>(answer: Promise<T>, project: Project | undefined): Promise<T> {
@@ -118,9 +123,8 @@ export class WorkspaceReads {
     ).then((value) => sharedCheckout(value, session));
   }
 
-  sessionDirty(sessionId: string): Promise<{ dirtyFiles?: number }> {
-    const cwd = workspaceRootOf(this.host.getSession(sessionId));
-    return this.cached(`dirty:${cwd}`, () => dirtyCountAsync(this.git, cwd));
+  sessionStatus(sessionId: string): Promise<FolderStatusRead> {
+    return this.status.read(workspaceRootOf(this.host.getSession(sessionId)));
   }
 
   projectFilePatch(projectId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {
