@@ -12,18 +12,18 @@ export type FolderStatusRead = { dirtyFiles?: number; etag: string };
 
 type Entry = { read?: FolderStatusRead; startedAt: number; stale: boolean; pending?: Promise<FolderStatusRead> };
 
-// Fields before the path in each `--porcelain=v2` record; a rename's original path is the next NUL record.
-const PATH_FIELD: Record<string, number> = { "1": 8, "2": 9, u: 10, "?": 1 };
+const FIELDS_BEFORE_PATH: Record<string, number> = { "1": 8, "2": 9, u: 10, "?": 1 };
 
 function porcelainPaths(stdout: string): string[] {
   const records = stdout.split("\0");
   const paths: string[] = [];
   for (let index = 0; index < records.length; index++) {
     const record = records[index]!;
-    const skip = PATH_FIELD[record[0] ?? ""];
+    const skip = FIELDS_BEFORE_PATH[record[0] ?? ""];
     if (skip === undefined || record[1] !== " ") continue;
     paths.push(record.split(" ").slice(skip).join(" "));
-    if (record[0] === "2") index++;
+    const renamedFrom = record[0] === "2";
+    if (renamedFrom) index++;
   }
   return paths;
 }
@@ -40,10 +40,6 @@ async function statusOf(git: AsyncGitRunner, folder: string): Promise<FolderStat
   return { dirtyFiles: paths.length, etag: `"${hash}"` };
 }
 
-/**
- * One `git status` per checkout folder, shared by every session and client reading it. An entry is recomputed when
- * marked stale or older than `MAX_AGE_MS`, one run at a time, and never sooner than `MIN_RECOMPUTE_MS` after the last.
- */
 export class FolderStatus {
   private readonly entries = new Map<string, Entry>();
 

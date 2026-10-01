@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { TurnState } from "@telar/engine-client";
 import { useDiffRead, useDiffRefresh } from "./use-diff-read";
@@ -62,16 +62,17 @@ test("a folder whose status answers 304 is not diffed again", async () => {
     }
     return Response.json({ diff: { files: [] } });
   }) as typeof fetch;
-  let load = async () => {};
-  function Reader() {
-    load = useDiffRead("session_1", "p1", undefined).load;
+  const loads: Array<() => Promise<void>> = [];
+  function Reader({ onLoad }: { onLoad: (load: () => Promise<void>) => void }) {
+    const { load } = useDiffRead("session_1", "p1", undefined);
+    useEffect(() => onLoad(load), [load, onLoad]);
     return null;
   }
   try {
     root = createRoot(document.createElement("div"));
-    act(() => root!.render(<Reader />));
-    await act(() => load());
-    await act(() => load());
+    act(() => root!.render(<Reader onLoad={(load) => void loads.push(load)} />));
+    await act(() => loads[0]!());
+    await act(() => loads[0]!());
     expect(asked).toEqual(["/api/sessions/session_1/git/status", "/api/sessions/session_1/diff", '/api/sessions/session_1/git/status "t1"']);
   } finally {
     globalThis.fetch = realFetch;

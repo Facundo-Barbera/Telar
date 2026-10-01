@@ -85,7 +85,6 @@ export class WorkspaceReads {
     try {
       return this.host.getProject(session.projectId);
     } catch {
-      // The read it decorates still answers.
       return undefined;
     }
   }
