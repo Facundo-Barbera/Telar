@@ -7,7 +7,7 @@ import { DEFAULT_NOTIFY_ON, NOTIFY_ON_VALUES, type EngineClient, type NotifyOn }
 import { matchRoute } from "../../platform/http/router";
 import {
   DESKTOP_APPROVE, DESKTOP_APPROVED, DESKTOP_DISMISS, DESKTOP_NOTICE, DESKTOP_PRESENCE, PRESENCE_STALE_MS,
-  createDesktopStream, desktopAttached, desktopNotices, dismissDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, notifyDesktop, notifyRoute,
+  createDesktopStream, desktopAttached, desktopNotices, dismissDesktop, emptyDesktopState, handleDesktopMessage, macTookAlert, noteConnectedMac, notifyDesktop, notifyRoute,
   type DesktopState, type Presence,
 } from "./desktop";
 import { readNotifyOn, readSounds, writeNotifyOn, writeSounds } from "./prefs";
@@ -194,7 +194,7 @@ describe("notify on: one alert, one device", () => {
   });
 });
 
-const g = globalThis as { telarDesktopNotify?: DesktopState; telarDesktopPresence?: Presence; telarDesktopTook?: Record<string, string> };
+const g = globalThis as { telarDesktopNotify?: DesktopState; telarDesktopPresence?: Presence; telarDesktopTook?: Record<string, string>; telarConnectedMacs?: Record<string, number> };
 const recorder = () => ({ sent: [] as unknown[], connected: true, send(message: unknown) { this.sent.push(message); } });
 
 describe("presence from the shell", () => {
@@ -231,6 +231,7 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
   const reset = (presence?: Presence) => {
     g.telarDesktopNotify = { seen: { s1: signalKey(working) }, baselined: true, offered: {} };
     g.telarDesktopTook = {};
+    delete g.telarConnectedMacs;
     if (presence) g.telarDesktopPresence = presence; else delete g.telarDesktopPresence;
   };
   const phoneSends = () => {
@@ -274,6 +275,27 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
       await deliverRecord(phone, [blocked], push.send, 11, { changed: moved, macTook: macTookAlert });
       expect(push.sent).toHaveLength(1);
     }
+  });
+
+  test("a paired Mac in use takes the alert from the phone, until it goes idle or quiet", async () => {
+    const report = async (active: boolean) => {
+      const { route, params } = matchRoute(pushRoutes({ client: () => ({}) as EngineClient, pairedDevices: () => [] }), "PUT", "/v2/push/desktop/presence/device_mac")!;
+      return route.handle({ body: { active }, params, query: new URLSearchParams() } as never);
+    };
+    for (const [active, at, pushed] of [[true, 10_000, 0], [false, 10_000, 1], [true, 11_000 - PRESENCE_STALE_MS - 1, 1]] as const) {
+      reset();
+      noteConnectedMac("device_mac", active, at);
+      notifyDesktop([blocked], moved, { channel: recorder(), notifyOn: "mac", now: 11_000 });
+      const push = phoneSends();
+      await deliverRecord(phone, [blocked], push.send, 11, { changed: moved, macTook: macTookAlert });
+      expect(push.sent).toHaveLength(pushed);
+    }
+    reset({ active: true, viewingPath: null, at: Date.now() });
+    expect(await report(true)).toMatchObject({ status: 200, body: { hostInUse: true } });
+    expect(g.telarConnectedMacs?.device_mac).toBeNumber();
+    delete g.telarDesktopPresence;
+    expect(await report(false)).toMatchObject({ status: 200, body: { hostInUse: false } });
+    expect(g.telarConnectedMacs).toEqual({});
   });
 
   test("the claim is for that signal only: the next transition asks again", () => {
