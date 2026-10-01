@@ -93,7 +93,7 @@ import UniformTypeIdentifiers
         #expect(result.file == nil)
         let refusal = try? #require(result.refusal)
         #expect(refusal?.contains("huge.mov") == true)
-        #expect(refusal?.contains("25.0 MB") == true)
+        #expect(refusal?.contains("20.0 MB") == true)
     }
 
     @Test func exactlyTheCapIsStillTaken() {
