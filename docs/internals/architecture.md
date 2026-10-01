@@ -19,8 +19,7 @@ providers (claude, codex, opencode) are child processes of the worker
 
 ### Mac notification sounds
 
-- NotificationCenter resolves a banner's custom sound from the app's containers, not from its bundle: bundle-only `.caf` files play the default alert. Desktop main copies them into the app group container (`~/Library/Group Containers/MM74W7WGAM.io.github.novarix.telar/Library/Sounds`, entitled in `entitlements.mac.plist`) and names that copy in the notification.
-- NotificationCenter caches each sound name's resolution until it restarts. A name that once failed keeps playing the default, and a cached file that disappears plays nothing. So installed names carry a content hash, and installed files are never deleted.
+NotificationCenter on macOS 26 finds a Developer ID app's custom banner sound only in `~/Library/Sounds`: copies in `Contents/Resources` or an app group container play the default alert. Desktop main copies its `telar-*.caf` files there at startup under the names the banner uses. It caches each name's lookup until it restarts, so a name that once missed keeps playing the default, and a cached file that is deleted plays nothing.
 
 ## Domains
 
