@@ -2,6 +2,8 @@ import { describe, expect, mock, test } from "bun:test";
 import type { Artifact, ArtifactKind, Item } from "@telar/engine-client";
 import { buttonLabelled, click, flush, installTestDom, mount, stubBoxSize } from "@/test/dom";
 import { RightPanel } from "@/features/panel";
+import { act } from "react";
+import { MAX_FRAME_HEIGHT } from "../artifacts";
 import { ArtifactCard, ArtifactShelf } from "./artifact-card";
 
 installTestDom();
@@ -60,6 +62,49 @@ describe("an artifact card", () => {
     const doc = frame.getAttribute("srcdoc")!;
     expect(doc).toContain("default-src 'none'");
     expect(doc.indexOf("Content-Security-Policy")).toBeLessThan(doc.indexOf("<h1>Revenue</h1>"));
+  });
+
+  test("an html card takes the height its content reports, and a long one stops at the cap and scrolls inside", async () => {
+    serveAttachments();
+    const host = await card(artifact("html", "att_html"));
+    await flush(() => host.querySelector("iframe") !== null);
+    const frame = host.querySelector("iframe")!;
+    const id = JSON.parse(/artifactFrame:("[^"]*")/.exec(frame.getAttribute("srcdoc")!)![1]!) as string;
+    const report = async (height: number) => {
+      await act(async () => window.dispatchEvent(new MessageEvent("message", { data: { artifactFrame: id, height }, source: frame.contentWindow })));
+    };
+    await report(312.4);
+    expect(frame.style.height).toBe("313px");
+    await report(312.4);
+    expect(frame.style.height).toBe("313px");
+    await report(4000);
+    expect(frame.style.height).toBe(`${MAX_FRAME_HEIGHT}px`);
+    await report(120);
+    expect(frame.style.height).toBe("120px");
+  });
+
+  test("an html frame wears the Look: its colours and colour scheme", async () => {
+    serveAttachments();
+    const root = document.documentElement;
+    root.classList.add("dark");
+    root.style.setProperty("--background", "rgb(1, 2, 3)");
+    root.style.setProperty("--primary", "rgb(9, 8, 7)");
+    try {
+      const host = await card(artifact("html", "att_html"));
+      await flush(() => host.querySelector("iframe") !== null);
+      const frame = host.querySelector("iframe")!;
+      const doc = frame.getAttribute("srcdoc")!;
+      expect(frame.style.colorScheme).toBe("dark");
+      expect(doc).toContain("color-scheme:dark");
+      expect(doc).toContain("--background:rgb(1, 2, 3)");
+      expect(doc).toContain("--accent:rgb(9, 8, 7)");
+    } finally {
+      await act(async () => {
+        root.classList.remove("dark");
+        root.style.removeProperty("--background");
+        root.style.removeProperty("--primary");
+      });
+    }
   });
 
   test("svg is drawn as an image, so none of its markup reaches the page", async () => {
