@@ -124,11 +124,11 @@ describe("usePoll", () => {
     expect(seen).toEqual(["first", "second"]);
   });
 
-  test("with pauseHidden, skips hidden ticks and catches up when shown", async () => {
+  test("skips hidden ticks and catches up when shown", async () => {
     let calls = 0;
     let state: DocumentVisibilityState = "visible";
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
-    mount(<Poller fn={() => (calls += 1)} ms={1_000} options={{ pauseHidden: true }} />);
+    mount(<Poller fn={() => (calls += 1)} ms={1_000} />);
     state = "hidden";
     await advance(3_000);
     expect(calls).toBe(1);

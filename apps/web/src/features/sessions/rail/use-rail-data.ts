@@ -3,6 +3,7 @@ import type { InboxPolicy, Project, PublicHost, SidebarLayout } from "@telar/eng
 import { LOCAL_HOST_ID } from "@telar/engine-client";
 import { createEngineApi, type LiveSessionsPage } from "@/platform/engine";
 import { hostFetcher } from "@/platform/engine/host-client";
+import { usePoll } from "@/ui/hooks/use-poll";
 import { PROJECTS_CHANGED_EVENT } from "@/features/projects";
 import { dedupeAcrossHosts } from "../session-groups";
 import { sessionKey, toSidebarSession, type SidebarSession } from "../session-list";
@@ -251,10 +252,7 @@ export function useRailData() {
   }, [loadAll]);
 
   const anyLive = sessions.some((session) => session.activity !== "idle" && session.activity !== "waiting" && session.activity !== "scheduled");
-  useEffect(() => {
-    const timer = window.setInterval(() => void loadAll(), anyLive ? 3_000 : 10_000);
-    return () => window.clearInterval(timer);
-  }, [loadAll, anyLive]);
+  usePoll(loadAll, anyLive ? 3_000 : 10_000, { immediate: false });
 
   return {
     projects,

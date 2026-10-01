@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { DiffBaseOption, SessionDiff, TurnState } from "@telar/engine-client";
 import { EngineApiError } from "@/platform/engine";
+import { usePoll } from "@/ui/hooks/use-poll";
 import { api } from "../api";
 
 const REFRESH_MS = 15_000;
@@ -28,12 +29,6 @@ export function useDiffRead(sessionId: string | undefined, projectId: string | u
 
 /** Re-reads on a timer and whenever the turn state changes, so a settling turn re-reads at once. */
 export function useDiffRefresh(load: () => Promise<void>, active: TurnState | undefined) {
-  useEffect(() => {
-    const first = window.setTimeout(() => void load(), 0);
-    const timer = window.setInterval(() => void load(), REFRESH_MS);
-    return () => {
-      window.clearTimeout(first);
-      window.clearInterval(timer);
-    };
-  }, [load, active]);
+  const key = useMemo(() => ({ load, active }), [load, active]);
+  usePoll(load, REFRESH_MS, { key });
 }
