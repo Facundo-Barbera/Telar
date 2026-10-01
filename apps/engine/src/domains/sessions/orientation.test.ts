@@ -303,7 +303,8 @@ test("the skill says the things a coordinator gets wrong", () => {
 test("the skill teaches the session-tools audit's model: one subscribe, a result and one line", () => {
   // Agents subscribed per session, polled, and wrote their answer twice.
   const skill = TELAR_SKILL.replace(/\s+/g, " ");
-  expect(skill).toContain("Send every task first, then ONE `sessions_subscribe({ sessionIds: [...] })` — one id or many, the same call — then END YOUR TURN");
+  expect(skill).toContain("`sessions_create({ tasks: [...] })` creates, tasks and subscribes them in one call");
+  expect(skill).toContain("send every task first, then ONE `sessions_subscribe({ sessionIds: [...] })` — one id or many, the same call. Then END YOUR TURN");
   expect(skill).toContain("Do not subscribe per session, do not poll `sessions_status`, and do not sleep");
   expect(skill).toContain("A turn that merely ends is not done");
   expect(skill).toContain("Answer it; the session stays in the wait until it finishes");
@@ -483,7 +484,9 @@ test("the orchestrate skill is a provider-readable skill that names no repo or p
   expect(isTelarGenerated(ORCHESTRATE_SKILL)).toBe(true);
   // The workflow's load-bearing rules.
   const text = ORCHESTRATE_SKILL.replace(/\s+/g, " ");
-  expect(text).toContain("ONE `sessions_subscribe({ sessionIds: [...] })` for all of them, and END YOUR TURN");
+  expect(text).toContain("the whole wave in ONE call");
+  expect(text).toContain("subscribes you to all of them as one cohort");
+  expect(text).toContain("Then END YOUR TURN. No per-session creates, sends or subscribes");
   expect(text).toContain("never reply just to acknowledge one");
   expect(text).toContain("Their progress reports never interrupt you");
   expect(text).toContain("Never stack PRs");

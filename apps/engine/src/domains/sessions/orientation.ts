@@ -56,6 +56,7 @@ It is not this CLI's own notion of a session, and not a chat thread.
   you learn what it did by asking.
 - **Assignment** — \`intent: "task"\` is what starts work: pass \`task\` to
   \`sessions_create\`, or \`sessions_send\` it later. Creating alone starts none.
+  Several workers: \`sessions_create\` with \`tasks\`, one brief each.
 - **Choosing a model** — \`sessions_create\` and a \`sessions_send\` task take
   \`model\` and \`effort\`; omitted, the person's default runs, often the
   priciest. By task: search or read, a Haiku; mechanical edits, a Sonnet at
@@ -143,15 +144,17 @@ journal to answer — so reach for them before the raw trace.
 
 ### Waiting for the sessions you tasked: one subscribe, then end your turn
 
-Send every task first, then ONE \`sessions_subscribe({ sessionIds: [...] })\` —
-one id or many, the same call — then END YOUR TURN. Do not subscribe per
-session, do not poll \`sessions_status\`, and do not sleep.
+Starting several workers, \`sessions_create({ tasks: [...] })\` creates, tasks
+and subscribes them in one call. Otherwise send every task first, then ONE
+\`sessions_subscribe({ sessionIds: [...] })\` — one id or many, the same call.
+Then END YOUR TURN. Do not subscribe per session, do not poll
+\`sessions_status\`, and do not sleep.
 
 - You are woken ONCE, when every session is done: it sent its \`result\`, a
   turn failed or was stopped, or it was settled, archived or deleted. A turn
   that merely ends is not done — a worker waiting on CI ends turns mid-errand.
-- The notice has a line per session with how it ended and the first line of
-  what it said; a single session's is quoted like any notice.
+- The notice has a line per session with how it ended, and quotes what each
+  said: whole when it fits, otherwise its start and how much was cut.
 - A \`blocker\` or a parked request reaches you at once. Answer it; the session
   stays in the wait until it finishes.
 - It expires after \`timeoutMinutes\` (default 240), naming who never sent a
