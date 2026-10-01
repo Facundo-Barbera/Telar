@@ -180,7 +180,7 @@ type RouteContext = {
   now: () => number;
   root: string;
   remoteStore: ReturnType<typeof createRemoteStore>;
-  remoteDir: string;
+  hostsStore: ReturnType<typeof createHostsStore>;
   push: ReturnType<typeof createPushService>;
   syncOrientationSkill: (policy: ReturnType<EngineStore["settings"]["orientation"]>) => Promise<unknown>;
   computerUseGate: ComputerUseGate;
@@ -198,14 +198,14 @@ type RouteContext = {
 };
 
 function engineRoutes(ctx: RouteContext): Route[] {
-  const { store, options, now, root, remoteStore, remoteDir, push, syncOrientationSkill, computerUseGate, storageMeter, notesDoor, sessionsDoor, daemonId, openStreams, execution, plugins, runMount, workers, health, port } = ctx;
+  const { store, options, now, root, remoteStore, hostsStore, push, syncOrientationSkill, computerUseGate, storageMeter, notesDoor, sessionsDoor, daemonId, openStreams, execution, plugins, runMount, workers, health, port } = ctx;
   return [
     sessionsDoor.route,
     notesDoor.route,
     { method: "GET", path: "/v2/health", auth: "engine", handle: () => ({ status: 200, body: health() }) },
     ...filesRoutes(),
     ...remoteRoutes(remoteStore),
-    ...hostsRoutes(createHostsStore(remoteDir)),
+    ...hostsRoutes(hostsStore),
     ...mcpOAuthRoutes(store, now),
     ...aboutRoutes(root),
     ...push.routes,
@@ -285,7 +285,8 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const remoteDir = options.remoteDir ?? remoteDirFor(root);
   const remoteStore = createRemoteStore(remoteDir);
   const openStreams = new Set<OpenStream>();
-  const push = createPushService({ remoteDir, pairedDevices: () => remoteStore.read().devices, openStreams });
+  const hostsStore = createHostsStore(remoteDir);
+  const push = createPushService({ remoteDir, pairedDevices: () => remoteStore.read().devices, pairedHosts: () => hostsStore.read().hosts, openStreams });
   // Run configurations live here, not in a worker: a terminal must outlive the turn that opened it.
   const runMount = createRunMount({ root: store.paths.root, noteForNextTurn: (sessionId, note) => store.mailbox.noteForNextTurn(sessionId, note) });
   store.sessionTerminals.attach(runMount.manager);
@@ -326,7 +327,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const authorize = (auth: Route["auth"], request: http.IncomingMessage): void => {
     if (!bearerIsValid(request.headers.authorization, secrets[auth]())) throw new HttpError(401, "engine_unauthorized", refusals[auth]);
   };
-  const routes = engineRoutes({ store, options, now, root, remoteStore, remoteDir, push, syncOrientationSkill, computerUseGate, storageMeter, notesDoor, sessionsDoor, daemonId, openStreams, execution, plugins, runMount, workers, health, port: () => port });
+  const routes = engineRoutes({ store, options, now, root, remoteStore, hostsStore, push, syncOrientationSkill, computerUseGate, storageMeter, notesDoor, sessionsDoor, daemonId, openStreams, execution, plugins, runMount, workers, health, port: () => port });
   const server = http.createServer(router(routes, { authorize, errorFor, observe: loopLag.run }));
 
   try {
