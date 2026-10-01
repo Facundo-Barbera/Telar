@@ -1,10 +1,22 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import type { Artifact, ArtifactKind, Item } from "@telar/engine-client";
 import { buttonLabelled, click, flush, installTestDom, mount } from "@/test/dom";
 import { RightPanel } from "@/features/panel";
 import { ArtifactCard, ArtifactShelf } from "./artifact-card";
 
 installTestDom();
+
+const drawn: Array<{ source: string; theme: unknown }> = [];
+void mock.module("@streamdown/mermaid", () => ({
+  mermaid: {
+    getMermaid: (config?: { theme?: string }) => ({
+      render: async (_id: string, source: string) => {
+        drawn.push({ source, theme: config?.theme });
+        return { svg: '<svg id="drawn-diagram"><text>A to B</text></svg>' };
+      },
+    }),
+  },
+}));
 
 const SOURCES: Record<string, string> = {
   att_html: "<h1>Revenue</h1><script>document.title='x'</script>",
@@ -57,6 +69,20 @@ describe("an artifact card", () => {
     expect(host.querySelector("#agent-dot")).toBeNull();
   });
 
+  test("in a dark Look an svg sits on a dark checkerboard, never on white", async () => {
+    serveAttachments();
+    document.documentElement.classList.add("dark");
+    try {
+      const host = await card(artifact("svg", "att_svg"));
+      await flush(() => host.querySelector("iframe") !== null);
+      const doc = host.querySelector("iframe")!.getAttribute("srcdoc")!;
+      expect(doc).toContain("repeating-conic-gradient(#3d3d3d");
+      expect(doc).not.toMatch(/#fff\b|#ffffff|white/i);
+    } finally {
+      document.documentElement.classList.remove("dark");
+    }
+  });
+
   test("markdown renders as the transcript renders it", async () => {
     serveAttachments();
     const host = await card(artifact("markdown", "att_md"));
@@ -65,11 +91,18 @@ describe("an artifact card", () => {
     expect(host.textContent).toContain("ship it");
   });
 
-  test("mermaid is handed to the markdown renderer as a diagram, not shown as prose", async () => {
+  test("mermaid is drawn to an svg in the sandbox, fitted to the card with no code-block chrome", async () => {
     serveAttachments();
+    drawn.length = 0;
     const host = await card(artifact("mermaid", "att_mermaid"));
-    await flush(() => host.querySelector("[data-streamdown='mermaid-block'], [data-streamdown*='mermaid']") !== null);
-    expect(host.querySelector("[data-streamdown*='mermaid']")).not.toBeNull();
+    await flush(() => host.querySelector("iframe") !== null);
+    expect(drawn).toEqual([{ source: "graph TD; A-->B", theme: "default" }]);
+    const frame = host.querySelector("iframe")!;
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame.getAttribute("srcdoc")).toContain('<svg id="drawn-diagram">');
+    expect(frame.getAttribute("srcdoc")).toContain("max-width:100%");
+    expect(host.querySelector("pre, code, [data-streamdown]")).toBeNull();
+    expect(host.querySelector("#drawn-diagram")).toBeNull();
   });
 
   test("an earlier version folds to its header and names the newest", async () => {

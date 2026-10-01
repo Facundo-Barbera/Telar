@@ -1,15 +1,50 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { mermaid } from "@streamdown/mermaid";
 import type { Artifact } from "@telar/engine-client";
 import { attachmentUrl } from "@/features/plugins";
 import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { MessageResponse } from "@/ui/message";
 import { cn } from "@/ui/utils";
-import { ARTIFACT_SANDBOX, artifactDocument, clampFrameHeight, type ArtifactHeight } from "../artifacts";
+import { ARTIFACT_SANDBOX, artifactDocument, clampFrameHeight, type ArtifactHeight, type FrameKind } from "../artifacts";
 
-const MERMAID = { mermaid } as const;
+const DIAGRAM_CARD_HEIGHT = 560;
+
+function subscribeToLook(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+
+const useDarkLook = () => useSyncExternalStore(subscribeToLook, () => document.documentElement.classList.contains("dark"), () => false);
+
+type Diagram = { source: string; dark: boolean; svg?: string; error?: string };
+
+function useMermaidSvg(source: string, dark: boolean): Diagram {
+  const id = `artifact-mermaid-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+  const [diagram, setDiagram] = useState<Diagram>({ source, dark });
+  useEffect(() => {
+    let live = true;
+    mermaid
+      .getMermaid({ theme: dark ? "dark" : "default" })
+      .render(id, source)
+      .then(({ svg }) => live && setDiagram({ source, dark, svg }))
+      .catch((error: unknown) => live && setDiagram({ source, dark, error: error instanceof Error ? error.message : String(error) }));
+    return () => {
+      live = false;
+    };
+  }, [id, source, dark]);
+  return diagram.source === source && diagram.dark === dark ? diagram : { source, dark };
+}
+
+function MermaidDiagram({ source, title, fill }: { source: string; title: string; fill: boolean }) {
+  const dark = useDarkLook();
+  const { svg, error } = useMermaidSvg(source, dark);
+  if (error) return <p className="px-3 py-2 text-xs text-muted-foreground">This diagram could not be drawn: {error}</p>;
+  if (svg === undefined) return <p className="px-3 py-2 text-xs text-muted-foreground">Drawing…</p>;
+  return <SandboxFrame kind="diagram" content={svg} title={title} fill={fill} dark={dark} cap={DIAGRAM_CARD_HEIGHT} />;
+}
 
 type Loaded = { attachmentId: string; text?: string; failed?: boolean };
 
@@ -28,7 +63,7 @@ function useArtifactText(hostId: string, sessionId: string, attachmentId: string
   return loaded.attachmentId === attachmentId ? loaded : { attachmentId };
 }
 
-function SandboxFrame({ kind, content, title, fill }: { kind: "html" | "svg"; content: string; title: string; fill: boolean }) {
+function SandboxFrame({ kind, content, title, fill, dark = false, cap }: { kind: FrameKind; content: string; title: string; fill: boolean; dark?: boolean; cap?: number }) {
   const frame = useId();
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number>();
@@ -49,10 +84,10 @@ function SandboxFrame({ kind, content, title, fill }: { kind: "html" | "svg"; co
       ref={ref}
       title={title}
       sandbox={ARTIFACT_SANDBOX}
-      srcDoc={artifactDocument(kind, content, frame)}
+      srcDoc={artifactDocument(kind, content, frame, dark)}
       referrerPolicy="no-referrer"
-      className={cn("block w-full border-0 bg-white", fill ? "h-full" : "")}
-      style={fill ? undefined : { height: height ?? 160 }}
+      className={cn("block w-full border-0", kind === "html" && "bg-white", fill && "h-full")}
+      style={fill ? undefined : { height: Math.min(height ?? 160, cap ?? Number.POSITIVE_INFINITY) }}
     />
   );
 }
@@ -61,7 +96,12 @@ export function ArtifactView({ hostId = LOCAL_HOST_ID, sessionId, artifact, fill
   const { text, failed } = useArtifactText(hostId, sessionId, artifact.attachmentId);
   if (failed) return <p className="px-3 py-2 text-xs text-muted-foreground">This artifact could not be loaded.</p>;
   if (text === undefined) return <p className="px-3 py-2 text-xs text-muted-foreground">Loading…</p>;
-  if (artifact.kind === "html" || artifact.kind === "svg") return <SandboxFrame kind={artifact.kind} content={text} title={artifact.title} fill={fill} />;
-  if (artifact.kind === "mermaid") return <MessageResponse className="px-3 py-2" plugins={MERMAID}>{`\`\`\`mermaid\n${text}\n\`\`\``}</MessageResponse>;
+  if (artifact.kind === "html") return <SandboxFrame kind="html" content={text} title={artifact.title} fill={fill} />;
+  if (artifact.kind === "svg") return <SvgFrame content={text} title={artifact.title} fill={fill} />;
+  if (artifact.kind === "mermaid") return <MermaidDiagram source={text} title={artifact.title} fill={fill} />;
   return <MessageResponse className="px-3 py-2">{text}</MessageResponse>;
+}
+
+function SvgFrame({ content, title, fill }: { content: string; title: string; fill: boolean }) {
+  return <SandboxFrame kind="svg" content={content} title={title} fill={fill} dark={useDarkLook()} />;
 }
