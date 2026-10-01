@@ -1,6 +1,6 @@
 import { afterAll, afterEach, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { act } from "react";
+import { act, useEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
@@ -67,9 +67,13 @@ test("a project added while the rail is mid-read still shows up", async () => {
 
 type Data = ReturnType<typeof useRailData>;
 
-function Shelf({ into }: { into: { current?: Data } }) {
+let latest: Data | undefined;
+
+function Shelf() {
   const data = useRailData();
-  into.current = data;
+  useEffect(() => {
+    latest = data;
+  });
   return <p>{data.sessions.map((session) => session.title).join(",")}</p>;
 }
 
@@ -97,11 +101,11 @@ function stubShelf() {
 }
 
 async function mountShelf() {
-  const into: { current?: Data } = {};
+  const into = { get current() { return latest; } };
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  await act(async () => root!.render(<Shelf into={into} />));
+  await act(async () => root!.render(<Shelf />));
   await flush();
   return { host, into };
 }
