@@ -17,7 +17,8 @@ import UIKit
             guard finishing else { return false }
             view.unmarkText()
         }
-        let at = NSRange(location: min(NSMaxRange(view.selectedRange), view.textStorage.length), length: 0)
+        guard let end = view.selectedTextRange?.end, let range = view.textRange(from: end, to: end) else { return false }
+        let at = NSRange(location: NSMaxRange(view.selectedRange), length: 0)
         let insert = ComposerTextEdit.spaced(phrase, in: view.text, at: at)
         let inserted = (insert as NSString).length
         ComposerLog.shared.record(ComposerLogEntry(
@@ -26,7 +27,9 @@ import UIKit
             inserted: inserted,
             length: (view.text as NSString).length + inserted
         ))
-        view.insert(insert, at: at.location)
+        view.committing = true
+        view.replace(range, withText: insert)
+        view.committing = false
         coordinator?.publish(view)
         return true
     }

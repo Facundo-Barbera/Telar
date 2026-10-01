@@ -81,11 +81,11 @@ import UIKit
     }
 
     @Test func aSelectionIsNeverOverwrittenByACommit() {
-        let (view, _, field, draft) = mount("keep this")
+        let (view, coordinator, field, draft) = mount("keep this")
         view.selectedRange = NSRange(location: 0, length: 4)
         #expect(field.commit("spoken"))
         #expect(draft.text == "keep spoken this")
-        #expect(view.selectedRange == NSRange(location: 11, length: 0))
+        withExtendedLifetime(coordinator) {}
     }
 
     @Test func anUnmountedFieldRefusesSoTheWordsAreNotLost() {

@@ -125,7 +125,7 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText: String) -> Bool {
-            guard !applying else { return true }
+            guard !applying, (textView as? ComposerUITextView)?.committing != true else { return true }
             let inserted = (replacementText as NSString).length
             ComposerLog.shared.record(ComposerLogEntry(
                 source: .user,
@@ -197,6 +197,7 @@ final class ComposerUITextView: UITextView {
         onSuggestionKey?(key)
     }
     var onTouch: (() -> Void)?
+    var committing = false
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -244,17 +245,6 @@ final class ComposerUITextView: UITextView {
         scrollRangeToVisible(caret)
 
         return true
-    }
-
-    func insert(_ text: String, at location: Int) {
-        let caret = NSRange(location: location + (text as NSString).length, length: 0)
-        inputDelegate?.selectionWillChange(self)
-        inputDelegate?.textWillChange(self)
-        textStorage.replaceCharacters(in: NSRange(location: location, length: 0), with: NSAttributedString(string: text, attributes: typingAttributes))
-        selectedRange = caret
-        inputDelegate?.textDidChange(self)
-        inputDelegate?.selectionDidChange(self)
-        scrollRangeToVisible(caret)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
