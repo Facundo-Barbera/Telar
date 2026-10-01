@@ -28,9 +28,12 @@ const DESKTOP_PREFS: DesktopPrefs = { completions: true, previews: true };
 export type Presence = { active: boolean; viewingPath: string | null; at: number };
 export const PRESENCE_STALE_MS = 45_000;
 
+export const presentNow = (presence: Presence | undefined, now: number): presence is Presence =>
+  presence !== undefined && presence.active && now - presence.at >= 0 && now - presence.at <= PRESENCE_STALE_MS;
+
 export function notifyRoute(notifyOn: NotifyOn, presence: Presence | undefined, path: string, now = Date.now()): { desktop: boolean; phone: boolean } {
   if (notifyOn === "iphone") return { desktop: false, phone: true };
-  const active = presence !== undefined && presence.active && now - presence.at >= 0 && now - presence.at <= PRESENCE_STALE_MS;
+  const active = presentNow(presence, now);
   if (active && presence.viewingPath === path) return { desktop: false, phone: false };
   if (notifyOn === "both") return { desktop: true, phone: true };
   return { desktop: active, phone: !active };
@@ -94,11 +97,25 @@ const desktopGlobal = globalThis as typeof globalThis & {
   telarDesktopNotify?: DesktopState;
   telarDesktopPresence?: Presence;
   telarDesktopTook?: Record<string, string>;
+  telarConnectedMacs?: Record<string, number>;
 };
 
 export function desktopAttached(channel: Channel = desktopStream): boolean {
   return channel.connected;
 }
+
+export const desktopPresence = (): Presence | undefined => desktopGlobal.telarDesktopPresence;
+export const desktopInUse = (now = Date.now()): boolean => presentNow(desktopGlobal.telarDesktopPresence, now);
+
+export function noteConnectedMac(deviceId: string, active: boolean, now = Date.now()): void {
+  const macs = { ...desktopGlobal.telarConnectedMacs };
+  if (active) macs[deviceId] = now;
+  else delete macs[deviceId];
+  desktopGlobal.telarConnectedMacs = macs;
+}
+
+const connectedMacInUse = (now: number) =>
+  Object.values(desktopGlobal.telarConnectedMacs ?? {}).some((at) => presentNow({ active: true, viewingPath: null, at }, now));
 
 export function notifyDesktop(
   sessions: readonly SessionSignal[],
@@ -111,6 +128,7 @@ export function notifyDesktop(
   for (const [id, key] of Object.entries(desktopGlobal.telarDesktopTook ?? {})) if (id in state.seen) took[id] = key;
   for (const notice of notices) {
     const route = notifyRoute(notifyOn, desktopGlobal.telarDesktopPresence, notice.path, now);
+    if (notifyOn === "mac" && connectedMacInUse(now)) route.phone = false;
     if (route.phone) delete took[notice.sessionId]; else took[notice.sessionId] = state.seen[notice.sessionId];
     if (!route.desktop) continue;
     const sound = soundFor(sounds, notice.kind);

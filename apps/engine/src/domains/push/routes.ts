@@ -1,6 +1,6 @@
 import { EngineClientError, type EngineClient, type PushRelayStatus } from "@telar/engine-client";
 import { fail, ok, type Route } from "../../platform/http/route";
-import { desktopStream, handleDesktopMessage } from "./desktop";
+import { desktopInUse, desktopStream, handleDesktopMessage, noteConnectedMac } from "./desktop";
 import { isNotificationSounds, isNotifyOn, readNotifyOn, readSounds, writeNotifyOn, writeSounds } from "./prefs";
 import { activityReport, parseRegistration, pushAvailable, pushConfigured, PushInputError, readPushRecords, saveRegistration } from "./push";
 import { clearedSessions, parseReadStateIds } from "./read-sync";
@@ -133,6 +133,16 @@ export function pushRoutes(deps: PushRouteDeps): Route[] {
         if (!isNotificationSounds(body.sounds)) return fail(400, "invalid_request", "sounds must be hilo, armonico, felt or off.");
         writeSounds(body.sounds);
         return ok({ sounds: body.sounds });
+      },
+    },
+    {
+      method: "PUT",
+      path: /^\/v2\/push\/desktop\/presence\/([^/]+)$/,
+      auth: "engine",
+      handle({ body, params: [deviceId] }) {
+        if (typeof body.active !== "boolean") return fail(400, "invalid_request", "active must be true or false.");
+        noteConnectedMac(deviceId!, body.active);
+        return ok({ hostInUse: desktopInUse() });
       },
     },
     {
