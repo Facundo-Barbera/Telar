@@ -141,7 +141,7 @@ test("the summary answers with the current location, even before any worktree ex
 
   const { summary } = await client.worktreeSummary();
 
-  expect(summary.locations).toEqual([{ folder: chosen, present: true, current: true, worktrees: { count: 0, bytes: 0, unmeasured: 0 } }]);
+  expect(summary.locations).toEqual([{ folder: chosen, label: `${path.basename(path.dirname(chosen))}/checkouts`, present: true, current: true, worktrees: { count: 0, bytes: 0, unmeasured: 0 } }]);
   expect(summary.states.map((entry) => entry.state)).toEqual(["in-use", "archived", "orphaned", "unchanged", "idle", "recent"]);
   expect(typeof summary.checkedAt).toBe("number");
 });

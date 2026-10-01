@@ -278,9 +278,7 @@ async function collectDrafts(deps: InventoryDeps, input: InventoryInput, roots: 
     }
   }
   for (const draft of drafts.values()) {
-    // A recorded or registered checkout outside the scanned roots — one cut
-    // before the root moved and never migrated. It still exists and still costs
-    // disk, so it is asked about directly rather than left off the list.
+    // A recorded checkout outside the scanned roots was cut before the root moved; it still costs disk.
     if (!draft.onDisk && input.rootsReadable) draft.onDisk = fs.existsSync(draft.path);
   }
   return { drafts, bases, partial };

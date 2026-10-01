@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { ReleasableState, WorktreeLocation, WorktreeLocationMove, WorktreeMoveResult, WorktreeState, WorktreeSummary, WorktreeTally } from "@telar/engine-client";
-import { ArchiveIcon, CircleDotIcon, ClockIcon, GitMergeIcon, HardDriveIcon, LaptopIcon, MoonIcon, UnlinkIcon } from "lucide-react";
+import { ArchiveIcon, CircleDotIcon, ClockIcon, GitMergeIcon, FolderIcon, HardDriveIcon, MoonIcon, UnlinkIcon } from "lucide-react";
 import { createEngineApi } from "@/platform/engine";
 import { fmtAgo, formatBytes } from "@/ui/format";
 import { Badge } from "@/ui/badge";
@@ -23,26 +23,21 @@ function tallyLabel(tally: WorktreeTally): string {
   return `${plural(tally.count, "worktree")} · ${size}`;
 }
 
-function placeName(location: WorktreeLocation, other: WorktreeLocation | undefined): string {
-  if (location.volume && location.volume !== other?.volume) return location.volume;
-  if (!location.volume && other?.volume) return "this Mac";
-  return location.folder;
+function sizeOf(tally: WorktreeTally): string | undefined {
+  if (tally.unmeasured === tally.count) return undefined;
+  return `${formatBytes(tally.bytes)}${tally.unmeasured > 0 ? "+" : ""}`;
 }
 
-function moveLabel(source: WorktreeLocation, current: WorktreeLocation | undefined): string {
-  const movable = source.move?.movable ?? { count: 0, bytes: 0, unmeasured: 0 };
-  const to = current ? placeName(current, source) : "the current location";
-  if (movable.count === 0) return `Move from ${placeName(source, current)} to ${to}`;
-  const size = movable.unmeasured === movable.count ? "" : ` (${formatBytes(movable.bytes)}${movable.unmeasured > 0 ? "+" : ""})`;
-  return `Move ${plural(movable.count, "worktree")}${size} from ${placeName(source, current)} to ${to}`;
+function moveLabel(movable: WorktreeTally, current: WorktreeLocation | undefined): string {
+  const size = sizeOf(movable);
+  return `Move ${plural(movable.count, "worktree")}${size ? ` · ${size}` : ""} to ${current?.label ?? "the current location"}`;
 }
 
-function moveBlocker(location: WorktreeLocation): string | undefined {
-  if (location.current) return "New worktrees are made here already.";
-  if (!location.present) return "The drive is not connected.";
-  if (!location.move) return "Choose a location first.";
-  if (location.move.movable.count === 0) return `Nothing here can move. ${stayingSentence(location.move.staying) ?? ""}`.trim();
-  return undefined;
+function stayNote(location: WorktreeLocation): string | undefined {
+  if (location.current || location.worktrees.count === 0) return undefined;
+  if (!location.present) return "Plug the drive in to move these.";
+  if (!location.move || location.move.movable.count > 0) return undefined;
+  return `Nothing here can move. ${stayingSentence(location.move.staying) ?? ""}`.trim();
 }
 
 function stayingSentence(staying: WorktreeLocationMove["staying"]): string | undefined {
@@ -81,8 +76,9 @@ function LocationRow({ location, current, onMoved }: { location: WorktreeLocatio
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<WorktreeMoveResult>();
   const [failure, setFailure] = useState<string>();
-  const blocker = moveBlocker(location);
-  const label = moveLabel(location, current);
+  const movable = location.present && !location.current && location.move && location.move.movable.count > 0 ? location.move : undefined;
+  const note = stayNote(location);
+  const destination = current?.folder ?? "the current location";
 
   const move = async () => {
     setBusy(true);
@@ -100,38 +96,39 @@ function LocationRow({ location, current, onMoved }: { location: WorktreeLocatio
 
   return (
     <Row
-      icon={location.volume ? HardDriveIcon : LaptopIcon}
-      label={location.volume ?? "This Mac"}
+      icon={location.volume ? HardDriveIcon : FolderIcon}
+      label={<span title={location.folder}>{location.label}</span>}
       status={location.current ? <Badge variant="secondary">current</Badge> : !location.present ? <Badge variant="outline">not connected</Badge> : undefined}
       hint={
         <>
-          <span className="font-mono">{location.folder}</span> — {tallyLabel(location.worktrees)}
+          {tallyLabel(location.worktrees)}
+          {note ? <span className="block">{note}</span> : null}
           {outcome ? <span className="block text-foreground">{outcomeCounts(outcome)}. {outcome.summary}</span> : null}
         </>
       }
       {...(failure ? { error: failure } : {})}
       control={
-        location.current || confirming ? null : (
-          <span className="flex flex-col items-end gap-1 text-right">
-            <Button size="sm" variant="outline" disabled={busy || blocker !== undefined} onClick={() => setConfirming(true)}>
-              {label}
-            </Button>
-            {blocker ? <span className="max-w-72 text-xs text-muted-foreground">{blocker}</span> : null}
-          </span>
-        )
+        movable && !confirming ? (
+          <Button size="sm" variant="outline" title={`${location.folder} → ${destination}`} onClick={() => setConfirming(true)}>
+            {moveLabel(movable.movable, current)}
+          </Button>
+        ) : null
       }
     >
-      {confirming && location.move ? (
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label="Confirm move">
-          <span className="min-w-60 flex-1 text-foreground">
-            {label}? Each is re-made from its branch; nothing is forced. {stayingSentence(location.move.staying) ?? "Nothing stays behind."}
+      {confirming && movable ? (
+        <div className="mt-2 space-y-2 text-xs" role="group" aria-label="Confirm move">
+          <p className="break-all text-foreground">
+            Move {plural(movable.movable.count, "worktree")} from {location.folder} to {destination}? Each is re-made from its branch; nothing is forced.{" "}
+            {stayingSentence(movable.staying) ?? "Nothing stays behind."}
+          </p>
+          <span className="flex items-center gap-2">
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void move()}>
+              {busy ? "Moving…" : "Move them"}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+              Cancel
+            </Button>
           </span>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void move()}>
-            {busy ? "Moving…" : "Move them"}
-          </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
-            Cancel
-          </Button>
         </div>
       ) : null}
     </Row>

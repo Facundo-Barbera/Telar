@@ -82,6 +82,7 @@ export type WorktreeLocationMove = {
 
 export type WorktreeLocation = {
   folder: string;
+  label: string;
   volume?: string;
   present: boolean;
   current: boolean;

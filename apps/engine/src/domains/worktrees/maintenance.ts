@@ -423,6 +423,7 @@ export class WorktreeMaintenance {
       inventory: { ...inventory, rows },
       sessions,
       ...(current ? { current } : {}),
+      defaultRoot: defaultWorktreesRoot(this.kernel.paths.root),
       idleDays: this.deps.cleanup.policy().inactiveDays ?? DEFAULT_IDLE_DAYS,
       now: this.kernel.now(),
       exists: (folder: string) => fs.existsSync(folder),
