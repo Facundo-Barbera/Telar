@@ -20,7 +20,7 @@ struct ItemRowView: View {
             } else if let sender = message.sender {
                 AgentNoticeRow(senderLabel: agentSenderLabel(sender), notice: message.notice, message: item.text)
             } else {
-                UserBubble(text: item.text)
+                UserBubble(text: item.text, attachments: message.attachments)
             }
         case .reasoning:
             Button {

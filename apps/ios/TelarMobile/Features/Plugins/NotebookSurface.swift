@@ -729,7 +729,7 @@ struct ImageLightbox: View {
             .navigationTitle("Figure")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-            .task { image = await AttachmentImageCache.shared.image(host: hostId, session: sessionId, attachmentId: attachmentId, api: api) }
+            .task { image = await AttachmentCache.shared.image(host: hostId, session: sessionId, attachmentId: attachmentId, api: api) }
         }
     }
 }

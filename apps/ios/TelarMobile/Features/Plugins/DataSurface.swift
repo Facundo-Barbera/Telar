@@ -186,7 +186,7 @@ private struct PlotCard: View {
         .padding(8)
         .background(Theme.card, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Theme.borderSubtle, lineWidth: 1))
-        .task(id: plot.id) { image = await AttachmentImageCache.shared.image(host: hostId, session: sessionId, attachmentId: plot.id, api: api) }
+        .task(id: plot.id) { image = await AttachmentCache.shared.image(host: hostId, session: sessionId, attachmentId: plot.id, api: api) }
     }
 }
 

@@ -120,6 +120,7 @@ struct JournalTurn: Identifiable, Equatable {
 
     var notification: NotificationDetail?
     var providerReason: ProviderReason?
+    var attachments: [TurnAttachment]?
 
     var id: EngineID { runId }
 
@@ -204,6 +205,7 @@ private final class TurnBox {
 
     var notification: NotificationDetail?
     var providerReason: ProviderReason?
+    var attachments: [TurnAttachment]?
     init(turn: Turn) {
         runId = turn.runId
         sequence = turn.sequence
@@ -222,6 +224,7 @@ private final class TurnBox {
         agentNotice = turn.agentNotice
         notification = turn.notification
         providerReason = turn.providerReason
+        attachments = turn.attachments
     }
 }
 
@@ -389,7 +392,8 @@ func projectJournal(
             wakeReason: turn.wakeReason,
             agentNotice: turn.agentNotice,
             notification: turn.notification,
-            providerReason: turn.providerReason
+            providerReason: turn.providerReason,
+            attachments: turn.attachments
         )
     }
 }

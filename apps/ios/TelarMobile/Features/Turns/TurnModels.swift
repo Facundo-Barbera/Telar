@@ -55,6 +55,8 @@ struct Turn: Codable, Identifiable, Equatable {
 
     var providerReason: ProviderReason?
 
+    var attachments: [TurnAttachment]?
+
     var id: EngineID { runId }
 }
 

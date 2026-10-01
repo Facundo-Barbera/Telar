@@ -43,7 +43,7 @@ struct ProviderInstance: Decodable, Identifiable, Equatable {
     var enabled: Bool
 }
 
-struct TurnAttachment: Decodable, Identifiable, Equatable {
+struct TurnAttachment: Codable, Identifiable, Equatable {
     var id: EngineID
     var name: String
     var mediaType: String

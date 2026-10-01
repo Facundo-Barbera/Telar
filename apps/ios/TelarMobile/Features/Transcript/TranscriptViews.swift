@@ -91,7 +91,7 @@ struct TurnView: View {
             } else if turn.isFromAgent {
                 AgentMessageRow(turn: turn)
             } else {
-                UserBubble(text: turn.prompt)
+                UserBubble(text: turn.prompt, attachments: turn.attachments)
             }
 
             ForEach(Array(earlier.enumerated()), id: \.element.boundary?.id) { _, response in
@@ -138,27 +138,38 @@ struct TurnView: View {
 
 struct UserBubble: View {
     let text: String
+    var attachments: [TurnAttachment]? = nil
+
+    private var blank: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
-        HStack {
-            Spacer(minLength: 24)
-            Group {
-                if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Label("Image", systemImage: "photo")
-                        .foregroundStyle(Theme.textMuted)
-                } else {
-                    Text(text)
-                        .lineSpacing(4)
-                        .foregroundStyle(Theme.text)
+        VStack(alignment: .trailing, spacing: 6) {
+            if let attachments, !attachments.isEmpty {
+                SentAttachments(attachments: attachments)
+            }
+            if !blank || attachments?.isEmpty != false {
+                HStack {
+                    Spacer(minLength: 24)
+                    Group {
+                        if blank {
+                            Label("Image", systemImage: "photo")
+                                .foregroundStyle(Theme.textMuted)
+                        } else {
+                            Text(text)
+                                .lineSpacing(4)
+                                .foregroundStyle(Theme.text)
+                        }
+                    }
+                    .font(Theme.body)
+                    .padding(12)
+                    .background(Theme.messageSurface)
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.radiusBubble))
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .font(Theme.body)
-            .padding(12)
-            .background(Theme.messageSurface)
-            .clipShape(RoundedRectangle(cornerRadius: Theme.radiusBubble))
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .trailing)
     }
 }
 
