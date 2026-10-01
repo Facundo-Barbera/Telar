@@ -89,9 +89,8 @@ struct ComposerTextView: UIViewRepresentable {
 
         var caretRect: Binding<CGRect?>?
 
-        private var published: String?
-
         private var applying = false
+        private var reconciling = false
 
         init(text: Binding<String>, focused: Binding<Bool>) {
             self.text = text
@@ -99,17 +98,24 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func sync(_ view: ComposerUITextView, to next: String) {
-            guard view.text != next, next != published, view.markedTextRange == nil else { return }
+            guard view.text != next else { return }
+            guard view.window != nil else { return reconcile(view, to: next) }
+            guard !reconciling else { return }
+            reconciling = true
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self else { return }
+                reconciling = false
+                guard let view else { return }
+                reconcile(view, to: text.wrappedValue)
+            }
+        }
+
+        private func reconcile(_ view: ComposerUITextView, to next: String) {
+            guard view.markedTextRange == nil else { return }
             applying = true
             let moved = view.apply(next)
             applying = false
-            guard moved else { return }
-            published = view.text
-
-            DispatchQueue.main.async { [weak self, weak view] in
-                guard let self, let view else { return }
-                report(view)
-            }
+            if moved, view.window != nil { report(view) }
         }
 
         func textViewDidChange(_ textView: UITextView) {
@@ -119,7 +125,6 @@ struct ComposerTextView: UIViewRepresentable {
 
         func publish(_ textView: UITextView) {
             (textView as? ComposerUITextView)?.placeholderLabel.isHidden = !textView.text.isEmpty
-            published = textView.text
             if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
             report(textView)
         }
