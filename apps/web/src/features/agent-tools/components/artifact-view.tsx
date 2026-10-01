@@ -7,18 +7,37 @@ import { attachmentUrl } from "@/features/plugins";
 import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { MessageResponse } from "@/ui/message";
 import { cn } from "@/ui/utils";
-import { ARTIFACT_SANDBOX, artifactDocument, clampFrameHeight, type ArtifactHeight } from "../artifacts";
+import { ARTIFACT_SANDBOX, artifactDocument, clampFrameHeight, type ArtifactHeight, type LookTokens } from "../artifacts";
 import { svgImage } from "../svg-image";
 import { readableScale } from "../viewport";
 import { SvgViewer } from "./svg-viewer";
 
 function subscribeToLook(onChange: () => void) {
   const observer = new MutationObserver(onChange);
-  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  observer.observe(document.documentElement, { attributes: true });
   return () => observer.disconnect();
 }
 
 const useDarkLook = () => useSyncExternalStore(subscribeToLook, () => document.documentElement.classList.contains("dark"), () => false);
+
+function lookSnapshot(): string {
+  const root = document.documentElement;
+  const style = getComputedStyle(root);
+  const token = (name: string) => style.getPropertyValue(name).trim();
+  const look: LookTokens = {
+    scheme: root.classList.contains("dark") ? "dark" : "light",
+    background: token("--background"),
+    foreground: token("--foreground"),
+    muted: token("--muted-foreground"),
+    line: token("--border"),
+    accent: token("--primary"),
+  };
+  return JSON.stringify(look);
+}
+
+const SERVER_LOOK = JSON.stringify({ scheme: "light", background: "", foreground: "", muted: "", line: "", accent: "" } satisfies LookTokens);
+
+const useLookSnapshot = () => useSyncExternalStore(subscribeToLook, lookSnapshot, () => SERVER_LOOK);
 
 type Diagram = { source: string; dark: boolean; svg?: string; error?: string };
 
@@ -82,6 +101,9 @@ function HtmlFrame({ content, title, fill }: { content: string; title: string; f
   const frame = useId();
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number>();
+  const snapshot = useLookSnapshot();
+  const look = useMemo(() => JSON.parse(snapshot) as LookTokens, [snapshot]);
+  const srcDoc = useMemo(() => artifactDocument(content, frame, look), [content, frame, look]);
   useEffect(() => {
     if (fill) return;
     const listen = (event: MessageEvent) => {
@@ -99,10 +121,10 @@ function HtmlFrame({ content, title, fill }: { content: string; title: string; f
       ref={ref}
       title={title}
       sandbox={ARTIFACT_SANDBOX}
-      srcDoc={artifactDocument(content, frame)}
+      srcDoc={srcDoc}
       referrerPolicy="no-referrer"
-      className={cn("block w-full border-0 bg-white", fill && "h-full")}
-      style={fill ? undefined : { height: height ?? 160 }}
+      className={cn("block w-full border-0 bg-transparent", fill && "h-full")}
+      style={{ colorScheme: look.scheme, ...(fill ? {} : { height: height ?? 160 }) }}
     />
   );
 }
