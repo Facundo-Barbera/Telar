@@ -39,9 +39,14 @@ type SidebarContextProps = {
   toggleSidebar: () => void
   side: "left" | "right"
   resizable: SidebarResizable | null
+  suspend: (suspended: boolean) => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
+
+function useSuspendSidebar() {
+  return React.useContext(SidebarContext)?.suspend
+}
 
 function useSidebar() {
   const context = React.useContext(SidebarContext)
@@ -73,10 +78,12 @@ function SidebarProvider({
   const stored = useSidebarPrefs(storageKey ?? null)
 
   const [_open, _setOpen] = React.useState(defaultOpen)
-  const open = openProp ?? (stored.collapsed === null ? _open : !stored.collapsed)
+  const [suspended, setSuspended] = React.useState(false)
+  const open = !suspended && (openProp ?? (stored.collapsed === null ? _open : !stored.collapsed))
   const setOpen = React.useCallback(
     (value: boolean | ((value: boolean) => boolean)) => {
       const openState = typeof value === "function" ? value(open) : value
+      setSuspended(false)
       if (setOpenProp) {
         setOpenProp(openState)
       } else {
@@ -109,6 +116,7 @@ function SidebarProvider({
       toggleSidebar,
       side: "left",
       resizable: null,
+      suspend: setSuspended,
     }),
     [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar]
   )
@@ -224,7 +232,7 @@ function Sidebar({
         <div
           data-slot="sidebar-gap"
           className={cn(
-            "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear",
+            "relative w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
             "group-data-[collapsible=offcanvas]:w-0",
             "group-data-[side=right]:rotate-180",
             variant === "floating" || variant === "inset"
@@ -236,7 +244,7 @@ function Sidebar({
           data-slot="sidebar-container"
           data-side={side}
           className={cn(
-            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-linear data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
+            "fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-[left,right,width] duration-200 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none data-[side=left]:left-0 data-[side=left]:group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)] data-[side=right]:right-0 data-[side=right]:group-data-[collapsible=offcanvas]:right-[calc(var(--sidebar-width)*-1)] md:flex",
             variant === "floating" || variant === "inset"
               ? "p-2 group-data-[collapsible=icon]:w-[calc(var(--sidebar-width-icon)+(--spacing(4))+2px)]"
               : "group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l",
@@ -453,4 +461,5 @@ export {
   SidebarTrigger,
   type SidebarWidthProposal,
   useSidebar,
+  useSuspendSidebar,
 }
