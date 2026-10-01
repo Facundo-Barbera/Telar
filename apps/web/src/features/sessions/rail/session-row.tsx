@@ -15,7 +15,7 @@ import { KeyHintOverlay } from "@/features/commands";
 import { useSidebar } from "@/ui/sidebar";
 import { cn } from "@/ui/utils";
 import { useRowWarmth } from "./use-row-warmth";
-import { HostMark, RowMarks, RowStatus } from "./session-row-marks";
+import { RowMarks, RowStatus } from "./session-row-marks";
 import { CardBody, RowLink, SlimBody } from "./session-row-body";
 import { RowActions } from "./session-row-actions";
 
@@ -237,7 +237,7 @@ export function SessionRow({
   const marks = <RowMarks session={session} band={band} renderedAt={renderedAt} heldTerminals={heldTerminals} />;
   const rowBody =
     variant === "card" ? (
-      <CardBody session={session} showProject={showProject} marks={marks} hostMark={<HostMark hostName={session.hostName} />} trailing={trailingSlot} reserve={disclosure !== undefined} />
+      <CardBody session={session} showProject={showProject} marks={marks} trailing={trailingSlot} reserve={disclosure !== undefined} />
     ) : (
       <SlimBody session={session} recedes={band === "settled" || band === "snoozed"} marks={marks} trailing={trailingSlot} />
     );

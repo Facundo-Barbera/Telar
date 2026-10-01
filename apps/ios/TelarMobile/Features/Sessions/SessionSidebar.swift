@@ -272,7 +272,7 @@ struct SessionSidebar: View {
                 if !collapsed.contains(group.id) {
                     let drawn = group.sessions
 
-                    ForEach(drawn) { row in sessionRow(row, variant: .slim, placesAbove: group.places.count) }
+                    ForEach(drawn) { row in sessionRow(row, variant: .slim) }
                         .onMove { offsets, destination in
                             Task { await reorder(drawn, offsets: offsets, to: destination, key: .group(group.layoutKey)) }
                         }
@@ -432,12 +432,10 @@ struct SessionSidebar: View {
     private enum RowVariant { case card, slim }
 
     private func sessionRow(
-        _ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true, placesAbove: Int = 0,
+        _ row: HostedSession, variant: RowVariant = .card, showsProject: Bool = true,
         family: SessionFamily? = nil, nested: Bool = false, outlined: Bool = false
     ) -> some View {
-        let host = HostLabel.row(
-            name: settings.host(row.hostId)?.name, hostCount: settings.hosts.count, placesAbove: placesAbove
-        )
+        let host = HostLabel.header(name: settings.host(row.hostId)?.name, hostCount: settings.hosts.count)
         return NavigationLink(value: row.id) {
             HStack(spacing: 4) {
                 if outlined && !nested { familyToggle(family).frame(width: 18) }
@@ -545,6 +543,7 @@ struct SessionSidebar: View {
     @ViewBuilder private func cardBody(_ row: HostedSession, showsProject: Bool, host: String?) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
+                if let host { HostMark(hostId: row.hostId, name: host, size: rowProjectMark) }
                 if row.session.settledOverride == "active" {
                     Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
                 }
@@ -554,8 +553,6 @@ struct SessionSidebar: View {
                     Text(project.name).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.75)).lineLimit(1)
                 }
                 Spacer(minLength: 4)
-                if let host { hostBadge(host) }
-
                 SessionStatusSlot(session: row.session)
             }
             HStack(spacing: 6) {
@@ -585,6 +582,7 @@ struct SessionSidebar: View {
 
     @ViewBuilder private func slimBody(_ row: HostedSession, host: String?) -> some View {
         HStack(spacing: 6) {
+            if let host { HostMark(hostId: row.hostId, name: host, size: slimProjectMark) }
             if row.session.settledOverride == "active" {
                 Image(systemName: "pin.fill").font(.system(Theme.captionTiny)).foregroundStyle(Theme.textMuted.opacity(0.7))
             }
@@ -602,8 +600,6 @@ struct SessionSidebar: View {
                 .lineLimit(1).truncationMode(.tail)
             Spacer(minLength: 4)
 
-            if let host { hostBadge(host) }
-
             if let hint = settledHint(row), row.session.activity == .idle, row.session.snoozedUntil == nil {
                 Text(hint).font(.caption2).foregroundStyle(Theme.textMuted.opacity(0.7))
                     .lineLimit(1).truncationMode(.tail)
@@ -619,13 +615,6 @@ struct SessionSidebar: View {
             row.session,
             coordinatorTitle: row.session.settledBy.flatMap { inbox.title($0.coordinatorSessionId, on: row.hostId) }
         )
-    }
-
-    private func hostBadge(_ name: String) -> some View {
-        Text(name).font(.system(Theme.caption)).foregroundStyle(Theme.textMuted.opacity(0.7))
-            .lineLimit(1).truncationMode(.tail)
-            .padding(.horizontal, 4).background(Theme.subtle, in: RoundedRectangle(cornerRadius: 3))
-            .accessibilityLabel("On \(name)")
     }
 
     private func accentTone(_ session: Session) -> Color? {
