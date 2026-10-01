@@ -514,11 +514,12 @@ describe("every tool description is short enough to carry", () => {
    */
   test("display is capped too — the one that had no guard", () => {
     const { registered, factory } = register();
-    displayTools(factory, { open: async ({ path }) => ({ path }) });
-    const display = registered.find((entry) => entry.name === "display_open");
-    expect(display).toBeDefined();
-    expect(display!.description.length).toBeLessThanOrEqual(MAX_DESCRIPTION);
-    expect(display!.description.length).toBeGreaterThan(80);
+    displayTools(factory, { open: async ({ path }) => ({ path }), inline: async () => ({ id: "a" }) });
+    expect(registered.map((entry) => entry.name)).toEqual(["display_open", "display_inline"]);
+    for (const display of registered) {
+      expect(display.description.length).toBeLessThanOrEqual(MAX_DESCRIPTION);
+      expect(display.description.length).toBeGreaterThan(80);
+    }
   });
 
   /**

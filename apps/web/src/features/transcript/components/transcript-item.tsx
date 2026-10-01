@@ -3,6 +3,7 @@
 import {
 TriangleAlertIcon
 } from "lucide-react";
+import { ArtifactCard } from "@/features/agent-tools";
 import { isToolItem, itemLabel, itemText, type JournalItem, type JournalTask } from "@/platform/engine";
 import { MessageMenu, MessageResponse } from "@/ui/message";
 import { type OpenTab } from "./conversation-message";
@@ -28,6 +29,7 @@ export function TranscriptItem({ item, tasks, onOpenAgent, onOpenTab, onInsert, 
     if (task && !transcriptTasks([task]).length) return null;
     return <AgentRow item={item} task={task} {...(onOpenAgent ? { onOpen: onOpenAgent } : {})} {...(onInsert ? { onInsert } : {})} />;
   }
+  if (item.detail.type === "artifact") return <ArtifactCard sessionId={item.sessionId} artifact={item.detail.artifact} />;
   if (item.detail.type === "plan") return <PlanRow item={item} />;
   if (item.detail.type === "reasoning") return <ReasoningRow item={item} />;
   if (item.detail.type === "context_compaction") return <CompactionRow item={item} />;

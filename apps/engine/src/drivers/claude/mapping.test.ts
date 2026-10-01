@@ -41,6 +41,7 @@ describe("Telar's own reads are reads", () => {
   test("a read-shaped core tool is a file_read, so the front door does not park on it", () => {
     expect(requestKindForTool(qualifyTelarTool("display_open"))).toBe("file_read");
     expect(requiresHuman("approval-required", requestKindForTool(qualifyTelarTool("display_open")))).toBe(false);
+    expect(requestKindForTool(qualifyTelarTool("display_inline"))).toBe("file_read");
   });
 
   test("everything that writes or spends still parks, in every attended mode", () => {

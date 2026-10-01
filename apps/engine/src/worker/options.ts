@@ -14,6 +14,7 @@ export type WorkerClient = Pick<
   | "claimTurn"
   | "markTurnRunning"
   | "reportObservations"
+  | "uploadAttachment"
   | "openRequest"
   | "completeTurn"
   | "failTurn"

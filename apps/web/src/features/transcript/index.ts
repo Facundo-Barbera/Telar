@@ -9,7 +9,7 @@ export { TranscriptItem } from "./components/transcript-item";
 export { Marker, TurnFailureRow, WorkingIndicator } from "./components/turn-status";
 export {
   bareNotificationTurn,
-  cutAroundLiveAgents,
+  cutAroundStandingRows,
   groupNotificationTurns,
   segmentActivity,
   splitAtMessageBoundaries,

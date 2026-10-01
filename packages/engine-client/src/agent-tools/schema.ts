@@ -53,6 +53,23 @@ export const McpServer = z.object({
 });
 export type McpServer = z.infer<typeof McpServer>;
 
+export const ArtifactKind = z.enum(["html", "svg", "markdown", "mermaid"]);
+export type ArtifactKind = z.infer<typeof ArtifactKind>;
+
+export const ArtifactId = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
+
+export const MAX_ARTIFACT_BYTES = 512 * 1024;
+
+/** One version of something an agent drew inline; the content is the attachment's bytes. */
+export const Artifact = z.object({
+  id: ArtifactId,
+  kind: ArtifactKind,
+  title: z.string().min(1).max(200),
+  attachmentId: Id,
+  version: z.number().int().positive(),
+});
+export type Artifact = z.infer<typeof Artifact>;
+
 export function resolveMcpServers(servers: readonly McpServer[], projectId: string | undefined): McpServer[] {
   const scoped = servers.filter((server) => server.projectId === projectId);
   const shadowed = new Set(scoped.map((server) => server.id));

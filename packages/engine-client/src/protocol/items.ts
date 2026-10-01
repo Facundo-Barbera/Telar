@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Artifact } from "../agent-tools/schema";
 import { Id, ProviderRefs, RateLimitType, Timestamp, TurnAttachment } from "./common";
 import { NotificationDetail, WakeReason } from "./entities";
 
@@ -208,6 +209,7 @@ export const ItemDetail = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("provider_wait"), wait: ProviderWaitDetail }),
   z.object({ type: z.literal("conversation_import"), import: ConversationImportDetail }),
+  z.object({ type: z.literal("artifact"), artifact: Artifact }),
   z.object({ type: z.literal("error"), error: ErrorDetail }),
   z.object({ type: z.literal("unknown"), label: z.string().optional(), payload: z.unknown().optional() }),
 ]);

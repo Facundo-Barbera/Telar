@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { JournalItem } from "@/platform/engine";
-import { cutAroundLiveAgents, segmentActivity, transcriptTasks, turnActivity } from "@/features/transcript";
+import { cutAroundStandingRows, segmentActivity, transcriptTasks, turnActivity } from "@/features/transcript";
 import { cockpitPlugins, describeTurnState, pinToggleOverride, transcriptRows } from "./model";
 import { SessionTurn } from "./components/session-turn";
 
@@ -73,22 +73,27 @@ describe("a sub-agent is a row where it was spawned, and never folds while it is
   const task = (id: string, state = "running") => ({ id, kind: "agent", state, items: [] }) as never;
 
   test("a settled run is cut around a spawn whose agent is still running", () => {
-    const cuts = cutAroundLiveAgents(
+    const cuts = cutAroundStandingRows(
       [item("a", "command_execution"), item("b", "task", "t1"), item("c", "file_read"), item("d", "task", "t2"), item("e", "command_execution")],
       [task("t1", "running"), task("t2", "completed")],
     );
-    expect(cuts.map((cut) => (cut.kind === "agent" ? `agent:${cut.item.id}` : cut.items.map((i) => i.id).join("")))).toEqual(["a", "agent:b", "cde"]);
+    expect(cuts.map((cut) => (cut.kind === "row" ? `row:${cut.item.id}` : cut.items.map((i) => i.id).join("")))).toEqual(["a", "row:b", "cde"]);
   });
 
   test("a spawn whose agent has settled folds with the rest of the run", () => {
-    const cuts = cutAroundLiveAgents([item("a", "command_execution"), item("b", "task", "t1")], [task("t1", "completed")]);
+    const cuts = cutAroundStandingRows([item("a", "command_execution"), item("b", "task", "t1")], [task("t1", "completed")]);
     expect(cuts).toHaveLength(1);
     expect(cuts[0]?.kind).toBe("run");
   });
 
   test("a spawn whose task has not reported yet folds — nothing live to protect", () => {
-    const cuts = cutAroundLiveAgents([item("b", "task", "t9")], []);
+    const cuts = cutAroundStandingRows([item("b", "task", "t9")], []);
     expect(cuts.map((cut) => cut.kind)).toEqual(["run"]);
+  });
+
+  test("an artifact never folds into a settled run", () => {
+    const cuts = cutAroundStandingRows([item("a", "command_execution"), item("b", "artifact"), item("c", "file_read")], []);
+    expect(cuts.map((cut) => cut.kind)).toEqual(["run", "row", "run"]);
   });
 });
 

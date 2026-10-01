@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { McpServer } from "../agent-tools/schema";
+import { Artifact, McpServer } from "../agent-tools/schema";
 import { ProviderInstance } from "../providers/schema";
 import {
   AgentModelChoice,
@@ -40,16 +40,14 @@ export const TurnObservation = z.discriminatedUnion("kind", [
     kind: z.literal("item.completed"),
     itemId: Id,
     status: ItemStatus,
-    /** Present when finishing changes the payload — a tool_result filling in
-     *  the output half of a call that opened with only its input. */
+    /** Present when finishing changes the payload, as a tool result does. */
     detail: ItemDetail.optional(),
   }),
   z.object({
     kind: z.literal("content.delta"),
     itemId: Id,
     stream: ContentStream,
-    /** Non-empty, but a single space or newline is legitimate — v1 learned
-     *  this the hard way and split its prompt check from its stream check. */
+    /** Non-empty, but a single space or newline is legitimate. */
     text: z.string().min(1),
   }),
   z.object({ kind: z.literal("usage"), usage: UsageSnapshot }),
@@ -61,6 +59,9 @@ export const TurnObservation = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("browser.state"), provider: BrowserProvider, tabs: z.array(BrowserTab) }),
 
   z.object({ kind: z.literal("display.opened"), path: z.string().min(1), title: z.string().optional() }),
+
+  /** The engine numbers the version, so a redraw in a later turn follows the last one. */
+  z.object({ kind: z.literal("artifact.published"), artifact: Artifact.omit({ version: true }) }),
 
   z.object({
     kind: z.literal("prompt.drafted"),

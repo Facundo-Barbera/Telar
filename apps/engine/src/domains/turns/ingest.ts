@@ -155,9 +155,7 @@ export class TurnIngest {
       return;
     }
     if (observation.kind === "browser.state") {
-      // No projection: a browser's tabs are LIVE state, not durable history.
-      // Replaying them from a week-old journal would describe pages that are
-      // long gone, so this rides the stream and nothing else.
+      // No projection: a browser's tabs are live state, not history to replay.
       this.kernel.appendEvent(
         sessionId,
         { type: "browser.state.changed", provider: observation.provider, tabs: observation.tabs },
@@ -171,6 +169,27 @@ export class TurnIngest {
         { type: "display.opened", path: observation.path, ...(observation.title ? { title: observation.title } : {}) },
         turn.runId,
       );
+      return;
+    }
+    if (observation.kind === "artifact.published") {
+      const published = observation.artifact;
+      let version = 1;
+      for (const known of items.values()) {
+        if (known.detail.type === "artifact" && known.detail.artifact.id === published.id) version = Math.max(version, known.detail.artifact.version + 1);
+      }
+      const item: Item = {
+        id: `artifact_${published.id}_v${version}`,
+        runId: turn.runId,
+        sessionId,
+        status: "completed",
+        title: published.title,
+        detail: { type: "artifact", artifact: { ...published, version } },
+        startedAt: at,
+        completedAt: at,
+      };
+      items.set(item.id, item);
+      projection.itemsTouched.add(item.id);
+      this.kernel.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
       return;
     }
     if (observation.kind === "prompt.drafted") {

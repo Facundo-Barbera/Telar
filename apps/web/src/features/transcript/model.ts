@@ -128,15 +128,15 @@ export function renderable(items: JournalItem[], tasks: readonly JournalTask[] =
   });
 }
 
-/** A spawn row never folds while its agent is still out. */
-export function cutAroundLiveAgents(items: JournalItem[], tasks: readonly JournalTask[]): Array<{ kind: "run"; items: JournalItem[] } | { kind: "agent"; item: JournalItem }> {
-  const out: Array<{ kind: "run"; items: JournalItem[] } | { kind: "agent"; item: JournalItem }> = [];
+/** A spawn row never folds while its agent is still out, and an artifact never folds. */
+export function cutAroundStandingRows(items: JournalItem[], tasks: readonly JournalTask[]): Array<{ kind: "run"; items: JournalItem[] } | { kind: "row"; item: JournalItem }> {
+  const out: Array<{ kind: "run"; items: JournalItem[] } | { kind: "row"; item: JournalItem }> = [];
   for (const item of items) {
     const taskId = item.detail.type === "task" ? item.detail.taskId : undefined;
     const task = taskId ? tasks.find((candidate) => candidate.id === taskId) : undefined;
     const liveAgent = task !== undefined && (task.state === "running" || task.state === "pending" || task.state === "waiting");
-    if (liveAgent) {
-      out.push({ kind: "agent", item });
+    if (liveAgent || item.detail.type === "artifact") {
+      out.push({ kind: "row", item });
       continue;
     }
     const last = out.at(-1);
@@ -153,7 +153,7 @@ export function transcriptTasks(tasks: readonly JournalTask[]): JournalTask[] {
 
 export type ActivitySegment = { kind: "run"; items: JournalItem[] } | { kind: "row"; item: JournalItem };
 
-const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "notification", "plan", "context_compaction", "provider_wait", "conversation_import"]);
+const SEAM = new Set<Item["detail"]["type"]>(["assistant_message", "user_message", "notification", "plan", "context_compaction", "provider_wait", "conversation_import", "artifact"]);
 
 export type TurnResponse = { boundary?: JournalItem; items: JournalItem[] };
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, type ComponentProps, type RefObject } from "react";
+import { Fragment, useMemo, type ComponentProps, type RefObject } from "react";
 import { ClockIcon, TriangleAlertIcon } from "lucide-react";
 import { workspacePath, type EngineRequest } from "@telar/engine-client";
 import type { JournalTurn } from "@/platform/engine";
@@ -8,6 +8,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
 import { TranscriptWorkspace } from "@/features/transcript";
+import { ArtifactShelf } from "@/features/agent-tools";
+import { artifactPanelTab } from "@/features/panel";
 import type { useSessionSync } from "../hooks/use-session-sync";
 import type { useTranscriptModel } from "../hooks/use-transcript-model";
 import { transcriptRows } from "../model";
@@ -41,6 +43,9 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
   // A cohort folds, except a turn with a request (open or decided) and the newest answer, whose marker must show.
   const keep = new Set([...sync.requests.map(hostRun), ...(newestResultRunId ? [newestResultRunId] : [])]);
   const directory = useSessionDirectory(props.hostId, shown);
+  const items = useMemo(() => shown.flatMap((turn) => turn.items), [shown]);
+  const openTab = props.turn.onOpenTab;
+  const openArtifact = useMemo(() => (openTab ? (artifactId: string) => openTab(artifactPanelTab(artifactId)) : undefined), [openTab]);
   const turnRow = (turn: JournalTurn, absorbed: boolean) => (
     <Fragment key={turn.runId}>
       {!absorbed && <TurnFrame skippable={turn.runId !== active?.runId}>
@@ -85,6 +90,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
             </div>
           </ConversationTopEdge>
           <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
+            <ArtifactShelf items={items} hostId={props.hostId} {...(openArtifact ? { onOpen: openArtifact } : {})}>
             <TranscriptTurns
               turns={shown}
               {...(active ? { activeRunId: active.runId } : {})}
@@ -94,6 +100,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
               hostId={props.hostId}
               {...(session?.projectId ? { projectId: session.projectId } : {})}
             />
+            </ArtifactShelf>
           </TranscriptWorkspace>
         </ConversationContent>
         <ConversationScrollButton />
