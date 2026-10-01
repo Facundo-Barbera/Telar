@@ -42,7 +42,7 @@ export function parseBootTime(platform: NodeJS.Platform, text: string | null): n
   return seconds ? Number(seconds) * 1000 : null;
 }
 
-export const systemLockProbe: LockProbe = {
+const systemLockProbe: LockProbe = {
   alive: processExists,
   async command(pid) {
     const out = await run("ps", ["-ww", "-o", "args=", "-p", String(pid)]);
