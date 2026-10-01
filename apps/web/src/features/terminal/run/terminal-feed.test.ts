@@ -21,7 +21,7 @@
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
-import { byteDroppedNotice, byteFeed } from "./terminal-feed";
+import { byteDroppedNotice, byteFeed, REPLAY_CHARS, replayTail } from "./terminal-feed";
 
 /** A DOM for this file only, handed back in `afterAll`: the suite shares a
  *  process and the registrator refuses a second registration, so a file that
@@ -129,7 +129,23 @@ describe("whether this is the same stream we were drawing", () => {
     // Most polls against a settled run look exactly like this, and a feed that
     // reset or re-drew on them would flicker the screen every few seconds.
     const idle = byteFeed(7, { chunks: [], cursor: 7, dropped: 0 });
-    expect(idle).toEqual({ reset: false, chunks: [], cursor: 7 });
+    expect(idle).toEqual({ reset: false, chunks: [], cursor: 7, skipped: 0 });
+  });
+});
+
+describe("replaying a window onto an empty screen", () => {
+  const window = Array.from({ length: 10 }, (_, at) => `${at}`.padEnd(100, "."));
+
+  test("the first read keeps only the newest chunks that fit the cap, and says how many it left out", () => {
+    expect(byteFeed(0, { chunks: window, cursor: 10, dropped: 0 })).toMatchObject({ chunks: window, skipped: 0 });
+    expect(replayTail(window, 350)).toEqual({ chunks: window.slice(7), skipped: 7 });
+  });
+
+  test("a reset replays within the cap too, and a continuing poll is never trimmed", () => {
+    expect(byteFeed(50, { chunks: window, cursor: 10, dropped: 0 })).toMatchObject({ reset: true, skipped: 0 });
+    const big = Array.from({ length: 3 }, () => "x".repeat(REPLAY_CHARS));
+    expect(byteFeed(0, { chunks: big, cursor: 3, dropped: 0 })).toMatchObject({ chunks: [big[2]], skipped: 2 });
+    expect(byteFeed(1, { chunks: big, cursor: 4, dropped: 0 })).toMatchObject({ chunks: big, skipped: 0 });
   });
 });
 

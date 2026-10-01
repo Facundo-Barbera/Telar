@@ -12,14 +12,13 @@ const SCROLLBACK = 3000;
 
 export type RunTarget = { api: RunApi; sessionId: string; runId: string; live: boolean };
 
-/** A run's emulator, built once per run. Keys and resizes always go through the engine, never the IPC bridge. */
-export function useRunEmulator(target: RunTarget, view: { active: boolean; visible: boolean }) {
+/** A run's emulator, built each time its chip comes on screen. Keys and resizes always go through the engine, never the IPC bridge. */
+export function useRunEmulator(target: RunTarget) {
   const host = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   // Held across frames because an escape sequence can end in the next one.
   const writeRef = useRef<((data: string) => void) | null>(null);
-  const measurer = useRef<ReturnType<typeof gridMeasurer> | null>(null);
   const [notice, setNotice] = useState<string>();
   const latest = useRef(target);
   useEffect(() => {
@@ -49,7 +48,6 @@ export function useRunEmulator(target: RunTarget, view: { active: boolean; visib
         void api.resize(sessionId, { runId, cols: grid.cols, rows: grid.rows }).catch(() => undefined);
       },
     );
-    measurer.current = measurement;
 
     // Typed input is not redacted: redaction covers what the process writes.
     const send = (data: string) => {
@@ -68,6 +66,8 @@ export function useRunEmulator(target: RunTarget, view: { active: boolean; visib
 
     const observer = new ResizeObserver(() => measurement.measure());
     observer.observe(element);
+    measurement.measure();
+    term.focus();
     void fontsReady.then(() => {
       if (!disposed) measurement.measure();
     });
@@ -76,7 +76,6 @@ export function useRunEmulator(target: RunTarget, view: { active: boolean; visib
       disposed = true;
       observer.disconnect();
       measurement.cancel();
-      measurer.current = null;
       offKeys.dispose();
       // The run is not stopped here: this unmounts on every tab switch.
       term.dispose();
@@ -84,14 +83,6 @@ export function useRunEmulator(target: RunTarget, view: { active: boolean; visib
       fitRef.current = null;
     };
   }, []);
-
-  // Coming back into view is a fit and a focus: a hidden chip was never a usable box.
-  const { active, visible } = view;
-  useEffect(() => {
-    if (!active || !visible) return;
-    measurer.current?.measure();
-    termRef.current?.focus();
-  }, [active, visible]);
 
   return { host, termRef, writeRef, notice, latest };
 }

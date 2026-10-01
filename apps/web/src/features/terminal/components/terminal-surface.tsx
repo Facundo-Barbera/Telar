@@ -41,7 +41,7 @@ export function TerminalSurface({
       }}
     >
       <TerminalStrip strip={strip} sessionId={sessionId} />
-      {/* Every pane stays mounted: unmounting drops scrollback the host does not record. */}
+      {/* Shell panes stay mounted: unmounting drops scrollback the host does not record. A run pane draws only while shown. */}
       <div className="relative min-h-0 flex-1">
         {workspace.shells.map((shell) =>
           shell.run && sessionId ? (
