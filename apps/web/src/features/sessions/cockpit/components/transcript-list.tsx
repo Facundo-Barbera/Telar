@@ -13,11 +13,12 @@ import { artifactPanelTab } from "@/features/panel";
 import type { useSessionSync } from "../hooks/use-session-sync";
 import type { useTranscriptModel } from "../hooks/use-transcript-model";
 import { transcriptRows } from "../model";
+import { planDispatches } from "../dispatch";
 import { useSessionDirectory } from "../hooks/use-session-directory";
 import { SessionProblem } from "./masthead";
 import { ReadReceiptMarker, type useReadReceipt } from "./read-receipt";
 import { EmptyTranscript, SessionTurn, TurnFrame } from "./session-turn";
-import { TranscriptTurns } from "./transcript-turns";
+import { TranscriptTurns, type TurnView } from "./transcript-turns";
 
 type TurnProps = ComponentProps<typeof SessionTurn>;
 
@@ -42,16 +43,19 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
   const hostRun = (request: EngineRequest) => hostOf.get(request.runId) ?? request.runId;
   // A cohort folds, except a turn with a request (open or decided) and the newest answer, whose marker must show.
   const keep = new Set([...sync.requests.map(hostRun), ...(newestResultRunId ? [newestResultRunId] : [])]);
-  const directory = useSessionDirectory(props.hostId, shown);
+  const plan = planDispatches(shown, active?.runId);
+  const directory = useSessionDirectory(props.hostId, plan.sessionIds);
   const items = useMemo(() => shown.flatMap((turn) => turn.items), [shown]);
   const openTab = props.turn.onOpenTab;
   const openArtifact = useMemo(() => (openTab ? (artifactId: string) => openTab(artifactPanelTab(artifactId)) : undefined), [openTab]);
-  const turnRow = (turn: JournalTurn, absorbed: boolean) => (
+  const turnRow = (turn: JournalTurn, { absorbed, covered, peerTitle }: TurnView) => (
     <Fragment key={turn.runId}>
       {!absorbed && <TurnFrame skippable={turn.runId !== active?.runId}>
         <SessionTurn
           turn={turn}
           live={turn.runId === active?.runId}
+          covered={covered}
+          {...(peerTitle ? { peerTitle } : {})}
           requests={openRequests.filter((request) => hostRun(request) === turn.runId && request.id !== composerQuestion?.id)}
           {...props.turn}
           {...(turn.failureCode === "rate_limited" && turn.state === "failed" ? { onResumeNow: () => props.onResumeNow(turn.runId) } : {})}
@@ -93,6 +97,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
             <ArtifactShelf items={items} hostId={props.hostId} {...(openArtifact ? { onOpen: openArtifact } : {})}>
             <TranscriptTurns
               turns={shown}
+              plan={plan}
               {...(active ? { activeRunId: active.runId } : {})}
               keep={keep}
               renderTurn={turnRow}

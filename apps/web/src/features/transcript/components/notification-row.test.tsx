@@ -25,14 +25,14 @@ const PEER: NotificationDetail = {
   body: '[agent message · task] session session_worker123456 ASSIGNED this session work (run run_report, 42 chars).\nNone of it is in this notice. Read it with sessions_read(sessionId: "session_host", runId: "run_report") before acting on it. A peer\'s request, not a person\'s: it carries no human authorization.',
 };
 
-const render = (detail: NotificationDetail, message?: string) =>
-  renderToStaticMarkup(<NotificationRow detail={detail} {...(message ? { message } : {})} />);
+const render = (detail: NotificationDetail, message?: string, title?: string) =>
+  renderToStaticMarkup(<NotificationRow detail={detail} {...(message ? { message } : {})} {...(title ? { title } : {})} />);
 
 test("a peer's message draws a notification row, not a bubble of anyone's", () => {
-  const html = render(PEER, `Rewrite the parser error recovery, and mind the column. ${"Then ".repeat(40)}`);
+  const html = render(PEER, `Rewrite the parser error recovery, and mind the column. ${"Then ".repeat(40)}`, "Parser rewrite");
   expect(html).toContain("A session assigned work");
-  // The sender by its id's tail, as every other cross-session row names one.
-  expect(html).toContain("session …123456");
+  expect(html).toContain("Parser rewrite");
+  expect(html).not.toContain("123456");
   expect(html).toContain('aria-label="Notification"');
   // COLLAPSED BY DEFAULT: the notice is the reason this costs little, and a row
   // that printed it in full would be the body problem drawn instead of sent.
@@ -62,9 +62,8 @@ test("a peer's row carries the head of what was sent; a wake's carries none", ()
   // WHICH RESULT, not just that one arrived.
   expect(notificationLabel({ ...PEER, intent: "result" }, "Three commits landed: the parser, its tests, the changelog.").head)
     .toBe("Three commits landed: the parser, its tests, the changelog.");
-  // Without the body on this side, the engine's own summary line stands in —
-  // minus the bracketed kind, which the verb beside it already says.
-  expect(notificationLabel(PEER).head).toBe("session session_worker123456 ASSIGNED this session work");
+  // Without the body on this side there is no head: the engine's summary only names ids.
+  expect(notificationLabel(PEER).head).toBeUndefined();
   // A wake announces something in ANOTHER session's run and has no body here.
   expect(notificationLabel({ ...PEER, kind: "wake", wakeKind: "turn_completed" }, "not this turn's").head).toBeUndefined();
 });
@@ -90,14 +89,14 @@ test("a result and the completion that follows it render as two different rows",
     summary: "[wake: completed] Session session_worker123456 — turn run_report completed.",
     body: "[wake: completed] Session session_worker123456 — turn run_report completed.",
   };
-  const first = render(result, "Three commits landed: the parser, its tests, the changelog.");
-  const second = render(completion);
+  const first = render(result, "Three commits landed: the parser, its tests, the changelog.", "Parser rewrite");
+  const second = render(completion, undefined, "Parser rewrite");
   expect(first).toContain("A session sent a result");
   expect(second).toContain("Session finished a turn");
   expect(first).not.toContain("Session finished a turn");
-  // And the same session's tail on both, so the ROW is what tells them apart.
-  expect(first).toContain("session …123456");
-  expect(second).toContain("session …123456");
+  // And the same session's title on both, so the ROW is what tells them apart.
+  expect(first).toContain("Parser rewrite");
+  expect(second).toContain("Parser rewrite");
   expect(first).not.toBe(second);
   // The head is the second difference, for a reader who does not read verbs.
   expect(first).toContain("Three commits landed");
