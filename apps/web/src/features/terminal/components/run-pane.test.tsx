@@ -200,15 +200,70 @@ describe("the scrollback a chip attaches to", () => {
     }
   });
 
-  test("a frame that arrives after the join is its own write too", async () => {
-    const bridge = installBridge();
-    await mount({ api: runDoor({ chunks: WINDOW, cursor: 3, dropped: 0 }), terminalId: "term_run", live: true });
+  test("frames that arrive within one animation frame are written once, after the scrollback", async () => {
+    const queued: Array<() => void> = [];
+    const real = { request: globalThis.requestAnimationFrame, cancel: globalThis.cancelAnimationFrame };
+    globalThis.requestAnimationFrame = ((callback: (time: number) => void) => queued.push(() => callback(0))) as typeof requestAnimationFrame;
+    globalThis.cancelAnimationFrame = (() => {}) as typeof cancelAnimationFrame;
+    try {
+      const bridge = installBridge();
+      await mount({ api: runDoor({ chunks: WINDOW, cursor: 3, dropped: 0 }), terminalId: "term_run", live: true });
+      await act(async () => {
+        bridge.push({ id: "term_run", data: "fourth line\r\n", cursor: 4 });
+        bridge.push({ id: "term_run", data: "fifth line\r\n", cursor: 5 });
+      });
+      expect(written).toEqual(WINDOW);
+
+      await act(async () => {
+        for (const run of queued.splice(0)) {
+          try {
+            run();
+          } catch {
+            // xterm's own render frames have no canvas here.
+          }
+        }
+      });
+      expect(written).toEqual([...WINDOW, "fourth line\r\nfifth line\r\n"]);
+    } finally {
+      globalThis.requestAnimationFrame = real.request;
+      globalThis.cancelAnimationFrame = real.cancel;
+    }
+  });
+});
+
+describe("a chip that is not on screen", () => {
+  test("has no emulator and reads nothing until it is shown, then draws the run from the engine's window", async () => {
+    let adopted = 0;
+    installBridge();
+    const bridge = (window as unknown as { telarDesktop: { terminal: { adopt: () => Promise<{ ok: boolean }> } } }).telarDesktop.terminal;
+    bridge.adopt = async () => {
+      adopted += 1;
+      return { ok: true };
+    };
+    const api = runDoor({ chunks: WINDOW, cursor: 3, dropped: 0 });
+    const host = await mount({ api, terminalId: "term_run", live: true, active: false });
+    expect(host.querySelector(".xterm")).toBeNull();
+    expect(adopted).toBe(0);
+    expect(written).toEqual([]);
 
     await act(async () => {
-      bridge.push({ id: "term_run", data: "fourth line\r\n", cursor: 4 });
-      bridge.push({ id: "term_run", data: "fifth line\r\n", cursor: 5 });
+      mounted!.render(<RunPane api={api} sessionId="session_a" runId="run_a" terminalId="term_run" live active visible />);
     });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(host.querySelectorAll(".xterm")).toHaveLength(1);
+    expect(adopted).toBe(1);
+    expect(written).toEqual(WINDOW);
+  });
 
-    expect(written).toEqual([...WINDOW, "fourth line\r\n", "fifth line\r\n"]);
+  test("a collapsed panel drops the emulator of the chip it was showing", async () => {
+    const api = runDoor({ chunks: WINDOW, cursor: 3, dropped: 0 });
+    const host = await mount({ api });
+    expect(host.querySelectorAll(".xterm")).toHaveLength(1);
+    await act(async () => {
+      mounted!.render(<RunPane api={api} sessionId="session_a" runId="run_a" live={false} active visible={false} />);
+    });
+    expect(host.querySelector(".xterm")).toBeNull();
   });
 });

@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { usePoll } from "@/ui/hooks/use-poll";
 import { terminalBridge } from "../bridge";
-import { byteFeed } from "../run/terminal-feed";
+import { frameWriter } from "../frames";
+import { byteFeed, type RunByteFeed } from "../run/terminal-feed";
 import { ptyByteWriter } from "../session";
 import type { RunEmulator } from "./use-run-emulator";
 
@@ -12,25 +13,21 @@ function runFeedKind(terminalId: string | undefined, bridge: { adopt?: unknown }
   return terminalId && bridge?.adopt ? "stream" : "poll";
 }
 
-// One write per chunk, never the joined window: xterm yields only between writes, and 256 KB in one froze the cockpit.
-function redraw(emulator: RunEmulator, chunks: readonly string[], reset: boolean) {
+function redraw(emulator: RunEmulator, feed: Pick<RunByteFeed, "chunks" | "reset">) {
   const term = emulator.termRef.current;
   if (!term) return;
-  if (reset) {
+  if (feed.reset) {
     term.reset();
     emulator.writeRef.current = ptyByteWriter(term);
   }
   const write = emulator.writeRef.current ?? ptyByteWriter(term);
-  for (const chunk of chunks) write(chunk);
+  for (const chunk of feed.chunks) write(chunk);
 }
 
+type OnRead = (answer: { dropped: number; cursor: number }, skipped: number) => void;
+
 /** Subscribe first and buffer, read the scrollback from the top, then draw only buffered frames past its cursor. */
-function useRunStream(
-  emulator: RunEmulator,
-  run: { sessionId: string; runId: string; terminalId: string | undefined },
-  enabled: boolean,
-  onRead: (answer: { dropped: number; cursor: number }) => void,
-) {
+function useRunStream(emulator: RunEmulator, run: { sessionId: string; runId: string; terminalId: string | undefined }, enabled: boolean, onRead: OnRead) {
   const { runId, sessionId, terminalId } = run;
   useEffect(() => {
     const bridge = terminalBridge();
@@ -38,14 +35,17 @@ function useRunStream(
     let stopped = false;
     let seen = -1;
     let holding: Array<{ data: string; cursor?: number }> | null = [];
-    const paint = (chunk: { data: string; cursor?: number }) => {
+    const frames = frameWriter((data) => {
       const term = emulator.termRef.current;
-      if (!term || stopped) return;
+      if (term && !stopped) (emulator.writeRef.current ?? ptyByteWriter(term))(data);
+    });
+    const paint = (chunk: { data: string; cursor?: number }) => {
+      if (stopped) return;
       if (chunk.cursor !== undefined) {
         if (chunk.cursor <= seen) return;
         seen = chunk.cursor;
       }
-      (emulator.writeRef.current ?? ptyByteWriter(term))(chunk.data);
+      frames.push(chunk.data);
     };
     const offData = bridge.onData((chunk) => {
       if (chunk.id !== terminalId) return;
@@ -61,9 +61,9 @@ function useRunStream(
         const { api, sessionId: session, runId: run } = emulator.latest.current;
         const answer = await api.bytes(session, { runId: run, after: 0 });
         if (stopped) return;
-        // From the top onto a cleared screen: anything drawn already is a prefix of this.
-        redraw(emulator, answer.chunks, true);
-        onRead(answer);
+        const feed = byteFeed(0, answer);
+        redraw(emulator, { chunks: feed.chunks, reset: true });
+        onRead(answer, feed.skipped);
         seen = answer.cursor;
         const held = holding ?? [];
         holding = null;
@@ -75,6 +75,7 @@ function useRunStream(
     })();
     return () => {
       stopped = true;
+      frames.cancel();
       offData?.();
       // Put the frames down; never stop the run.
       void Promise.resolve(bridge.abandon?.(terminalId)).catch(() => {});
@@ -84,20 +85,19 @@ function useRunStream(
   }, [enabled, terminalId, runId, sessionId]);
 }
 
-/** The run's bytes, drawn into its emulator. Returns how many chunks the engine dropped. */
-export function useRunFeed(
-  emulator: RunEmulator,
-  { sessionId, runId, terminalId, live, active, visible }: { sessionId: string; runId: string; terminalId: string | undefined; live: boolean; active: boolean; visible: boolean },
-) {
+/** The run's bytes, drawn into its emulator. Returns how many chunks are not on screen. */
+export function useRunFeed(emulator: RunEmulator, { sessionId, runId, terminalId, live }: { sessionId: string; runId: string; terminalId: string | undefined; live: boolean }) {
   const [dropped, setDropped] = useState(0);
   const cursor = useRef(0);
+  const skipped = useRef(0);
   const feed = runFeedKind(terminalId, terminalBridge());
-  useRunStream(emulator, { sessionId, runId, terminalId }, feed === "stream", (answer) => {
-    setDropped(answer.dropped);
+  useRunStream(emulator, { sessionId, runId, terminalId }, feed === "stream", (answer, trimmed) => {
+    skipped.current = trimmed;
+    setDropped(answer.dropped + trimmed);
     cursor.current = answer.cursor;
   });
 
-  // The fallback poll, only for the chip on screen. A settled run is read once more and then left alone.
+  // A settled run is read once more and then left alone.
   const settledRead = useRef(false);
   usePoll(
     async () => {
@@ -107,14 +107,15 @@ export function useRunFeed(
         const answer = await api.bytes(session, { runId: run, after: cursor.current });
         const next = byteFeed(cursor.current, answer);
         cursor.current = next.cursor;
-        setDropped(answer.dropped);
-        redraw(emulator, next.chunks, next.reset);
+        if (next.reset || next.skipped > 0) skipped.current = next.skipped;
+        setDropped(answer.dropped + skipped.current);
+        redraw(emulator, next);
         if (!running) settledRead.current = true;
       } catch {
         // The status feed reports refusals; retrying slowly beats a tight loop.
       }
     },
-    feed === "poll" && visible && active ? (live ? 500 : 4000) : null,
+    feed === "poll" ? (live ? 500 : 4000) : null,
     { key: `${sessionId}:${runId}:${live}` },
   );
   return dropped;

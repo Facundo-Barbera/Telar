@@ -3,23 +3,13 @@
 import { useEffect } from "react";
 import "@xterm/xterm/css/xterm.css";
 import { claimChords } from "@/features/commands";
-import { cn } from "@/ui/utils";
 import type { RunApi } from "../run/api";
 import { byteDroppedNotice } from "../run/terminal-feed";
 import { TERMINAL_CHORD_CLAIMS } from "../keys";
 import { useRunEmulator } from "../hooks/use-run-emulator";
 import { useRunFeed } from "../hooks/use-run-feed";
 
-/** One run chip's pane: the engine's redacted bytes, streamed over IPC on this Mac or polled from elsewhere. */
-export function RunPane({
-  api,
-  sessionId,
-  runId,
-  terminalId,
-  live,
-  active,
-  visible,
-}: {
+type RunPaneProps = {
   /** Pinned to one Mac by the surface: session ids are per host. */
   api: RunApi;
   sessionId: string;
@@ -28,22 +18,25 @@ export function RunPane({
   terminalId?: string;
   /** Whether the run can still say anything; sets the poll cadence only. */
   live: boolean;
-  /** The chip on screen: only it fits, takes the keyboard and polls. The stream runs regardless. */
+  /** The chip on screen. */
   active: boolean;
   visible: boolean;
-}) {
-  const { host, notice, ...emulator } = useRunEmulator({ api, sessionId, runId, live }, { active, visible });
-  const dropped = useRunFeed(emulator, { sessionId, runId, terminalId, live, active, visible });
+};
 
-  // Claimed only while this chip is on screen: a run pane sits open for hours with nobody typing.
-  useEffect(() => {
-    if (!active || !visible) return;
-    return claimChords(TERMINAL_CHORD_CLAIMS);
-  }, [active, visible]);
+/** One run chip's pane. Only the chip on screen has an emulator: the engine keeps the run's bytes, so a hidden one re-reads them when shown. */
+export function RunPane(props: RunPaneProps) {
+  return props.active && props.visible ? <LiveRunPane {...props} /> : null;
+}
+
+function LiveRunPane({ api, sessionId, runId, terminalId, live }: RunPaneProps) {
+  const { host, notice, ...emulator } = useRunEmulator({ api, sessionId, runId, live });
+  const dropped = useRunFeed(emulator, { sessionId, runId, terminalId, live });
+
+  useEffect(() => claimChords(TERMINAL_CHORD_CLAIMS), []);
 
   const dropNotice = byteDroppedNotice(dropped);
   return (
-    <div data-testid="run-pane" data-active={active ? "true" : "false"} className={cn("absolute inset-0 flex flex-col", !active && "hidden")}>
+    <div data-testid="run-pane" className="absolute inset-0 flex flex-col">
       {notice ? (
         <p role="status" className="shrink-0 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
           {notice}
