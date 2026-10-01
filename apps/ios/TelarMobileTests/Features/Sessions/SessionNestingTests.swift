@@ -60,52 +60,69 @@ import Testing
         #expect(visible.allSatisfy { $0.family == nil })
     }
 
-    private func orchestra() throws -> (SidebarModel, [ScopedSessionID: [SessionAssignment]]) {
+    private func orchestra() throws -> ([HostedSession], [ScopedSessionID: [SessionAssignment]]) {
         let rows = try [row("orchestrator", pinned: true), row("builder"), row("stuck", activity: "blocked"), row("mine", project: "q")]
         let assignments = [key("builder"): [SessionAssignment(fromSessionId: "orchestrator", receivedAt: 1)],
                            key("stuck"): [SessionAssignment(fromSessionId: "orchestrator", receivedAt: 2)]]
-        return (SidebarModel(sessions: rows, names: { $0.session.projectId }), assignments)
+        return (rows, assignments)
     }
 
     @Test func groupedModeKeepsEveryRowInItsOwnSection() throws {
-        let (model, _) = try orchestra()
+        let (rows, _) = try orchestra()
+        let model = SidebarModel(sessions: rows, names: { $0.session.projectId })
         #expect(model.attention.map(\.session.id) == ["stuck"])
         #expect(model.pinned.map(\.session.id) == ["orchestrator"])
         #expect(model.projects.map { $0.sessions.map(\.session.id) } == [["builder"], ["mine"]])
     }
 
     @Test func flatModeHangsChildrenUnderAPinnedParentAsCompactRows() throws {
-        let (model, assignments) = try orchestra()
-        let folded = SessionNesting.flat(model, assignments: assignments, expanded: [], selected: nil)
+        let (rows, assignments) = try orchestra()
+        let folded = SessionNesting.flat(rows, assignments: assignments, expanded: [], selected: nil)
         #expect(ids(folded.pinned) == ["orchestrator", "  stuck"])
         #expect(folded.pinned[0].family?.needsYou == 1)
         #expect(ids(folded.rows) == ["mine"])
-        #expect(model.attention.map(\.session.id) == ["stuck"])
-        let open = SessionNesting.flat(model, assignments: assignments, expanded: [SessionNesting.foldKey(key("orchestrator"))], selected: nil)
+        let open = SessionNesting.flat(rows, assignments: assignments, expanded: [SessionNesting.foldKey(key("orchestrator"))], selected: nil)
         #expect(ids(open.pinned) == ["orchestrator", "  builder", "  stuck"])
+    }
+
+    @Test func flatModeListsPinnedInTheirArrangedOrderThenNewestActivity() throws {
+        let rows = try [row("old-but-busy", activityAt: 9000), row("quiet"), row("middle", activityAt: 5000),
+                        row("pin-a", pinned: true), row("pin-b", pinned: true)]
+        let rail = SessionNesting.flat(rows, layouts: [host: SidebarLayout(pinnedOrder: ["pin-b", "pin-a"])], assignments: [:], expanded: [], selected: nil)
+        #expect(ids(rail.pinned) == ["pin-b", "pin-a"])
+        #expect(ids(rail.rows) == ["old-but-busy", "middle", "quiet"])
     }
 
     @Test func flatModeListsNewestActivityFirstAndLeavesOrphansInPlace() throws {
         let rows = try [row("old"), row("builder", startedFrom: "settled"), row("new", activityAt: 5000)]
-        let rail = SessionNesting.flat(SidebarModel(sessions: rows, names: { _ in "Telar" }), assignments: [:], expanded: [], selected: nil)
+        let rail = SessionNesting.flat(rows, assignments: [:], expanded: [], selected: nil)
         #expect(rail.pinned.isEmpty)
         #expect(ids(rail.rows) == ["new", "builder", "old"])
     }
 
-    @Test func aBlockedParentLeavesItsChildrenInTheFlatList() throws {
+    @Test func aBlockedSessionStaysInTheFlatListWithItsChildren() throws {
         let rows = try [row("parent", activity: "blocked"), row("child", startedFrom: "parent")]
-        let rail = SessionNesting.flat(SidebarModel(sessions: rows, names: { _ in "Telar" }), assignments: [:], expanded: [], selected: nil)
-        #expect(ids(rail.rows) == ["child"])
+        let rail = SessionNesting.flat(rows, assignments: [:], expanded: [SessionNesting.foldKey(key("parent"))], selected: nil)
+        #expect(ids(rail.rows) == ["parent", "  child"])
     }
 
-    @Test func theModeComesFromTheLayoutAndDefaultsToProjects() throws {
-        let decode = { (json: String) in try JSONDecoder().decode(SidebarLayout.self, from: Data(json.utf8)).mode }
-        #expect(try decode(#"{"projectOrder":[],"mode":"flat"}"#) == .flat)
-        #expect(try decode(#"{"projectOrder":[]}"#) == .grouped)
-        #expect(try decode(#"{"projectOrder":[],"mode":"tree"}"#) == .grouped)
-        #expect(!SessionNesting.isFlat([]))
-        #expect(!SessionNesting.isFlat([SidebarLayout(mode: .flat), SidebarLayout()]))
-        #expect(SessionNesting.isFlat([SidebarLayout(mode: .flat)]))
+    @Test func aPinnedChildStaysTopLevelWhereThePersonPutIt() throws {
+        let rows = try [row("parent"), row("child", startedFrom: "parent", pinned: true)]
+        let rail = SessionNesting.flat(rows, assignments: [:], expanded: [], selected: nil)
+        #expect(ids(rail.pinned) == ["child"])
+        #expect(ids(rail.rows) == ["parent"])
+        #expect(rail.rows[0].family == nil)
+    }
+
+    @Test func aProjectlessSessionIsListedInTheFlatRail() throws {
+        let rows = try [row("loose", project: "")]
+        #expect(ids(SessionNesting.flat(rows, assignments: [:], expanded: [], selected: nil).rows) == ["loose"])
+    }
+
+    @Test func theModesReadProjectAndNone() {
+        #expect(SidebarMode(rawValue: "flat") == .flat)
+        #expect(SidebarMode(rawValue: "tree") == nil)
+        #expect(SidebarMode.allCases.map(\.label) == ["Project", "None"])
     }
 
     @Test func aCycleLeavesEachSessionAtTheTop() throws {

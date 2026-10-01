@@ -191,31 +191,24 @@ struct ProjectRef: Codable, Identifiable, Equatable, Hashable {
     var mark: ProjectMark { ProjectMark(icon: icon, iconName: iconName, iconEmoji: iconEmoji) }
 }
 
-enum SidebarMode: String, Decodable, Sendable {
-    case grouped, flat
-}
-
 struct SidebarLayout: Decodable, Equatable, Sendable {
     var projectOrder: [String] = []
     var sessionOrder: [String: [String]] = [:]
     var pinnedOrder: [String] = []
-    var mode: SidebarMode = .grouped
 
-    init(projectOrder: [String] = [], sessionOrder: [String: [String]] = [:], pinnedOrder: [String] = [], mode: SidebarMode = .grouped) {
+    init(projectOrder: [String] = [], sessionOrder: [String: [String]] = [:], pinnedOrder: [String] = []) {
         self.projectOrder = projectOrder
         self.sessionOrder = sessionOrder
         self.pinnedOrder = pinnedOrder
-        self.mode = mode
     }
 
-    private enum CodingKeys: String, CodingKey { case projectOrder, sessionOrder, pinnedOrder, mode }
+    private enum CodingKeys: String, CodingKey { case projectOrder, sessionOrder, pinnedOrder }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         projectOrder = try c.decodeIfPresent([String].self, forKey: .projectOrder) ?? []
         sessionOrder = try c.decodeIfPresent([String: [String]].self, forKey: .sessionOrder) ?? [:]
         pinnedOrder = try c.decodeIfPresent([String].self, forKey: .pinnedOrder) ?? []
-        mode = (try? c.decodeIfPresent(SidebarMode.self, forKey: .mode)) ?? .grouped
     }
 }
 

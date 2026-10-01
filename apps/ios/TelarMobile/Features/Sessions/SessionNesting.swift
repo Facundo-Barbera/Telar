@@ -65,22 +65,19 @@ enum SessionNesting {
         }
     }
 
-    static func isFlat(_ layouts: [SidebarLayout]) -> Bool {
-        !layouts.isEmpty && layouts.allSatisfy { $0.mode == .flat }
-    }
-
     static func flat(
-        _ model: SidebarModel,
+        _ sessions: [HostedSession],
+        layouts: [HostID: SidebarLayout] = [:],
         assignments: [ScopedSessionID: [SessionAssignment]],
         expanded: Set<String>,
         selected: ScopedSessionID?
     ) -> FlatRail {
-        let pinned = Set(model.pinned.map(\.id))
-        let others = (model.attention + model.projects.flatMap(\.sessions)).sorted(by: newestActivityFirst)
-        let placed = families(model.pinned + others, assignments: assignments, pinned: pinned).flatMap { family -> [SessionFamily] in
-            guard family.parent.session.activity == .blocked else { return [family] }
-            return family.children.filter { $0.session.activity != .blocked }.map { SessionFamily(parent: $0, children: [], needsYou: 0) }
+        let pins = SidebarModel.arranged(sessions.filter { $0.session.settledOverride == "active" }) { row in
+            layouts[row.hostId]?.pinnedOrder.firstIndex(of: row.session.id)
         }
+        let pinned = Set(pins.map(\.id))
+        let others = sessions.filter { !pinned.contains($0.id) }.sorted(by: newestActivityFirst)
+        let placed = families(pins + others, assignments: assignments, pinned: pinned)
         return FlatRail(
             pinned: visible(placed.filter { pinned.contains($0.parent.id) }, expanded: expanded, selected: selected),
             rows: visible(placed.filter { !pinned.contains($0.parent.id) }, expanded: expanded, selected: selected)
@@ -90,8 +87,7 @@ enum SessionNesting {
     private static func newestActivityFirst(_ a: HostedSession, _ b: HostedSession) -> Bool {
         let at = { (s: Session) in max(s.updatedAt, s.activityAt ?? 0, s.lastTurnEndedAt ?? 0) }
         if at(a.session) != at(b.session) { return at(a.session) > at(b.session) }
-        if a.session.createdAt != b.session.createdAt { return a.session.createdAt > b.session.createdAt }
-        return a.session.id < b.session.id
+        return createdNewestFirst(a, b)
     }
 
     static func visible(_ families: [SessionFamily], expanded: Set<String>, selected: ScopedSessionID?) -> [NestedRow] {

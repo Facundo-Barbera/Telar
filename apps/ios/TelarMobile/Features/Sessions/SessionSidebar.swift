@@ -25,6 +25,7 @@ struct SessionSidebar: View {
     @State private var deleting: HostedSession?
     @AppStorage("telar.sidebar.collapsed") private var savedCollapsed = ""
     @AppStorage("telar.sidebar.expandedParents") private var savedExpanded = ""
+    @AppStorage(SidebarMode.storageKey) private var mode: SidebarMode = .grouped
 
     @ScaledMetric(relativeTo: .footnote) private var groupMark: CGFloat = 16
     @ScaledMetric(relativeTo: .caption2) private var rowProjectMark: CGFloat = 12
@@ -184,10 +185,10 @@ struct SessionSidebar: View {
                 }
             } else {
                 draftRows
-                attentionBand
-                if SessionNesting.isFlat(inbox.filter.map { [inbox.layout($0)] } ?? Array(inbox.layouts.values)) {
+                if mode == .flat {
                     flatBands
                 } else {
+                    attentionBand
                     pinnedBand
                     projectBands
                 }
@@ -330,7 +331,7 @@ struct SessionSidebar: View {
 
     @ViewBuilder
     private var flatBands: some View {
-        let rail = SessionNesting.flat(model, assignments: inbox.assignments, expanded: expandedParents, selected: selection)
+        let rail = SessionNesting.flat(inbox.sections.active, layouts: inbox.layouts, assignments: inbox.assignments, expanded: expandedParents, selected: selection)
         if !rail.pinned.isEmpty {
             Section {
                 ForEach(rail.pinned) { item in
@@ -779,7 +780,7 @@ struct SessionSidebar: View {
     private func saveOrder(_ order: [String], host: HostID) async {
         guard let api = settings.api(for: host) else { return }
         let previous = inbox.layout(host)
-        inbox.applyLayout(host, SidebarLayout(projectOrder: order, sessionOrder: previous.sessionOrder, pinnedOrder: previous.pinnedOrder, mode: previous.mode))
+        inbox.applyLayout(host, SidebarLayout(projectOrder: order, sessionOrder: previous.sessionOrder, pinnedOrder: previous.pinnedOrder))
         do {
             let current = (try? await api.sidebarLayout()) ?? previous
 

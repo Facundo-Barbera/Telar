@@ -24,10 +24,16 @@ func mergeInbox(_ parts: [(hostId: HostID, sections: InboxSections)], filter: Ho
         merged.snoozed.append(contentsOf: part.sections.snoozed.map { HostedSession(hostId: part.hostId, session: $0) })
         merged.settled.append(contentsOf: part.sections.settled.map { HostedSession(hostId: part.hostId, session: $0) })
     }
-    merged.active.sort { $0.session.createdAt > $1.session.createdAt }
+    merged.active.sort(by: createdNewestFirst)
     merged.snoozed.sort { $0.session.updatedAt > $1.session.updatedAt }
     merged.settled.sort { $0.session.updatedAt > $1.session.updatedAt }
     return merged
+}
+
+func createdNewestFirst(_ a: HostedSession, _ b: HostedSession) -> Bool {
+    if a.session.createdAt != b.session.createdAt { return a.session.createdAt > b.session.createdAt }
+    if a.session.updatedAt != b.session.updatedAt { return a.session.updatedAt > b.session.updatedAt }
+    return a.session.id < b.session.id
 }
 
 @MainActor @Observable final class MergedInbox {

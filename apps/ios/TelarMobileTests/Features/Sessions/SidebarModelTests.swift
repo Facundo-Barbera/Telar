@@ -3,8 +3,8 @@ import Testing
 @testable import TelarMobile
 
 @Suite struct SidebarModelTests {
-    private func row(host: UUID, id: String, project: String, activity: String = "working", pinned: Bool = false, startedFrom: String? = nil) throws -> HostedSession {
-        var object: [String: Any] = ["id": id, "projectId": project, "title": id, "createdAt": 1000, "updatedAt": 1000,
+    private func row(host: UUID, id: String, project: String?, activity: String = "working", pinned: Bool = false, startedFrom: String? = nil, createdAt: Int = 1000, updatedAt: Int = 1000) throws -> HostedSession {
+        var object: [String: Any] = ["id": id, "projectId": project ?? NSNull(), "title": id, "createdAt": createdAt, "updatedAt": updatedAt,
             "activity": activity, "settledOverride": pinned ? "active" : NSNull(), "driver": "claude", "workspace": ["mode": "local", "path": "/tmp"]]
         if let startedFrom { object["startedFrom"] = ["sessionId": startedFrom] }
         return HostedSession(hostId: host, session: try JSONDecoder().decode(Session.self, from: JSONSerialization.data(withJSONObject: object)))
@@ -17,6 +17,29 @@ import Testing
         #expect(result.pinned.map(\.session.id) == ["b"])
         #expect(result.projects.flatMap(\.sessions).map(\.session.id) == ["c"])
     }
+    @Test func projectlessRowsAreNeverGrouped() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "loose", project: nil), row(host: host, id: "blank", project: ""), row(host: host, id: "kept", project: "p")]
+        let result = SidebarModel(sessions: rows, names: { $0.session.projectId })
+        #expect(result.projects.map(\.projectId) == ["p"])
+    }
+
+    @Test func unplacedGroupsWithOneNameSortByTheirMac() throws {
+        let studio = UUID(), mini = UUID()
+        let rows = try [row(host: studio, id: "a", project: "p1"), row(host: mini, id: "b", project: "p2")]
+        let names = [studio: "Studio", mini: "mini"]
+        let result = SidebarModel(sessions: rows, names: { _ in "Telar" }, hostNames: { names[$0] })
+        #expect(result.projects.map(\.hostId) == [mini, studio])
+    }
+
+    @Test func groupRowsAreNewestCreatedFirstWithStableTies() throws {
+        let host = UUID()
+        let rows = try [row(host: host, id: "b", project: "p"), row(host: host, id: "old", project: "p", createdAt: 10),
+                        row(host: host, id: "a", project: "p"), row(host: host, id: "touched", project: "p", updatedAt: 5000)]
+        let merged = mergeInbox([(host, InboxSections(active: rows.map(\.session)))], filter: nil)
+        #expect(merged.active.map(\.session.id) == ["touched", "a", "b", "old"])
+    }
+
     @Test func respectsProjectOrderAndKeepsSameProjectOnDifferentMacsSeparate() throws {
         let a = UUID(), b = UUID()
         let rows = try [row(host: a, id: "a", project: "alpha"), row(host: a, id: "b", project: "beta"), row(host: b, id: "a", project: "alpha")]
