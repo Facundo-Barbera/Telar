@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 
 const SLACK_PX = 16;
+// The column width under which the composer is mini; back at 800, the composer's own 50rem width.
+const MINI_BELOW_PX = 784;
 
 const px = (value: string) => Number.parseFloat(value) || 0;
 
@@ -25,19 +27,22 @@ export function useComposerFit() {
 
   useLayoutEffect(() => {
     const element = root.current;
-    if (!element) return;
+    const column = element?.parentElement;
+    if (!element || !column) return;
     const check = () => {
-      const width = element.clientWidth;
+      const width = column.clientWidth;
+      if (width === 0) return;
       if (fit.narrow) {
         if (width >= fit.threshold + SLACK_PX) setFit({ narrow: false, threshold: fit.threshold });
         return;
       }
+      if (width < MINI_BELOW_PX) return setFit({ narrow: true, threshold: MINI_BELOW_PX });
       const over = row ? overflow(row) : 0;
       if (over > 0) setFit({ narrow: true, threshold: width + over });
     };
     check();
     const observer = new ResizeObserver(check);
-    observer.observe(element);
+    observer.observe(column);
     if (row) observer.observe(row);
     return () => observer.disconnect();
   }, [row, fit]);
