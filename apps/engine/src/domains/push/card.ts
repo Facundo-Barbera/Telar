@@ -66,7 +66,7 @@ export function cardRows(sessions: SessionSignal[], now: number, previews: boole
       ...(workers ? { workers } : {}) }));
 }
 
-export function cardHostName(name: string | undefined): string {
+function cardHostName(name: string | undefined): string {
   return name?.trim().split(".")[0] || "Mac";
 }
 
