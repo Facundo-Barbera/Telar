@@ -25,12 +25,10 @@ function useBoxSize(ref: React.RefObject<HTMLElement | null>): Size {
 
 const BUTTON = "inline-flex h-6 min-w-6 items-center justify-center rounded px-1 text-3xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";
 
-/** Pans by drag, zooms with ⌘/ctrl+wheel or a pinch; in a panel a plain wheel pans, in a card it scrolls the conversation. */
 export function SvgViewer({ image, title, minScale, fill, ground }: { image: SvgImage; title: string; minScale: number; fill: boolean; ground?: React.CSSProperties }) {
   const box = useRef<HTMLDivElement>(null);
   const size = useBoxSize(box);
   const card = fill ? undefined : cardLayout(image, size.width, minScale);
-  const initial = (): View | undefined => (size.width === 0 ? undefined : fill ? (size.height === 0 ? undefined : fitView(image, size)) : card!.view);
   const [view, setView] = useState<View>();
   const shown = useRef<SvgImage | undefined>(undefined);
   const touched = useRef(false);
@@ -42,9 +40,9 @@ export function SvgViewer({ image, title, minScale, fill, ground }: { image: Svg
     shown.current = image;
     const kept = touched.current && before !== undefined && (before.url === image.url || similarSize(before, image));
     touched.current = kept;
-    setView((current) => (kept && current ? current : initial()));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [image.url, size.width, size.height, fill]);
+    const box = { width: size.width, height: size.height };
+    setView((current) => (kept && current ? current : fill ? fitView(image, box) : cardLayout(image, box.width, minScale).view));
+  }, [image, size.width, size.height, fill, minScale]);
 
   useEffect(() => {
     const element = box.current;
@@ -75,7 +73,7 @@ export function SvgViewer({ image, title, minScale, fill, ground }: { image: Svg
   const pan = (dx: number, dy: number) => move((current) => ({ ...current, x: current.x + dx, y: current.y + dy }));
   const fit = () => {
     touched.current = false;
-    setView(fill ? initial() : fitView(image, { width: size.width, height: card?.height ?? 0 }, 1, 8));
+    setView(fill ? fitView(image, size) : fitView(image, { width: size.width, height: card?.height ?? 0 }, 1, 8));
   };
 
   const keys: Record<string, () => void> = {
@@ -124,13 +122,11 @@ export function SvgViewer({ image, title, minScale, fill, ground }: { image: Svg
       style={{ ...ground, ...(fill ? {} : { height: card?.height ?? 0 }) }}
     >
       {view && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={image.url}
-          alt={title}
-          draggable={false}
-          className="pointer-events-none absolute top-0 left-0 max-w-none origin-top-left"
-          style={{ width: image.width, height: image.height, transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
+        <div
+          role="img"
+          aria-label={title}
+          className="pointer-events-none absolute top-0 left-0 origin-top-left bg-no-repeat"
+          style={{ width: image.width, height: image.height, backgroundImage: `url("${image.url}")`, backgroundSize: "100% 100%", transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})` }}
         />
       )}
       <div

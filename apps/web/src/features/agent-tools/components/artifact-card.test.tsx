@@ -65,10 +65,10 @@ describe("an artifact card", () => {
   test("svg is drawn as an image, so none of its markup reaches the page", async () => {
     serveAttachments();
     const host = await card(artifact("svg", "att_svg"));
-    await flush(() => host.querySelector("img") !== null);
-    const image = host.querySelector("img")!;
-    expect(image.getAttribute("src")).toStartWith("data:image/svg+xml");
-    expect(decodeURIComponent(image.getAttribute("src")!)).toContain('id="agent-dot"');
+    await flush(() => host.querySelector("[role=img]") !== null);
+    const drawn = decodeURIComponent((host.querySelector("[role=img]") as HTMLElement).style.backgroundImage);
+    expect(drawn).toStartWith('url("data:image/svg+xml');
+    expect(drawn).toContain('id="agent-dot"');
     expect(host.querySelector("#agent-dot")).toBeNull();
     expect(host.querySelector("iframe")).toBeNull();
   });
@@ -78,7 +78,7 @@ describe("an artifact card", () => {
     document.documentElement.classList.add("dark");
     try {
       const host = await card(artifact("svg", "att_svg"));
-      await flush(() => host.querySelector("img") !== null);
+      await flush(() => host.querySelector("[role=img]") !== null);
       const ground = (host.querySelector("[role=group]") as HTMLElement).style.background;
       expect(ground).toContain("#3d3d3d");
       expect(ground).not.toMatch(/#fff\b|#ffffff|white/i);
@@ -99,9 +99,9 @@ describe("an artifact card", () => {
     serveAttachments();
     drawn.length = 0;
     const host = await card(artifact("mermaid", "att_mermaid"));
-    await flush(() => host.querySelector("img") !== null);
+    await flush(() => host.querySelector("[role=img]") !== null);
     expect(drawn).toEqual([{ source: "graph TD; A-->B", theme: "default" }]);
-    expect(decodeURIComponent(host.querySelector("img")!.getAttribute("src")!)).toContain('id="drawn-diagram"');
+    expect(decodeURIComponent((host.querySelector("[role=img]") as HTMLElement).style.backgroundImage)).toContain('id="drawn-diagram"');
     expect(buttonLabelled("Fit", host)).toBeDefined();
     expect(host.querySelector("pre, code, [data-streamdown], #drawn-diagram")).toBeNull();
   });

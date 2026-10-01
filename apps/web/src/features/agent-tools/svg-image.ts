@@ -7,7 +7,6 @@ const length = (value: string | null) => {
   return parsed > 0 ? parsed : undefined;
 };
 
-/** An svg as an image: the browser then runs none of its scripts and loads nothing it names. */
 export function svgImage(source: string): SvgImage | undefined {
   const parsed = new DOMParser().parseFromString(source, "image/svg+xml");
   const svg = parsed.documentElement;
