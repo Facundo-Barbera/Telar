@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mountPointForRoot } from "../fs/volumes";
 import { gitChildren, type GitChildren } from "./children";
+import { engineGitEnv } from "./env";
 
 export type GitResult = {
   status: number;
@@ -17,7 +18,6 @@ export type GitRunOptions = {
 
   env?: Record<string, string>;
 };
-/** Injectable so tests never need a real repository. */
 export type GitRunner = (cwd: string, args: string[], options?: GitRunOptions) => GitResult;
 
 export const DEFAULT_GIT_TIMEOUT_MS = 30_000;
@@ -55,7 +55,7 @@ export function createGitRunner(deps: GitRunnerDeps = {}): GitRunner {
         cwd,
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
-        ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+        env: engineGitEnv(options?.env),
         timeout,
         // SIGKILL: the stall this guards against is a child stuck in a syscall.
         killSignal: "SIGKILL",
@@ -195,7 +195,7 @@ export function createAsyncGitRunner(deps: GitRunnerDeps & { concurrency?: numbe
       try {
         child = spawnChild(deps.gitBin ?? "git", args, {
           cwd,
-          ...(options?.env ? { env: { ...process.env, ...options.env } } : {}),
+          env: engineGitEnv(options?.env),
           // git leads its own process group so the timeout can reap what git spawned.
           detached: true,
           stdio: ["ignore", "pipe", "pipe"],

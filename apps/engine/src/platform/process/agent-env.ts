@@ -1,3 +1,5 @@
+import { withoutFsmonitor } from "../git/env";
+
 const ENGINE_ONLY = [
   "ELECTRON_RUN_AS_NODE",
   "TELAR_HOME",
@@ -15,5 +17,5 @@ const ENGINE_ONLY = [
 export function agentEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out = { ...env };
   for (const name of ENGINE_ONLY) delete out[name];
-  return out;
+  return withoutFsmonitor(out);
 }
