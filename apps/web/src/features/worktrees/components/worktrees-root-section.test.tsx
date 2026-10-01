@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorktreesRoot } from "@telar/engine-client";
 import { SettingsGroup } from "@/features/settings/components/settings-shell";
-import { WorktreesRootRow, worktreesRootHint } from "./worktrees-root-section";
+import { ROTATIONAL_WARNING, WorktreesRootRow, worktreesRootHint } from "./worktrees-root-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -76,6 +76,19 @@ describe("Settings ▸ Storage ▸ Worktrees ▸ Location", () => {
     expect(info).toContain("Eject before unplugging");
     expect(info).toContain("moves nothing already made");
     view.unmount();
+  });
+
+  test("a location on a spinning disk shows a one-line warning, and the change still went through", async () => {
+    answer = { kind: "configured", root: "/Volumes/Spinner/checkouts", default: DEFAULT_ROOT, rotational: true };
+    const view = await mount();
+    expect(view.host.textContent).toContain("New worktrees are made in /Volumes/Spinner/checkouts.");
+    expect(view.host.textContent).toContain(ROTATIONAL_WARNING);
+    view.unmount();
+
+    answer = { kind: "configured", root: "/Users/someone/checkouts", default: DEFAULT_ROOT };
+    const solid = await mount();
+    expect(solid.host.textContent).not.toContain(ROTATIONAL_WARNING);
+    solid.unmount();
   });
 
   test("a folder on this Mac's own disk has no drive caveat behind its ⓘ", async () => {

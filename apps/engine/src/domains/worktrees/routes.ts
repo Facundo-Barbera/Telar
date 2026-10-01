@@ -1,5 +1,6 @@
 import path from "node:path";
 import { RELEASABLE_STATES, type ReleasableState } from "@telar/engine-client";
+import { onRotationalDisk } from "../../platform/fs/volumes";
 import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
@@ -13,10 +14,12 @@ const settledChoice = (value: unknown): { settled?: "archive" | "release" } => (
 
 /** `checkoutsChanged` runs after anything that moves checkouts on disk, so the storage figures re-measure. */
 export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void): Route[] {
-  const rootAnswer = () => {
+  const rootAnswer = async () => {
     const state = readWorktreesRoot(store.paths.root);
     const blocker = worktreesRootBlocker(state);
-    return ok({ worktreesRoot: { ...state, default: defaultWorktreesRoot(store.paths.root), ...(blocker ? { blocker } : {}) } });
+    const root = rootOf(state);
+    const rotational = root && !blocker ? await onRotationalDisk(root) : undefined;
+    return ok({ worktreesRoot: { ...state, default: defaultWorktreesRoot(store.paths.root), ...(blocker ? { blocker } : {}), ...(rotational ? { rotational: true } : {}) } });
   };
   return [
     { method: "GET", path: "/v2/worktrees-root", auth: "engine", handle: rootAnswer },

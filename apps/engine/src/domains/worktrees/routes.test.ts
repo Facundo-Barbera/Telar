@@ -113,25 +113,21 @@ test("changing the root moves nothing that is already on disk", async () => {
   expect(fs.readFileSync(path.join(existing, "uncommitted.txt"), "utf8")).toBe("work nobody has committed");
 });
 
-test("the storage pane keeps counting the checkouts left behind by a change", async () => {
+test("checkouts no live session owns are not walked, and the storage row says it is partial rather than under-reporting quietly", async () => {
   const { daemon, client } = await ready();
   const old = path.join(daemon.store.paths.root, "worktrees", "already-cut");
   fs.mkdirSync(old, { recursive: true });
   fs.writeFileSync(path.join(old, "big.bin"), Buffer.alloc(256 * 1024, 7));
 
   await client.setWorktreesRoot(path.join(root(), "checkouts"));
-  // Checkouts are sized in the background, so the row settles over reads —
-  // the pane's own way of asking — rather than on the first one.
   let { storage } = await client.storage({ refresh: true });
   for (let reads = 0; reads < 500 && storage.entries.some((entry) => (entry as { status?: string }).status === "measuring"); reads += 1) {
     ({ storage } = await client.storage());
   }
 
   const checkouts = storage.entries.find((entry) => entry.category === "worktrees");
-  expect((checkouts as { status?: string } | undefined)?.status).toBeUndefined();
-  // Under-reporting here would hide exactly the gigabytes somebody changed the
-  // setting in order to get rid of.
-  expect(checkouts?.bytes ?? 0).toBeGreaterThanOrEqual(256 * 1024);
+  expect((checkouts as { status?: string } | undefined)?.status).toBe("partial");
+  expect(checkouts?.bytes ?? 0).toBeLessThan(256 * 1024);
 });
 
 test("the summary answers with the current location, even before any worktree exists", async () => {

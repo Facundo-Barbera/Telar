@@ -22,6 +22,8 @@ export function worktreesRootHint(state: WorktreesRoot): string {
   return `New worktrees are made in ${state.root}.`;
 }
 
+export const ROTATIONAL_WARNING = "This is a spinning disk, so sessions here will be slow.";
+
 const LOCATION_INFO = "Changing it moves nothing already made; move those from the summary below. The store itself cannot live on an external drive.";
 
 export function WorktreesRootRow({ onChanged }: { onChanged?: () => void }) {
@@ -70,7 +72,16 @@ export function WorktreesRootRow({ onChanged }: { onChanged?: () => void }) {
     <Row
       icon={FolderGitIcon}
       label="Location"
-      hint={state ? worktreesRootHint(state) : "Where new worktrees are made."}
+      hint={
+        state ? (
+          <>
+            {worktreesRootHint(state)}
+            {state.rotational ? <span className="block text-warning">{ROTATIONAL_WARNING}</span> : null}
+          </>
+        ) : (
+          "Where new worktrees are made."
+        )
+      }
       info={state?.label ? `${REMOVABLE_DRIVE_WARNING} ${LOCATION_INFO}` : LOCATION_INFO}
       {...(failure ? { error: failure } : {})}
       control={

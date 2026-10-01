@@ -13,7 +13,7 @@ afterAll(async () => {
 });
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
-const OFF: CleanupState = { policy: { inactiveDays: null, unchanged: false, archived: false, logsDays: null }, running: false };
+const OFF: CleanupState = { policy: { inactiveDays: null, settledDays: null, unchanged: false, archived: false, logsDays: null }, running: false };
 const ROOT = "/store/worktrees";
 
 let state: CleanupState = OFF;
@@ -84,14 +84,21 @@ async function mount() {
 }
 
 describe("Settings ▸ Storage ▸ automatic cleanup", () => {
-  test("the four controls render, all off by default", async () => {
+  test("the five controls render, all off", async () => {
     const view = await mount();
-    for (const label of ["Delete inactive worktrees", "Delete unchanged worktrees", "Delete worktrees of archived sessions", "Delete old logs"]) {
+    for (const label of ["Delete inactive worktrees", "Release settled worktrees", "Delete unchanged worktrees", "Delete worktrees of archived sessions", "Delete old logs"]) {
       expect(view.text()).toContain(label);
     }
-    const triggers = [...view.host.querySelectorAll('[aria-label="Delete inactive worktrees"], [aria-label="Delete old logs"]')];
-    expect(triggers.map((trigger) => trigger.textContent?.replace("▼", "").trim())).toEqual(["Off", "Off"]);
+    const triggers = [...view.host.querySelectorAll('[aria-label="Delete inactive worktrees"], [aria-label="Release settled worktrees"], [aria-label="Delete old logs"]')];
+    expect(triggers.map((trigger) => trigger.textContent?.replace("▼", "").trim())).toEqual(["Off", "Off", "Off"]);
     expect(view.switches().map((toggle) => toggle.getAttribute("aria-checked"))).toEqual(["false", "false"]);
+    view.unmount();
+  });
+
+  test("releasing settled worktrees shows the stored days", async () => {
+    state = { ...OFF, policy: { ...OFF.policy, settledDays: 3 } };
+    const view = await mount();
+    expect(view.host.querySelector('[aria-label="Release settled worktrees"]')?.textContent).toContain("3 days");
     view.unmount();
   });
 
@@ -178,6 +185,11 @@ describe("the last-cleanup line", () => {
     expect(lastCleanupLabel({ at: now - 12 * 60_000, freedBytes: 8.4 * 1024 ** 3, released: 2, logs: 0, skipped: 0 }, now)).toBe(
       "Last cleanup: 12m ago · freed 8.4 GB",
     );
+  });
+
+  test("leaves out the freed figure when nothing measured was freed", () => {
+    const now = Date.UTC(2026, 8, 24, 12);
+    expect(lastCleanupLabel({ at: now - 12 * 60_000, freedBytes: 0, released: 2, logs: 0, skipped: 0 }, now)).toBe("Last cleanup: 12m ago");
   });
 
   test("a run's counts are singular where they should be, and skip zero skipped", () => {

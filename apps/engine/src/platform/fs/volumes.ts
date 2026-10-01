@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { mountRootsFor, volumeSupportOn, type Project, type ProjectAvailability } from "@telar/engine-client";
 
 export type VolumeIdentity = NonNullable<Project["volume"]>;
@@ -143,4 +144,29 @@ export function findVolumeMount(uuid: string, deps: VolumeDeps = {}): string | u
     }
   }
   return undefined;
+}
+
+export function parseSolidState(info: string): boolean | undefined {
+  const match = /^\s*Solid State:\s*(Yes|No)\s*$/im.exec(info);
+  return match ? match[1]!.toLowerCase() === "yes" : undefined;
+}
+
+const rotational = new Map<string, Promise<boolean | undefined>>();
+
+/** Whether `target` sits on a spinning disk; undefined when the platform cannot tell in time. */
+export function onRotationalDisk(target: string): Promise<boolean | undefined> {
+  if (process.platform !== "darwin") return Promise.resolve(undefined);
+  const mount = mountPointForRoot(path.resolve(target)) ?? "/";
+  let answer = rotational.get(mount);
+  if (!answer) {
+    answer = promisify(execFile)("diskutil", ["info", mount], { timeout: 5_000 }).then(
+      ({ stdout }) => {
+        const solid = parseSolidState(stdout);
+        return solid === undefined ? undefined : !solid;
+      },
+      () => undefined,
+    );
+    rotational.set(mount, answer);
+  }
+  return answer;
 }

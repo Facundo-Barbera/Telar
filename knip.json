@@ -71,7 +71,6 @@
     }
   },
   "ignoreBinaries": [
-    "du",
     "pgrep",
     "op",
     "diskutil",

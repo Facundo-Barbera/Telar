@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fakeMounts, type FakeMounts } from "../../../test/fake-mount";
-import { findVolumeMount, isMountPoint, mountPointForRoot, mountRootsFor, parseVolumeUuid, probeAvailability, volumeForRoot } from "./volumes";
+import { findVolumeMount, isMountPoint, mountPointForRoot, mountRootsFor, parseSolidState, parseVolumeUuid, probeAvailability, volumeForRoot } from "./volumes";
 
 const drives: FakeMounts[] = [];
 const fixture = (): FakeMounts => {
@@ -134,4 +134,11 @@ test("a drive that is not plugged in is not found, and an empty mountpoint is no
 
   drives.leaveEmptyMountpoint("TelarVR");
   expect(findVolumeMount(uuid, drives.deps)).toBeUndefined();
+});
+
+test("diskutil's Solid State line says whether a disk spins", () => {
+  const info = (solid: string) => `   Device Identifier:         disk4s1\n   Protocol:                  USB\n   Solid State:               ${solid}\n   Media Type:                Generic\n`;
+  expect(parseSolidState(info("No"))).toBe(false);
+  expect(parseSolidState(info("Yes"))).toBe(true);
+  expect(parseSolidState("   Device Identifier:         disk3s1\n")).toBeUndefined();
 });
