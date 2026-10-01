@@ -18,6 +18,7 @@ import {
   InfoIcon,
   LockIcon,
   MonitorIcon,
+  MoonIcon,
   NetworkIcon,
   PackageIcon,
   ScrollTextIcon,
@@ -345,6 +346,12 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
             hint: "Releases the worktree of a session inactive this many days; its branch and conversation are kept.",
             keywords: ["cleanup", "clean up", "disk", "space", "free", "full", "reclaim", "checkout", "idle", "old", "days"],
             icon: ClockIcon,
+          },
+          {
+            title: "Release settled worktrees",
+            hint: "Releases a settled session's worktree after this many days; its branch and conversation are kept.",
+            keywords: ["cleanup", "clean up", "disk", "space", "free", "reclaim", "checkout", "settled", "days"],
+            icon: MoonIcon,
           },
           {
             title: "Delete unchanged worktrees",

@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { CleanupPolicy, CleanupReport, DEFAULT_CLEANUP_POLICY } from "@telar/engine-client";
 import { atomicWrite } from "../../platform/fs/atomic";
+import { eachBounded, type VolumeGate } from "../../platform/fs/volume-gate";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -40,32 +40,61 @@ export class CleanupStore {
   }
 }
 
+type CleanupReason = "archived" | "inactive" | "settled" | "unchanged";
+
 export type CleanupCandidate = {
   sessionId: string;
+  path: string;
   archived: boolean;
   released: boolean;
   lastActiveAt: number;
+  /** When it was shelved; absent while the session is live. */
+  settledAt?: number;
 };
 
-export function planWorktreeCleanup(
-  sessions: readonly CleanupCandidate[],
-  policy: CleanupPolicy,
-  now: number,
-): Array<{ sessionId: string; reason: "archived" | "inactive" | "unchanged" }> {
-  const plan: Array<{ sessionId: string; reason: "archived" | "inactive" | "unchanged" }> = [];
+export type PlannedRelease = { sessionId: string; path: string; reason: CleanupReason };
+
+export function planWorktreeCleanup(sessions: readonly CleanupCandidate[], policy: CleanupPolicy, now: number): PlannedRelease[] {
+  const plan: PlannedRelease[] = [];
   for (const session of sessions) {
     if (session.released) continue;
+    const planned = (reason: CleanupReason) => plan.push({ sessionId: session.sessionId, path: session.path, reason });
     if (session.archived) {
-      if (policy.archived) plan.push({ sessionId: session.sessionId, reason: "archived" });
+      if (policy.archived) planned("archived");
       continue;
     }
-    if (policy.inactiveDays !== null && now - session.lastActiveAt >= policy.inactiveDays * DAY_MS) {
-      plan.push({ sessionId: session.sessionId, reason: "inactive" });
-    } else if (policy.unchanged) {
-      plan.push({ sessionId: session.sessionId, reason: "unchanged" });
-    }
+    if (policy.inactiveDays !== null && now - session.lastActiveAt >= policy.inactiveDays * DAY_MS) planned("inactive");
+    else if (policy.settledDays !== null && session.settledAt !== undefined && now - session.settledAt >= policy.settledDays * DAY_MS) planned("settled");
+    else if (policy.unchanged) planned("unchanged");
   }
   return plan;
+}
+
+export type SweepOutcome = "released" | "skipped" | "ignored";
+
+export type SweepDeps = {
+  release(item: PlannedRelease): Promise<SweepOutcome>;
+  sizeOf(target: string): number | undefined;
+  gate: VolumeGate;
+  concurrency?: number;
+  timeoutMs?: number;
+};
+
+const SWEEP_TIMEOUT_MS = 60_000;
+
+/** Releases the plan a few at a time; a volume that is missing or stops answering is skipped whole. */
+export async function sweepCheckouts(plan: readonly PlannedRelease[], deps: SweepDeps): Promise<{ released: number; skipped: number; freedBytes: number }> {
+  const tally = { released: 0, skipped: 0, freedBytes: 0 };
+  await deps.gate.admit(plan.map((item) => item.path));
+  await eachBounded(plan, deps.concurrency ?? 2, async (item) => {
+    const bytes = deps.sizeOf(item.path);
+    const outcome = await deps.gate.run(item.path, () => deps.release(item), deps.timeoutMs ?? SWEEP_TIMEOUT_MS);
+    if (outcome === "released") {
+      tally.released += 1;
+      tally.freedBytes += bytes ?? 0;
+    } else if (outcome !== "ignored") tally.skipped += 1;
+  });
+  return tally;
 }
 
 export function isRotated(name: string): boolean {
@@ -102,32 +131,4 @@ export async function sweepLogs(input: {
     }
   }
   return { count, bytes };
-}
-
-export function diskUsage(target: string): Promise<number> {
-  return new Promise((resolve) => {
-    if (process.platform === "win32") {
-      resolve(0);
-      return;
-    }
-    let out = "";
-    let child;
-    try {
-      child = spawn("du", ["-sk", target], { stdio: ["ignore", "pipe", "ignore"] });
-    } catch {
-      resolve(0);
-      return;
-    }
-    const timer = setTimeout(() => child.kill("SIGKILL"), 5 * 60 * 1000);
-    child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve(0);
-    });
-    child.on("close", () => {
-      clearTimeout(timer);
-      const kb = Number(out.trim().split(/\s+/)[0]);
-      resolve(Number.isFinite(kb) ? kb * 1024 : 0);
-    });
-  });
 }

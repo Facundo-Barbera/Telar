@@ -16,9 +16,10 @@ import type { Kernel } from "../../platform/kernel";
 import type { ProjectAvailability } from "../../platform/fs/volumes";
 import { existsWithin, VolumeGate, type VolumeProbe } from "../../platform/fs/volume-gate";
 import { parseSession, sessionDir, sessionMetadataFile, storedSession, type SessionRecords } from "../sessions";
-import { diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizes, type CleanupStore, type ReapCandidate } from "../storage";
+import { planWorktreeCleanup, sweepCheckouts, sweepLogs, type CheckoutSizes, type CleanupStore, type PlannedRelease, type ReapCandidate, type SweepOutcome } from "../storage";
 import { lockSessionWorktree, removeUnregisteredCheckout } from "./checkout";
 import { liveCheckouts, lockCheckouts } from "./boot-pass";
+import { cleanupCandidates } from "./cleanup-sweep";
 import { buildInventory, type InventoryProject, type InventorySession } from "./inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./location";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./move";
@@ -66,7 +67,7 @@ export class WorktreeMaintenance {
   /** Gives a session's checkout back, keeping its branch; refused with nothing touched while anything could still use it. `strict` is the sweep's. */
   async release(
     sessionId: string,
-    reason: "manual" | "inactive" | "unchanged" | "archived",
+    reason: "manual" | "inactive" | "settled" | "unchanged" | "archived",
     options: { strict?: boolean } = {},
   ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
     const session = this.deps.records.get(sessionId);
@@ -123,35 +124,14 @@ export class WorktreeMaintenance {
       const policy = this.deps.cleanup.policy();
       const now = this.kernel.now();
       const sessions = this.deps.records.read();
-      const candidates = sessions.flatMap((session) =>
-        session.workspace.mode === "worktree" && session.projectId
-          ? [
-              {
-                sessionId: session.id,
-                archived: session.state === "archived",
-                released: session.workspace.released !== undefined,
-                lastActiveAt: Math.max(session.updatedAt, session.lastTurnEndedAt ?? 0, session.activityAt ?? 0),
-              },
-            ]
-          : [],
-      );
-      let freedBytes = 0;
-      let released = 0;
-      let skipped = 0;
-      for (const { sessionId, reason } of planWorktreeCleanup(candidates, policy, now)) {
-        const session = this.deps.records.get(sessionId);
-        if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-        if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
-        if (!(await existsWithin(this.volumes, session.workspace.path))) continue;
-        const bytes = await diskUsage(session.workspace.path);
-        const result = await this.release(sessionId, reason, { strict: true });
-        if (result.ok) {
-          released += 1;
-          freedBytes += bytes;
-        } else {
-          skipped += 1;
-        }
-      }
+      const plan = planWorktreeCleanup(cleanupCandidates(sessions, { now, autoSettleAfterHours: this.deps.autoSettleAfterHours() }), policy, now);
+      const swept = await sweepCheckouts(plan, {
+        release: (item) => this.sweepRelease(item),
+        sizeOf: (target) => this.deps.checkoutSizes.known(target),
+        gate: this.volumes,
+      });
+      let { freedBytes } = swept;
+      const { released, skipped } = swept;
       let logs = 0;
       if (policy.logsDays !== null) {
         const gone = new Set(
@@ -170,6 +150,14 @@ export class WorktreeMaintenance {
     } finally {
       this.cleanupRunning = false;
     }
+  }
+
+  private async sweepRelease({ sessionId, reason }: PlannedRelease): Promise<SweepOutcome> {
+    const session = this.deps.records.get(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.projectId) return "ignored";
+    if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) return "ignored";
+    if (!(await existsWithin(this.volumes, session.workspace.path))) return "ignored";
+    return (await this.release(sessionId, reason, { strict: true })).ok ? "released" : "skipped";
   }
 
   isCleanupRunning(): boolean {

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CLEANUP_INACTIVE_DAYS, CLEANUP_LOG_DAYS, type CleanupPolicy, type CleanupReport, type CleanupState, type RetentionPolicy } from "@telar/engine-client";
-import { ArchiveIcon, ClockIcon, GitBranchIcon, HistoryIcon, ScrollTextIcon } from "lucide-react";
+import { CLEANUP_INACTIVE_DAYS, CLEANUP_LOG_DAYS, CLEANUP_SETTLED_DAYS, type CleanupPolicy, type CleanupReport, type CleanupState, type RetentionPolicy } from "@telar/engine-client";
+import { ArchiveIcon, ClockIcon, GitBranchIcon, HistoryIcon, MoonIcon, ScrollTextIcon } from "lucide-react";
 import { createEngineApi } from "@/platform/engine";
 import { fmtAgo, formatBytes } from "@/ui/format";
 import { Button } from "@/ui/button";
@@ -15,15 +15,18 @@ const api = createEngineApi();
 export const FIXED_RULES =
   "Never touched: a worktree with uncommitted changes, unpushed commits, a turn in flight or a running process, or one Telar did not create.";
 
+const SETTLED_INFO = "Only a worktree with no uncommitted changes and every commit on a remote branch. Reopening the session makes it again from its branch.";
+
 type Days = "off" | `${number}`;
 
 function daysOptions(days: readonly number[]): { value: Days; label: string }[] {
-  return [{ value: "off", label: "Off" }, ...days.map((day) => ({ value: `${day}` as Days, label: `${day} days` }))];
+  return [{ value: "off", label: "Off" }, ...days.map((day) => ({ value: `${day}` as Days, label: `${day} ${day === 1 ? "day" : "days"}` }))];
 }
 
 export function lastCleanupLabel(last: CleanupReport | undefined, now = Date.now()): string {
   if (!last) return "Never cleaned up";
-  return `Last cleanup: ${fmtAgo(last.at, now)} · freed ${formatBytes(last.freedBytes)}`;
+  const ago = `Last cleanup: ${fmtAgo(last.at, now)}`;
+  return last.freedBytes > 0 ? `${ago} · freed ${formatBytes(last.freedBytes)}` : ago;
 }
 
 export function runLabel(report: CleanupReport): string {
@@ -139,6 +142,23 @@ export function CleanupSection() {
               disabled={!policy}
               onChange={(next) => void save({ inactiveDays: next === "off" ? null : (Number(next) as CleanupPolicy["inactiveDays"]) })}
               options={daysOptions(CLEANUP_INACTIVE_DAYS)}
+            />
+          }
+        />
+        <Row
+          icon={MoonIcon}
+          label="Release settled worktrees"
+          hint="Releases a settled session's worktree after this many days; its branch and conversation are kept."
+          info={SETTLED_INFO}
+          {...errorFor("settledDays")}
+          control={
+            <Dropdown<Days>
+              value={policy?.settledDays ? `${policy.settledDays}` : "off"}
+              label="Release settled worktrees"
+              className="w-28"
+              disabled={!policy}
+              onChange={(next) => void save({ settledDays: next === "off" ? null : (Number(next) as CleanupPolicy["settledDays"]) })}
+              options={daysOptions(CLEANUP_SETTLED_DAYS)}
             />
           }
         />
