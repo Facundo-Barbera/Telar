@@ -32,6 +32,7 @@ import path from "node:path";
 import { EngineStore } from "../../state";
 import { ExecutionStore } from "../../platform/db/execution-store";
 import { toLegacyHome } from "../../../test/store-internals";
+import { SessionQueues } from "./queue";
 
 const roots: string[] = [];
 const stores: EngineStore[] = [];
@@ -285,4 +286,19 @@ test("a structurally broken turn is refused on read", () => {
   // this line.
   injectQueue(directory, "session_one", { version: 2, sessionId: "session_one", nextSequence: 3, turns: [turns[0]!] });
   expect(open(directory).queries.turns("session_one")).toEqual([turns[0]!]);
+});
+
+test("the scan cache keeps live queues and only the most recently scanned idle ones", () => {
+  const store = open(root());
+  store.projectRegistry.register({ id: "project_one", name: "One", root: "/tmp" });
+  const ids = Array.from({ length: 100 }, (_, n) => `session_${n}`);
+  for (const id of ids) store.lifecycle.createSession({ id, projectId: "project_one" });
+  store.intake.submitTurn("session_0", { runId: "run_live", input: "hello" });
+  const queues = new SessionQueues(store.kernel, { sessionIds: () => ids, itemsForRuns: () => [], afterWrite: () => {} });
+  expect([...queues.liveSessionIds()]).toEqual(["session_0"]);
+  for (const id of ids) queues.scan(id);
+
+  expect(queueParses(store, () => queues.scan("session_0"))).toBe(0);
+  expect(queueParses(store, () => { for (const id of ids.slice(-32)) queues.scan(id); })).toBe(0);
+  expect(queueParses(store, () => queues.scan("session_1"))).toBe(1);
 });

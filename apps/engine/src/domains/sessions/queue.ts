@@ -8,6 +8,7 @@ import { sessionDir } from "./metadata";
 export type SessionQueue = { version: typeof STATE_VERSION; sessionId: string; nextSequence: number; turns: Turn[] };
 
 const FOLDED_TURNS_LIMIT = 8;
+const SCANNED_IDLE_QUEUES_LIMIT = 32;
 
 export const emptyQueue = (sessionId: string): SessionQueue => ({ version: STATE_VERSION, sessionId, nextSequence: 1, turns: [] });
 
@@ -137,10 +138,23 @@ export class SessionQueues {
   /** The shared parsed copy, for reading only. */
   scan(sessionId: string): SessionQueue {
     const cached = this.cache.get(sessionId);
-    if (cached) return cached;
+    if (cached) {
+      this.cache.delete(sessionId);
+      this.cache.set(sessionId, cached);
+      return cached;
+    }
     const queue = this.read(sessionId);
     this.cache.set(sessionId, queue);
+    this.evictIdleQueues();
     return queue;
+  }
+
+  private evictIdleQueues(): void {
+    let idle = 0;
+    for (const sessionId of [...this.cache.keys()].reverse()) {
+      if (this.liveIndex?.has(sessionId) || ++idle <= SCANNED_IDLE_QUEUES_LIMIT) continue;
+      this.cache.delete(sessionId);
+    }
   }
 
   liveSessionIds(): Set<string> {
@@ -150,7 +164,6 @@ export class SessionQueues {
       if (queueConcernsAWorker(this.scan(sessionId))) index.add(sessionId);
     }
     this.liveIndex = index;
-    // The cold build touched every session; keep only what the index holds.
     for (const sessionId of this.cache.keys()) {
       if (!index.has(sessionId)) this.cache.delete(sessionId);
     }
