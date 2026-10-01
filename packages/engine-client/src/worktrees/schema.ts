@@ -8,6 +8,7 @@ export type WorktreesRoot = {
   volume?: { mount: string; uuid?: string };
   label?: string;
   blocker?: string;
+  rotational?: true;
 };
 
 export type WorktreeMoveSkip = {
