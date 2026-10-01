@@ -29,6 +29,7 @@ struct ComposerView: View {
 
     @State private var caretRect: CGRect?
     @State private var field = ComposerField()
+    @State private var sender = ComposerSend()
 
     @State private var canDictate = false
     @State private var skillsCache = ComposerSkillsCache()
@@ -45,7 +46,7 @@ struct ComposerView: View {
     private var isListening: Bool { dictation?.phase == .listening }
 
     private var canSend: Bool {
-        SessionDraft.canSend(text: draft, mediaTypes: host.pendingAttachments.map(\.mediaType))
+        SessionDraft.canSend(text: draft + strip.shown, mediaTypes: host.pendingAttachments.map(\.mediaType))
     }
 
     private var slot: ComposerSlot {
@@ -450,12 +451,21 @@ struct ComposerView: View {
 
     private func submit() {
         guard canSend else { return }
+        let finishing = isListening ? dictation.map { live in { await live.finish() } } : nil
+        Task {
+            await sender.run(finishing: finishing, take: takeDraft) { text in
+                onSend()
+                Task { await host.send(text) }
+            }
+        }
+    }
+
+    private func takeDraft() -> String? {
+        guard canSend else { return nil }
         let text = draft
         draft = ""
         focus.wrappedValue = false
-
-        onSend()
-        Task { await host.send(text) }
+        return text
     }
 
     private func stop() {
