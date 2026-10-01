@@ -1,11 +1,13 @@
 "use client";
 
+import { useRef } from "react";
 import { CornerDownLeftIcon, LayersIcon, SquareIcon } from "lucide-react";
 import type { ProviderDriverKind } from "@telar/engine-client";
 import type { ModelChoice } from "@/features/providers";
 import { InputGroupButton } from "@/ui/input-group";
 import { Spinner } from "@/ui/spinner";
 import { cn } from "@/ui/utils";
+import { useSwapFade } from "../hooks/use-composer-motion";
 import type { ComposerStash } from "../hooks/use-composer-stash";
 import { AccessControl } from "./access-control";
 import { AgentControl } from "./agent-control";
@@ -22,6 +24,7 @@ export function SendButton({
   escArmed,
   question,
   onStop,
+  animate,
 }: {
   busy: boolean;
   sending: boolean;
@@ -30,10 +33,13 @@ export function SendButton({
   /** In question mode the button submits the form; the drawer keeps its own cancel. */
   question?: { label: string; ready: boolean };
   onStop: () => void;
+  animate: boolean;
 }) {
+  const icon = useRef<HTMLSpanElement>(null);
   const stopping = busy && (escArmed || !hasContent) && !question;
   const label = question?.label ?? (escArmed ? "Press Escape again to stop" : stopping ? "Stop" : "Send");
   const armed = escArmed && !question;
+  useSwapFade(icon, armed ? "esc" : stopping ? "stop" : sending ? "sending" : "send", animate);
   return (
     <InputGroupButton
       type={stopping ? "button" : "submit"}
@@ -44,15 +50,17 @@ export function SendButton({
       onClick={stopping ? onStop : undefined}
       className={cn(armed && "bg-destructive text-background hover:bg-destructive", !busy && !hasContent && "opacity-60", question && !question.ready && "opacity-60")}
     >
-      {armed ? (
-        <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
-      ) : stopping ? (
-        <SquareIcon className="size-4" />
-      ) : sending ? (
-        <Spinner />
-      ) : (
-        <CornerDownLeftIcon className="size-4" />
-      )}
+      <span ref={icon} className="flex items-center justify-center">
+        {armed ? (
+          <span className="text-3xs leading-none font-semibold tracking-tight">ESC</span>
+        ) : stopping ? (
+          <SquareIcon className="size-4" />
+        ) : sending ? (
+          <Spinner />
+        ) : (
+          <CornerDownLeftIcon className="size-4" />
+        )}
+      </span>
     </InputGroupButton>
   );
 }
