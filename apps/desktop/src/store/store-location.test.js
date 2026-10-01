@@ -68,31 +68,6 @@ test("a malformed active block refuses instead of reading as no marker at all", 
   expect(outcome.state).toBe("refuse");
 });
 
-test("a marker survives a round trip, and its intent is kept apart from its fact", () => {
-  const root = path.join(scratch, "store");
-  const stamp = makeStore(root);
-  store.adoptStore(userData, { path: root, storeId: stamp.storeId });
-  store.setPending(userData, { path: "/Volumes/Somewhere/Telar" });
-
-  const { marker } = store.readMarker(userData);
-  expect(marker.active.path).toBe(root);
-  expect(marker.pending.path).toBe("/Volumes/Somewhere/Telar");
-
-  expect(store.resolveStoreLocation({ userData, defaultRoot: root }).root).toBe(root);
-});
-
-test("a failed move leaves the store openable, because pending never became active", () => {
-  const root = path.join(scratch, "store");
-  const stamp = makeStore(root);
-  store.adoptStore(userData, { path: root, storeId: stamp.storeId });
-  store.setPending(userData, { path: path.join(scratch, "nowhere") });
-
-  expect(store.resolveStoreLocation({ userData, defaultRoot: root }).state).toBe("ready");
-  store.clearPending(userData);
-  expect(store.readMarker(userData).marker.pending).toBeUndefined();
-  expect(store.resolveStoreLocation({ userData, defaultRoot: root }).state).toBe("ready");
-});
-
 test("a store that was deleted by hand refuses; it does not quietly reappear empty", () => {
   const root = path.join(scratch, "store");
   const stamp = makeStore(root);

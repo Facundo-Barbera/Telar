@@ -75,7 +75,6 @@ function readMarker(userData, deps = {}) {
     marker: {
       version: MARKER_VERSION,
       active,
-      pending: readPending(parsed.pending),
       archived: readArchived(parsed.archived),
       retired: readRetired(parsed.retired),
     },
@@ -112,12 +111,6 @@ function readVolume(raw) {
     ...(typeof raw.uuid === "string" && raw.uuid ? { uuid: raw.uuid } : {}),
     ...(typeof raw.label === "string" && raw.label ? { label: raw.label } : {}),
   };
-}
-
-function readPending(raw) {
-  if (raw === undefined || raw === null || typeof raw !== "object") return undefined;
-  if (typeof raw.path !== "string" || !path.isAbsolute(raw.path)) return undefined;
-  return { path: raw.path, requestedAt: Number.isFinite(raw.requestedAt) ? raw.requestedAt : 0 };
 }
 
 function readArchived(raw) {
@@ -310,26 +303,10 @@ function noteOpened(userData, deps = {}) {
   writeMarker(userData, { ...marker, active: { ...marker.active, lastOpenedAt: now() } }, deps);
 }
 
-function setPending(userData, pending, deps = {}) {
-  const { now } = resolveDeps(deps);
-  const { marker } = readMarker(userData, deps);
-  writeMarker(userData, { ...marker, pending: { path: pending.path, requestedAt: now() } }, deps);
-}
-
-function clearPending(userData, deps = {}) {
-  const { marker } = readMarker(userData, deps);
-  if (!marker) return;
-  const next = { ...marker };
-  delete next.pending;
-  writeMarker(userData, next, deps);
-}
-
 function archiveActive(userData, deps = {}) {
   const { marker } = readMarker(userData, deps);
   if (!marker || !marker.active) return;
-  const next = { pending: marker.pending, archived: [...(marker.archived ?? []), marker.active] };
-  if (!next.pending) delete next.pending;
-  writeMarker(userData, next, deps);
+  writeMarker(userData, { archived: [...(marker.archived ?? []), marker.active] }, deps);
 }
 
 module.exports = {
@@ -345,8 +322,6 @@ module.exports = {
   resolveStoreLocation,
   adoptStore,
   noteOpened,
-  setPending,
-  clearPending,
   clearRetired,
   archiveActive,
 };
