@@ -53,6 +53,7 @@ type MaintenanceDeps = {
 /** The checkouts a store holds after they are cut: release, restore, sweep, lock, move, inventory and reclaim. */
 export class WorktreeMaintenance {
   private cleanupRunning = false;
+  private readonly sweepTried = new Map<string, number>();
   private checked?: { inventory: WorktreeInventory; at: number };
   private checking?: Promise<WorktreeInventory>;
   private readonly locked = new Set<string>();
@@ -69,7 +70,7 @@ export class WorktreeMaintenance {
   async release(
     sessionId: string,
     reason: "manual" | "inactive" | "settled" | "unchanged" | "archived",
-    options: { strict?: boolean } = {},
+    options: { strict?: boolean; processes?: () => Promise<Set<string> | undefined> } = {},
   ): Promise<{ ok: true } | { ok: false; refusal: ReleaseRefusal | "in-use" | "not-worktree"; detail?: string }> {
     const session = this.deps.records.get(sessionId);
     if (session.workspace.mode !== "worktree" || !session.projectId) return { ok: false, refusal: "not-worktree" };
@@ -86,7 +87,7 @@ export class WorktreeMaintenance {
     const location = readWorktreesRoot(this.kernel.paths.root);
     const configured = rootOf(location);
     const roots = [defaultWorktreesRoot(this.kernel.paths.root), ...(configured ? [configured] : [])];
-    const processes = await checkoutsWithProcesses([workspace.path]);
+    const processes = await (options.processes?.() ?? checkoutsWithProcesses([workspace.path]));
     const checked = await releaseRefusal(this.deps.git, {
       projectRoot: project.root,
       worktreesRoots: roots,
@@ -127,9 +128,11 @@ export class WorktreeMaintenance {
       const sessions = this.deps.records.read();
       const plan = planWorktreeCleanup(cleanupCandidates(sessions, { now, autoSettleAfterHours: this.deps.autoSettleAfterHours() }), policy, now);
       const swept = await sweepCheckouts(plan, {
-        release: (item) => this.sweepRelease(item),
+        release: (item, processes) => this.sweepRelease(item, processes),
+        processes: (checkouts) => checkoutsWithProcesses(checkouts),
         sizeOf: (target) => this.deps.checkoutSizes.known(target),
         gate: this.volumes,
+        tried: this.sweepTried,
       });
       let { freedBytes } = swept;
       const { released, skipped } = swept;
@@ -153,12 +156,12 @@ export class WorktreeMaintenance {
     }
   }
 
-  private async sweepRelease({ sessionId, reason }: PlannedRelease): Promise<SweepOutcome> {
+  private async sweepRelease({ sessionId, reason }: PlannedRelease, processes: () => Promise<Set<string> | undefined>): Promise<SweepOutcome> {
     const session = this.deps.records.get(sessionId);
     if (session.workspace.mode !== "worktree" || !session.projectId) return "ignored";
     if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) return "ignored";
     if (!(await existsWithin(this.volumes, session.workspace.path))) return "ignored";
-    return (await this.release(sessionId, reason, { strict: true })).ok ? "released" : "skipped";
+    return (await this.release(sessionId, reason, { strict: true, processes })).ok ? "released" : "skipped";
   }
 
   isCleanupRunning(): boolean {

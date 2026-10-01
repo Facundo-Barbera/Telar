@@ -62,6 +62,8 @@ test("a volume that is missing or stops answering is skipped whole, and the othe
     timeoutMs: 5,
     gate: new VolumeGate(async (mount) => (mount.endsWith("Gone") ? "missing" : "ok")),
     sizeOf: (target) => (target === at("Fast", "d") ? 100 : undefined),
+    processes: async () => new Set(),
+    tried: new Map(),
     release: (item) => {
       asked.push(item.path);
       return item.path.includes("Slow") ? new Promise<SweepOutcome>(() => {}) : Promise.resolve("released");
@@ -69,6 +71,35 @@ test("a volume that is missing or stops answering is skipped whole, and the othe
   });
   expect(asked).toEqual([at("Slow", "a"), at("Fast", "d"), at("Fast", "e")]);
   expect(swept).toEqual({ released: 2, skipped: 3, freedBytes: 100 });
+});
+
+test("a sweep tries at most its limit, the next one starts with those not yet tried, and the batch shares one process listing", async () => {
+  const plan: PlannedRelease[] = ["a", "b", "c", "d", "e"].map((name) => ({ sessionId: name, path: path.join(os.tmpdir(), name), reason: "settled" }));
+  const tried = new Map<string, number>();
+  const listings: (readonly string[])[] = [];
+  const sweep = async () => {
+    const asked: string[] = [];
+    await sweepCheckouts(plan, {
+      limit: 2,
+      tried,
+      gate: new VolumeGate(async () => "ok"),
+      sizeOf: () => undefined,
+      processes: async (checkouts) => {
+        listings.push(checkouts);
+        return new Set();
+      },
+      release: async (item, processes) => {
+        asked.push(item.sessionId);
+        await processes();
+        return "skipped";
+      },
+    });
+    return asked.sort();
+  };
+  expect(await sweep()).toEqual(["a", "b"]);
+  expect(await sweep()).toEqual(["c", "d"]);
+  expect(await sweep()).toEqual(["a", "e"]);
+  expect(listings.map((checkouts) => checkouts.length)).toEqual([2, 2, 2]);
 });
 
 test("only rotated logs and the given setup logs older than the window are deleted", async () => {
