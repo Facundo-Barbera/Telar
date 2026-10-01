@@ -42,6 +42,12 @@ struct DictationSettingsView: View {
                         }
                     }
                     SettingsFootnote(providerFootnote)
+                        .contextMenu {
+                            Button("Copy typing log", systemImage: "doc.on.doc") {
+                                UIPasteboard.general.string = ComposerLog.shared.exported
+                            }
+                            Button("Clear typing log", systemImage: "trash") { ComposerLog.shared.clear() }
+                        }
                 }
 
                 if provider == DictationProvider.deepgram {

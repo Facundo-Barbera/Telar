@@ -25,10 +25,10 @@ struct ComposerView: View {
 
     @State private var dictation: Dictation?
 
-    @State private var interim: Range<Int>?
+    @State private var strip = DictationStrip()
 
     @State private var caretRect: CGRect?
-    @State private var caret = ComposerCaret()
+    @State private var field = ComposerField()
 
     @State private var canDictate = false
     @State private var skillsCache = ComposerSkillsCache()
@@ -106,23 +106,21 @@ struct ComposerView: View {
         .onAppear {
             guard dictation == nil, let api else { return }
             let live = Dictation(api: api)
+            ComposerLog.audio = AudioSessionClaim.describe
 
-            let box = $draft
-
-            let words = DictationDraftBox()
-            let probe = caret
-            live.onStart = { words.begin() }
+            live.onStart = {
+                strip = DictationStrip()
+                ComposerLog.shared.record(ComposerLogEntry(source: .dictation, event: "start"))
+            }
             live.onWords = { heard in
-                let draft = box.wrappedValue
-                guard let next = words.write(heard, into: draft, caret: probe.location(in: draft)) else { return }
-                box.wrappedValue = next
-
-                interim = words.unconfirmed
+                strip.hear(heard)
+                if heard.final || !strip.settled.isEmpty { commitStrip() }
             }
             live.onEnd = {
-                words.end()
-
-                interim = nil
+                strip.flush()
+                commitStrip(finishing: true)
+                strip = DictationStrip()
+                ComposerLog.shared.record(ComposerLogEntry(source: .dictation, event: "stop"))
             }
             dictation = live
         }
@@ -157,9 +155,12 @@ struct ComposerView: View {
 
     private var pill: some View {
         let shape = RoundedRectangle(cornerRadius: Theme.radiusComposer, style: .continuous)
-        return HStack(alignment: .bottom, spacing: 0) {
-            field
-            micButton
+        return VStack(alignment: .leading, spacing: 0) {
+            if isListening { heardStrip }
+            HStack(alignment: .bottom, spacing: 0) {
+                fieldView
+                micButton
+            }
         }
         .frame(minHeight: rowHeight)
         .composerGlass(cornerRadius: Theme.radiusComposer)
@@ -177,16 +178,42 @@ struct ComposerView: View {
         }
     }
 
-    private var field: some View {
+    private var heardStrip: some View {
+        Text(strip.shown.isEmpty ? "Listening…" : strip.shown)
+            .font(.system(Theme.footnote))
+            .foregroundStyle(strip.shown.isEmpty ? Theme.textMuted : Theme.accent)
+            .lineLimit(3)
+            .truncationMode(.head)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+            .accessibilityLabel(strip.shown.isEmpty ? "Listening" : "Heard: \(strip.shown)")
+    }
+
+    private func commitStrip(finishing: Bool = false) {
+        guard let text = strip.take() else { return }
+        if field.commit(text, finishing: finishing) { return }
+        if field.isMounted {
+            strip.hold(text)
+        } else {
+            draft = DictationStrip.appending(text, to: draft)
+        }
+    }
+
+    private var fieldView: some View {
         ComposerTextView(
             text: $draft,
             placeholder: host.placeholder,
             focused: focus,
             maxLines: ComposerGrowth.maxLines,
             listening: isListening,
-            interim: interim,
             caretRect: $caretRect,
-            caret: caret,
+            field: field,
+            onTouch: {
+                guard isListening else { return }
+                strip.flush()
+                commitStrip()
+            },
             suggesting: showsSuggestions && !suggestions.isEmpty,
             onSuggestionKey: suggestionKey,
             onPaste: { intake($0) }
@@ -385,7 +412,7 @@ struct ComposerView: View {
     }
 
     private func retrigger(edited: Bool) {
-        let next = isListening ? nil : ComposerTrigger.detect(in: draft, caret: caret.location(in: draft) ?? (draft as NSString).length)
+        let next = isListening ? nil : ComposerTrigger.detect(in: draft, caret: field.location(in: draft) ?? (draft as NSString).length)
         if edited { dismissedDraft = nil }
         if edited || next?.kind != trigger?.kind { activeSuggestion = 0 }
         if next != trigger { trigger = next }
