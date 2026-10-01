@@ -31,6 +31,10 @@ struct ComposerView: View {
     @State private var caret = ComposerCaret()
 
     @State private var canDictate = false
+    @State private var skillsCache = ComposerSkillsCache()
+    @State private var trigger: ComposerTrigger?
+    @State private var activeSuggestion = 0
+    @State private var dismissedDraft: String?
     @Environment(\.colorScheme) private var scheme
     @ScaledMetric(relativeTo: .body) private var rowHeight: CGFloat = 44
     @ScaledMetric(relativeTo: .body) private var pillInset: CGFloat = 12.5
@@ -68,6 +72,11 @@ struct ComposerView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 6)
             }
+            if showsSuggestions {
+                ComposerSuggestionList(rows: suggestions, active: activeSuggestion, loading: loadingSkills, onPick: pick)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+            }
             if !host.pendingAttachments.isEmpty || host.uploading {
                 attachmentStrip.padding(.bottom, 8)
             }
@@ -80,6 +89,15 @@ struct ComposerView: View {
         }
         .animation(.linear(duration: 0.18), value: queued.count)
         .animation(.linear(duration: 0.18), value: host.pendingAttachments.count)
+        .animation(.linear(duration: 0.12), value: showsSuggestions)
+        .onChange(of: draft) { _, _ in retrigger(edited: true) }
+        .onChange(of: caretRect) { _, _ in retrigger(edited: false) }
+        .onChange(of: isListening) { _, _ in retrigger(edited: false) }
+        .task(id: trigger == nil ? nil : host.skillsKey) {
+            guard trigger != nil, let key = host.skillsKey else { return }
+            let host = host
+            await skillsCache.load(key) { try await host.readSkills() }
+        }
         .onDrop(of: ComposerIntake.accepted, isTargeted: $dropping) { providers in
             intake(providers)
             return true
@@ -169,6 +187,8 @@ struct ComposerView: View {
             interim: interim,
             caretRect: $caretRect,
             caret: caret,
+            suggesting: showsSuggestions && !suggestions.isEmpty,
+            onSuggestionKey: suggestionKey,
             onPaste: { intake($0) }
         )
         .overlay(alignment: .topLeading) {
@@ -247,6 +267,7 @@ struct ComposerView: View {
             }
             .environment(\.composerPillsInMenu, true)
             Section {
+                Button("Commands and skills", systemImage: "command", action: openCommands)
                 Button("Attach photos", systemImage: "photo") { pickingPhotos = true }
                 if hasDraftText { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
                 Button("Show stashed prompts", systemImage: "tray.full") { showingStash = true }
@@ -346,6 +367,58 @@ struct ComposerView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 8)
+    }
+
+    private var suggestions: [ComposerCompletion] {
+        guard let trigger, dismissedDraft != draft else { return [] }
+        let skills = host.skillsKey.map { skillsCache.skills(for: $0) } ?? .empty
+        return ComposerCompletions.list(for: trigger, context: host.commandContext, skills: skills)
+    }
+
+    private var loadingSkills: Bool {
+        guard let key = host.skillsKey else { return false }
+        return skillsCache.loading && skillsCache.key != key
+    }
+
+    private var showsSuggestions: Bool {
+        focused && trigger != nil && dismissedDraft != draft && (!suggestions.isEmpty || loadingSkills)
+    }
+
+    private func retrigger(edited: Bool) {
+        let next = isListening ? nil : ComposerTrigger.detect(in: draft, caret: caret.location(in: draft) ?? (draft as NSString).length)
+        if edited { dismissedDraft = nil }
+        if edited || next?.kind != trigger?.kind { activeSuggestion = 0 }
+        if next != trigger { trigger = next }
+    }
+
+    private func suggestionKey(_ key: ComposerSuggestionKey) {
+        let rows = suggestions
+        guard !rows.isEmpty else { return }
+        switch key {
+        case .up: activeSuggestion = (activeSuggestion - 1 + rows.count) % rows.count
+        case .down: activeSuggestion = (activeSuggestion + 1) % rows.count
+        case .accept: pick(rows[min(activeSuggestion, rows.count - 1)])
+        case .dismiss: dismissedDraft = draft
+        }
+    }
+
+    private func pick(_ completion: ComposerCompletion) {
+        guard let trigger else { return }
+        var inserted = ""
+        if case .insert(let text) = completion.action { inserted = text + " " }
+        self.trigger = nil
+        activeSuggestion = 0
+        draft = trigger.replace(in: draft, with: inserted).text
+        if inserted.isEmpty {
+            let host = host
+            Task { await host.perform(completion.action) }
+        }
+    }
+
+    private func openCommands() {
+        draft = ComposerTrigger.opening(draft)
+        dismissedDraft = nil
+        focus.wrappedValue = true
     }
 
     private func submit() {

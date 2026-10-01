@@ -50,6 +50,8 @@ private actor WarmingInboxAPI: EngineAPI {
     func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment { fatalError("unused") }
     func models(driver: String) async throws -> ModelCatalogue { fatalError("unused") }
     func providerInstances() async throws -> [ProviderInstance] { [] }
+    func sessionSkills(_ id: EngineID) async throws -> ProviderSkills { .empty }
+    func projectSkills(_ projectId: EngineID, driver: String?) async throws -> ProviderSkills { .empty }
     func sessionDiff(_ id: EngineID) async throws -> SessionDiff { fatalError("unused") }
     func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch { fatalError("unused") }
     func listDirectories(path: String?) async throws -> DirectoryListing { fatalError("unused") }
@@ -98,6 +100,8 @@ private actor WarmingSessionAPI: EngineAPI {
     func uploadAttachment(_ id: EngineID, name: String, mediaType: String, data: Data) async throws -> TurnAttachment { fatalError("unused") }
     func models(driver: String) async throws -> ModelCatalogue { fatalError("unused") }
     func providerInstances() async throws -> [ProviderInstance] { [] }
+    func sessionSkills(_ id: EngineID) async throws -> ProviderSkills { .empty }
+    func projectSkills(_ projectId: EngineID, driver: String?) async throws -> ProviderSkills { .empty }
     func sessionDiff(_ id: EngineID) async throws -> SessionDiff { fatalError("unused") }
     func filePatch(_ id: EngineID, path: String, untracked: Bool) async throws -> FilePatch { fatalError("unused") }
     func listDirectories(path: String?) async throws -> DirectoryListing { fatalError("unused") }

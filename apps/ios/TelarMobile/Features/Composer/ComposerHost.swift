@@ -11,12 +11,17 @@ import Foundation
 
     var canPromoteQueued: Bool { get }
 
+    var commandContext: ComposerCommandContext { get }
+    var skillsKey: String? { get }
+
     func send(_ text: String) async
     func stop() async
     func attach(data: Data, name: String, mediaType: String) async
     func removeAttachment(_ id: EngineID)
     func promote(_ runId: String) async
     func withdraw(_ runId: String) async
+    func readSkills() async throws -> ProviderSkills
+    func perform(_ action: ComposerCommandAction) async
 }
 
 struct SessionComposerHost: ComposerHost {
@@ -31,6 +36,12 @@ struct SessionComposerHost: ComposerHost {
 
     var canPromoteQueued: Bool { store.sync.session?.driver != "opencode" }
 
+    var commandContext: ComposerCommandContext {
+        ComposerCommandContext(busy: isRunning, runtimeMode: store.sync.session?.runtimeMode, driver: store.sync.session?.driver)
+    }
+
+    var skillsKey: String? { store.sync.session.map { "session:\($0.id):\($0.driver)" } }
+
     func send(_ text: String) async { await store.send(text) }
     func stop() async { await store.stopActiveTurn() }
     func attach(data: Data, name: String, mediaType: String) async {
@@ -39,4 +50,17 @@ struct SessionComposerHost: ComposerHost {
     func removeAttachment(_ id: EngineID) { store.removeAttachment(id) }
     func promote(_ runId: String) async { await store.promote(runId) }
     func withdraw(_ runId: String) async { await store.withdraw(runId) }
+
+    func readSkills() async throws -> ProviderSkills {
+        guard let id = store.sync.session?.id else { return .empty }
+        return try await store.api.sessionSkills(id)
+    }
+
+    func perform(_ action: ComposerCommandAction) async {
+        switch action {
+        case .runtimeMode(let mode): await store.setRuntimeMode(mode)
+        case .stop: await store.stopActiveTurn()
+        case .insert, .envMode, .driver: break
+        }
+    }
 }
