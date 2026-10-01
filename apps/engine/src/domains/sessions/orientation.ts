@@ -49,8 +49,8 @@ It is not this CLI's own notion of a session, and not a chat thread.
 
 - **\`local\` vs \`worktree\`** — a worktree session gets a git checkout of its
   own and collides with nobody; a local one shares the project's checkout with
-  every other local session and with the person's editor. Anything that writes
-  code wants a worktree.
+  every other local session and with the person's editor. The project's mode is
+  the default; choose a worktree to isolate code changes.
 - **Sessions you create are filed under you**, even when others task them.
   That is all the link does: one reports back only when you task it, and
   you learn what it did by asking.

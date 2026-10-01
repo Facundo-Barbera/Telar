@@ -498,6 +498,8 @@ test("the orchestrate skill is a provider-readable skill that names no repo or p
   expect(text).toContain("never reply just to acknowledge one");
   expect(text).toContain("Their progress reports never interrupt you");
   expect(text).toContain("Never stack PRs");
+  expect(text).toContain("Omit `envMode` so the project's own mode applies");
+  expect(text).not.toContain('envMode: "worktree"');
   expect(text).toContain("CURRENT head SHA");
   expect(text).toContain("you never make one on their behalf");
   expect(text).toContain("Needs your decision");
