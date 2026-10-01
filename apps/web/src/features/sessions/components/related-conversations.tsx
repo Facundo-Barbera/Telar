@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { ArrowUpRightIcon, BellIcon, BellOffIcon, UsersIcon } from "lucide-react";
 import type { SessionAssignment, Subscription } from "@telar/engine-client";
@@ -198,17 +198,20 @@ const EMPTY_READ: Read = { rows: [], following: [], failed: false, done: false, 
 
 function useRelated(sessionId: string | undefined, hostId: string | undefined, visible: boolean, nudge: number): Read {
   const [read, setRead] = useState<Read>(EMPTY_READ);
+  const tag = useRef<{ hostId?: string; etag: string }>(undefined);
   usePoll(
     async (signal) => {
       if (!sessionId) return;
       const api = createEngineApi(hostFetcher(hostId ?? LOCAL_HOST_ID));
+      const etag = tag.current?.hostId === hostId ? tag.current?.etag : undefined;
       const [list, subscriptions] = await Promise.all([
-        api.liveSessions({ all: true }).then((value) => value, () => undefined),
+        api.liveSessionsMatching({ all: true, ...(etag ? { etag } : {}) }).then((value) => value, () => undefined),
         api.sessionSubscriptions(sessionId).then((value) => value.subscriptions, () => undefined),
       ]);
       if (signal.aborted) return;
+      if (list?.etag) tag.current = { ...(hostId ? { hostId } : {}), etag: list.etag };
       setRead((current) => ({
-        rows: list
+        rows: list && !list.notModified
           ? list.sessions.map((session) => ({
               ...toSidebarSession(session, undefined, undefined, undefined, undefined, list.assignments?.[session.id]),
               ...(hostId ? { hostId } : {}),

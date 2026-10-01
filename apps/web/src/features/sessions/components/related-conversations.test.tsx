@@ -14,10 +14,19 @@
  * as slowly and half as clearly. The render tests below check the PRESENTATION:
  * that each fact reaches the row, and that the control on it says the right verb.
  */
-import { describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Subscription } from "@telar/engine-client";
-import { coordinatorsOf, delegatesOf, RelatedConversationsView } from "./related-conversations";
+import { coordinatorsOf, delegatesOf, RelatedConversations, RelatedConversationsView } from "./related-conversations";
+
+GlobalRegistrator.register({ url: "http://localhost/" });
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+afterAll(async () => {
+  await GlobalRegistrator.unregister();
+});
 import type { SidebarSession } from "../session-list";
 
 const NOW = 1_000_000_000;
@@ -241,5 +250,42 @@ describe("the sections, rendered", () => {
     expect(view({ read: "reading" })).toBe("");
     expect(view({ read: "done" })).toContain("No other conversation is involved");
     expect(view({ read: "failed" })).toContain("The engine did not answer");
+  });
+});
+
+describe("the panel's poll", () => {
+  let root: Root | undefined;
+  const realFetch = globalThis.fetch;
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    act(() => root?.unmount());
+    root = undefined;
+    globalThis.fetch = realFetch;
+    jest.useRealTimers();
+  });
+
+  test("an unchanged session list is asked for by tag and keeps the rows it has", async () => {
+    const tags: (string | null)[] = [];
+    const worker = { id: "worker", title: "Plugin host migration", projectId: "p1", activity: "idle", workspace: { mode: "local", path: "/p1" }, createdAt: NOW, updatedAt: NOW };
+    globalThis.fetch = (async (input: string, init?: RequestInit) => {
+      if (input.startsWith("/api/sessions/live")) {
+        const tag = new Headers(init?.headers).get("if-none-match");
+        tags.push(tag);
+        if (tag) return new Response(null, { status: 304, headers: { etag: tag } });
+        return Response.json({ sessions: [worker], assignments: { worker: [assignment("coord")] } }, { headers: { etag: 'W/"live-1"' } });
+      }
+      return Response.json({ subscriptions: [] });
+    }) as typeof fetch;
+    const container = document.createElement("div");
+    root = createRoot(container);
+    const settle = () => act(async () => {
+      for (let turn = 0; turn < 10; turn += 1) await Promise.resolve();
+    });
+    act(() => root!.render(<RelatedConversations sessionId="coord" />));
+    await settle();
+    await act(async () => jest.advanceTimersByTime(10_000));
+    await settle();
+    expect(tags).toEqual([null, 'W/"live-1"']);
+    expect(container.textContent).toContain("Plugin host migration");
   });
 });
