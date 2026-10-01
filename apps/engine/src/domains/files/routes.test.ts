@@ -81,6 +81,19 @@ test("a file is refused as a folder, with a sentence the phone can show", () => 
   });
 });
 
+test("a folder that is there but cannot be read is a 403, so the cockpit can still offer to add it", () => {
+  const home = scratch("telar-fs-home-");
+  const drive = path.join(home, "Library", "CloudStorage", "GoogleDrive-me@example.com", "My Drive");
+  fs.mkdirSync(drive, { recursive: true });
+  const denied = () => {
+    throw Object.assign(new Error("denied"), { code: "EPERM" });
+  };
+  const { route, params } = matchRoute(filesRoutes({ home, mounts: [], readdir: denied }), "GET", "/v2/fs")!;
+  const answer = route.handle({ body: {}, params, query: new URLSearchParams({ path: drive }), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }) as RouteAnswer;
+  expect(answer.status).toBe(403);
+  expect(answer.body).toEqual({ error: { code: "invalid_request", message: expect.stringContaining("cloud folder") } });
+});
+
 test("the engine serves it behind its token and refuses paths outside home and the mounts", async () => {
   const daemon = await startEngine({ models: stubModels, engineRoot: scratch("telar-fs-engine-") });
   daemons.push(daemon);

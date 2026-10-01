@@ -176,31 +176,46 @@ test("a storage that throws is not a reason to fail to draw", async () => {
   }
 });
 
-test("Open in Finder reveals the listed folder, desktop-only, and never for another Mac", async () => {
-  const revealed: string[] = [];
-  (window as { telarDesktop?: unknown }).telarDesktop = { workspace: { reveal: async (path: string) => void revealed.push(path) } };
-  const local = await mountBrowser({ list: lister().list });
-  await click(buttonLabelled("Open in Finder", local));
-  expect(revealed).toEqual(["/Users/me/code"]);
+test("Choose in Finder starts at the listed folder, desktop-only, and never for another Mac", async () => {
+  const from: (string | undefined)[] = [];
+  const onPickNatively = (path: string | undefined) => void from.push(path);
+  const tab = await mountBrowser({ onPickNatively, list: lister().list });
+  expect(buttonLabelled("Choose in Finder…", tab)).toBeUndefined();
 
-  const remote = await mountBrowser({ hostId: "studio", list: lister().list });
-  expect(buttonLabelled("Open in Finder", remote)).toBeUndefined();
+  (window as { telarDesktop?: unknown }).telarDesktop = { dialog: { chooseDirectory: async () => ({ cancelled: true }) } };
+  const local = await mountBrowser({ onPickNatively, list: lister().list });
+  await click(buttonLabelled("Choose in Finder…", local));
+  expect(from).toEqual(["/Users/me/code"]);
 
-  delete (window as { telarDesktop?: unknown }).telarDesktop;
-  const tab = await mountBrowser({ list: lister().list });
-  expect(buttonLabelled("Open in Finder", tab)).toBeUndefined();
+  const remote = await mountBrowser({ hostId: "studio", onPickNatively, list: lister().list });
+  expect(buttonLabelled("Choose in Finder…", remote)).toBeUndefined();
 });
 
-test("the native picker is offered only when the engine is unreachable", async () => {
-  const offer = "Choose a folder with the system picker instead";
-  let fellBack = 0;
-  const onFallback = () => void (fellBack += 1);
-  const refused = await mountBrowser({ onFallback, list: lister(() => new EngineApiError("conflict", "No.")).list });
-  expect(buttonLabelled(offer, refused)).toBeUndefined();
+test("Choose in Finder is there even when nothing could be listed", async () => {
+  (window as { telarDesktop?: unknown }).telarDesktop = { dialog: { chooseDirectory: async () => ({ cancelled: true }) } };
+  const down = await mountBrowser({ onPickNatively: () => {}, list: lister(() => new EngineApiError("engine_unavailable", "The engine is not running.")).list });
+  expect(buttonLabelled("Choose in Finder…", down)).toBeDefined();
+});
 
-  const down = await mountBrowser({ onFallback, list: lister(() => new EngineApiError("engine_unavailable", "The engine is not running.")).list });
-  await click(buttonLabelled(offer, down));
-  expect(fellBack).toBe(1);
+test("a folder that is there but cannot be listed is offered as it is, and only that kind of refusal", async () => {
+  const unreadable = new EngineApiError("invalid_request", "macOS has not let Telar read this cloud folder.", 403);
+  const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive";
+  const submitted: string[] = [];
+  const { list } = lister((input) => (input.path === drive ? unreadable : listing(input.path ?? "/Users/me")));
+  const host = await mountBrowser({ onSubmit: (path) => void submitted.push(path), list });
+  await click(host.querySelector("#directory-browser-entry-0")!);
+  await act(async () => {
+    const input = field(host);
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, drive);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await key(field(host), { key: "Enter" });
+  expect(status(host)).toBe("macOS has not let Telar read this cloud folder.");
+  await click(buttonLabelled("Add ~/Library/CloudStorage/GoogleDrive-me@example.com/My Drive anyway", host));
+  expect(submitted).toEqual([drive]);
+
+  const refused = await mountBrowser({ startAt: "/etc", list: lister((input) => (input.path ? new EngineApiError("invalid_request", "Outside.", 400) : listing("/Users/me"))).list });
+  expect(refused.textContent).not.toContain("anyway");
 });
 
 test("⌘Enter takes the folder being shown, even from a row's button", async () => {

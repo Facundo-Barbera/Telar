@@ -12,7 +12,10 @@ export function filesRoutes(deps: DirectoryDeps = {}): Route[] {
           { path: query.get("path"), hidden: query.get("hidden") === "1", nearest: query.get("nearest") === "1" },
           deps,
         );
-        if (isDirectoryFailure(listed)) return { status: listed.code === "not_found" ? 404 : 400, body: { error: listed } };
+        if (isDirectoryFailure(listed)) {
+          const { unreadable, ...error } = listed;
+          return { status: listed.code === "not_found" ? 404 : unreadable ? 403 : 400, body: { error } };
+        }
         return { status: 200, body: listed };
       },
     },

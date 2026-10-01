@@ -100,7 +100,9 @@ export function ProjectPalettePages({
           {...(notice ? { notice } : {})}
           onBack={() => go("sources")}
           onSubmit={palette.submitFolder}
-          onFallback={() => palette.pickWithSystem(page === "local" ? "Choose a project folder for Telar" : "Choose the folder to clone into", palette.submitFolder)}
+          onPickNatively={(from) =>
+            palette.pickWithSystem({ title: page === "local" ? "Choose a project folder" : "Choose the folder to clone into", defaultPath: from }, palette.submitFolder)
+          }
         />
       ) : page === "clone-url" ? (
         <CloneUrlPage {...(notice ? { notice } : {})} onBack={() => go("sources")} onSubmit={palette.takeCloneUrl} onChange={() => palette.setNotice(undefined)} />

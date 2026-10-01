@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useRef } from "react";
 import { ArrowLeftIcon, CornerDownLeftIcon, EyeIcon, EyeOffIcon, FolderIcon, GitBranchIcon, Loader2Icon } from "lucide-react";
 import type { DirectoryEntry, DirectoryListing } from "@telar/engine-client";
-import { clampIndex, directoryKey, type DirectoryBrowserState } from "../directory-keys";
+import { clampIndex, directoryKey, expandTilde, foldHome, type DirectoryBrowserState } from "../directory-keys";
 import { createEngineApi } from "@/platform/engine";
 import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
-import { workspaceOpener } from "../workspace-open";
+import { hasNativeFolderPicker } from "@/platform/desktop/choose-directory";
 import { useDirectoryListing, type DirectoryLister } from "../hooks/use-directory-listing";
 import { cn } from "@/ui/utils";
 
@@ -18,7 +18,7 @@ export function DirectoryBrowser({
   actionLabel,
   onSubmit,
   onBack,
-  onFallback,
+  onPickNatively,
   busy,
   notice,
   hostId,
@@ -28,8 +28,8 @@ export function DirectoryBrowser({
   actionLabel: string;
   onSubmit: (path: string) => void;
   onBack: () => void;
-  /** Offered only when the engine could not be reached. */
-  onFallback?: () => void;
+  /** Offered in the desktop app for this Mac's folders; it starts at the folder being shown. */
+  onPickNatively?: (from: string | undefined) => void;
   busy?: boolean;
   notice?: string;
   hostId?: string;
@@ -43,6 +43,7 @@ export function DirectoryBrowser({
 
   const entries = useMemo(() => listing?.dirs ?? [], [listing]);
   const at = clampIndex(browse.index, entries.length);
+  const unlisted = unlistedPath(browse.unlisted, listing?.home);
 
   const state: DirectoryBrowserState = useMemo(
     () => ({
@@ -140,15 +141,26 @@ export function DirectoryBrowser({
         </p>
       )}
 
-      {browse.unreachable && onFallback && (
+      {unlisted && (
         <div className="border-t px-3 py-2">
-          <button type="button" onClick={onFallback} className="rounded-sm text-2xs underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring">
-            Choose a folder with the system picker instead
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onSubmit(unlisted)}
+            className="max-w-full truncate rounded-sm text-2xs underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {actionLabel} {foldHome(unlisted, listing?.home ?? "")} anyway
           </button>
         </div>
       )}
 
-      <DirectoryFooter listing={listing} hostId={hostId} busy={busy} actionLabel={actionLabel} onSubmit={submit} />
+      <DirectoryFooter
+        listing={listing}
+        busy={busy}
+        actionLabel={actionLabel}
+        onSubmit={submit}
+        {...(onPickNatively && hasNativeFolderPicker() && (!hostId || hostId === LOCAL_HOST_ID) ? { onPickNatively } : {})}
+      />
     </div>
   );
 }
@@ -228,23 +240,25 @@ function DirectoryRoots({ listing, onOpen }: { listing: DirectoryListing; onOpen
   );
 }
 
+function unlistedPath(target: string | undefined, home: string | undefined): string | undefined {
+  if (!target) return undefined;
+  const path = home ? expandTilde(target, home) : target;
+  return path.startsWith("/") ? path : undefined;
+}
+
 function DirectoryFooter({
   listing,
-  hostId,
   busy,
   actionLabel,
   onSubmit,
+  onPickNatively,
 }: {
   listing: DirectoryListing | undefined;
-  hostId: string | undefined;
   busy: boolean | undefined;
   actionLabel: string;
   onSubmit: () => void;
+  onPickNatively?: (from: string | undefined) => void;
 }) {
-  // Finder is on this Mac; revealing a remote host's path could open the wrong folder.
-  const bridge = typeof window === "undefined" ? undefined : workspaceOpener();
-  const here = !hostId || hostId === LOCAL_HOST_ID;
-  const canReveal = Boolean(bridge?.reveal) && here && Boolean(listing);
   return (
     <div className="flex items-center gap-3 border-t px-3 py-2 text-2xs text-muted-foreground">
       <span>
@@ -257,13 +271,14 @@ function DirectoryFooter({
         <kbd className="font-sans">Backspace</kbd> Up
       </span>
       <span className="flex-1" />
-      {canReveal && listing && bridge?.reveal && (
+      {onPickNatively && (
         <button
           type="button"
-          onClick={() => void bridge.reveal(listing.path)}
+          disabled={busy}
+          onClick={() => onPickNatively(listing?.path)}
           className="rounded-sm underline underline-offset-2 outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
         >
-          Open in Finder
+          Choose in Finder…
         </button>
       )}
       <button

@@ -39,9 +39,9 @@ function registerWorkspaceAndStoreIpc(main) {
     const parent = BrowserWindow.fromWebContents(event.sender);
     const options = {
       title: input?.title || "Choose a project folder",
-
       properties: ["openDirectory", "createDirectory", "treatPackageAsDirectory"],
       ...(input?.buttonLabel ? { buttonLabel: input.buttonLabel } : {}),
+      ...(typeof input?.defaultPath === "string" && path.isAbsolute(input.defaultPath) ? { defaultPath: input.defaultPath } : {}),
     };
     const result = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
     const [directory] = result.filePaths || [];

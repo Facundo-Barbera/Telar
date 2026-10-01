@@ -35,9 +35,9 @@ export function useDirectoryListing({ list, hostId, startAt }: { list: Directory
   const [field, setField] = useState("");
   const [index, setIndex] = useState(0);
   const [error, setError] = useState<string>();
-  const [unreachable, setUnreachable] = useState(false);
+  const [unlisted, setUnlisted] = useState<string>();
   const [loading, setLoading] = useState(true);
-  // A remembered directory that has gone falls back to home, once.
+  // Only the first target falls back to home, once; a folder the person opened says why it failed.
   const fellBack = useRef(false);
 
   // No synchronous setState here; whatever changes the target turns the spinner on.
@@ -51,24 +51,24 @@ export function useDirectoryListing({ list, hostId, startAt }: { list: Directory
         setField(directoryField(answer.path, answer.home));
         setIndex(0);
         setError(undefined);
-        setUnreachable(false);
         setLoading(false);
         remember(hostId, answer.path);
       })
       .catch((cause: unknown) => {
         if (!live) return;
         setLoading(false);
-        const code = cause instanceof EngineApiError ? cause.code : undefined;
-        if (target && !fellBack.current && (code === "not_found" || code === "invalid_request")) {
+        const engine = cause instanceof EngineApiError ? cause : undefined;
+        // 403: the folder is there but could not be listed, as a cloud folder macOS has not opened to Telar yet.
+        if (target && engine?.status === 403) setUnlisted(target);
+        if (target && !fellBack.current && (engine?.code === "not_found" || engine?.code === "invalid_request")) {
           fellBack.current = true;
-          if (nearest && cause instanceof EngineApiError) setAside(`${cause.message} Showing home instead.`);
+          if (nearest && engine) setAside(`${engine.message} Showing home instead.`);
           setNearest(false);
           setLoading(true);
           setTarget(undefined);
           return;
         }
-        setUnreachable(code === "engine_unavailable" || code === "cockpit_unauthorized");
-        setError(cause instanceof EngineApiError ? cause.message : "That folder could not be listed.");
+        setError(engine ? engine.message : "That folder could not be listed.");
       });
     return () => {
       live = false;
@@ -76,8 +76,10 @@ export function useDirectoryListing({ list, hostId, startAt }: { list: Directory
   }, [list, target, hidden, nearest, hostId]);
 
   const open = (path: string) => {
+    fellBack.current = true;
     setError(undefined);
     setAside(undefined);
+    setUnlisted(undefined);
     setNearest(false);
     setLoading(true);
     setTarget(path);
@@ -93,5 +95,5 @@ export function useDirectoryListing({ list, hostId, startAt }: { list: Directory
     setError(undefined);
   };
 
-  return { listing, field, setField, editField, index, setIndex, hidden, showHidden, open, error, unreachable, loading, aside };
+  return { listing, field, setField, editField, index, setIndex, hidden, showHidden, open, error, unlisted, loading, aside };
 }
