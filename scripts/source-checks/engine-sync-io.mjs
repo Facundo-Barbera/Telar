@@ -4,14 +4,13 @@ const SCOPES = ["apps/engine/src/domains/worktrees", "apps/engine/src/domains/st
 
 /** Each file's exact count of `*Sync` names; a file that drops one must lower its count, so the list only shrinks. */
 const ALLOWED = {
-  "apps/engine/src/domains/worktrees/checkout.ts": { count: 4, reason: "lock reason's mount check and removing an unregistered checkout, one checkout per person-run reclaim" },
   "apps/engine/src/domains/worktrees/inventory.ts": { count: 4, reason: "the worktree inventory a person opens in Storage; reads the roots and the checkouts on them" },
-  "apps/engine/src/domains/worktrees/location.ts": { count: 6, reason: "the worktrees-location record in the engine's own directory and the configured root's existence" },
+  "apps/engine/src/domains/worktrees/location.ts": { count: 3, reason: "the worktrees-location record in the engine's own directory and creating the root a person chose" },
   "apps/engine/src/domains/worktrees/maintenance.ts": { count: 2, reason: "existence checks before a release, a move or a lock, per worktree session" },
   "apps/engine/src/domains/worktrees/move.ts": { count: 1, reason: "creates the destination a person chose for a move" },
   "apps/engine/src/domains/worktrees/release.ts": { count: 1, reason: "existence check of the one checkout being released" },
   "apps/engine/src/domains/worktrees/session-worktree.ts": { count: 3, reason: "existence checks around removing the one session's worktree" },
-  "apps/engine/src/domains/worktrees/setup.ts": { count: 5, reason: "setup status and log files under the engine's own directory" },
+  "apps/engine/src/domains/worktrees/setup.ts": { count: 2, reason: "reading a finished setup's status and log under the engine's own directory" },
   "apps/engine/src/domains/storage/cleanup.ts": { count: 1, reason: "reads the cleanup policy file under the engine's own directory" },
   "apps/engine/src/domains/storage/copy.ts": { count: 7, reason: "copying the store to a folder a person chose, as a blocking step they asked for" },
   "apps/engine/src/domains/storage/decommission-sweep.ts": { count: 13, reason: "one-time removal of retired directories under the engine's own directory, fenced by a marker" },

@@ -5,7 +5,7 @@ import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { describeReclaim } from "./inventory";
-import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./location";
+import { clearWorktreesRoot, defaultWorktreesRoot, probeWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./location";
 import { describeOutcome } from "./move";
 
 const isReleasable = (value: unknown): value is ReleasableState => (RELEASABLE_STATES as readonly unknown[]).includes(value);
@@ -15,7 +15,7 @@ const settledChoice = (value: unknown): { settled?: "archive" | "release" } => (
 /** `checkoutsChanged` runs after anything that moves checkouts on disk, so the storage figures re-measure. */
 export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void): Route[] {
   const rootAnswer = async () => {
-    const state = readWorktreesRoot(store.paths.root);
+    const state = await probeWorktreesRoot(store.paths.root);
     const blocker = worktreesRootBlocker(state);
     const root = rootOf(state);
     const rotational = root && !blocker ? await onRotationalDisk(root) : undefined;
@@ -50,7 +50,7 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
       auth: "engine",
       async handle({ body }) {
         if (typeof body.from !== "string" || !path.isAbsolute(body.from)) throw new HttpError(400, "invalid_request", "from must be the absolute folder to move worktrees out of");
-        const state = readWorktreesRoot(store.paths.root);
+        const state = await probeWorktreesRoot(store.paths.root);
         const destination = rootOf(state);
         if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
         if (path.resolve(body.from) === path.resolve(destination)) throw new HttpError(409, "conflict", "those worktrees are already at the current location");

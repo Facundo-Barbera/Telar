@@ -24,6 +24,7 @@ import {
   clearWorktreesRoot,
   defaultWorktreesRoot,
   readWorktreesRoot,
+  probeWorktreesRoot,
   rootOf,
   worktreesRootBlocker,
   writeWorktreesRoot,
@@ -140,7 +141,7 @@ test("a platform that cannot resolve volumes still uses a root that is there", (
   expect(worktreesRootBlocker(state)).toBeUndefined();
 });
 
-test("…and refuses the cut, in its own words, when the root is not there", () => {
+test("…and refuses the cut, in its own words, when the root is not there", async () => {
   // AN ABSOLUTE PATH IN THIS RUNTIME'S OWN SYNTAX, not `D:\…`: `path.isAbsolute`
   // answers for the platform the process is on rather than the one being
   // simulated, so a Windows-shaped path here would be refused as relative and
@@ -151,7 +152,7 @@ test("…and refuses the cut, in its own words, when the root is not there", () 
     locationFile(),
     JSON.stringify({ version: 1, root: gone, volume: { mount: path.dirname(gone), uuid: "SERIAL-1" }, label: "Backup", movedAt: 1 }),
   );
-  const state = readWorktreesRoot(root, { platform: "win32" });
+  const state = await probeWorktreesRoot(root, { platform: "win32" });
   // NOT `absent`. "Your drive is unplugged" is precisely the claim this
   // platform cannot make, and a person looking at a connected drive being told
   // to connect it trusts the next message less.
@@ -238,6 +239,41 @@ test("choosing a root on a drive whose id is still being looked up records the d
       check();
     });
     expect(JSON.parse(fs.readFileSync(locationFile(), "utf8"))).toMatchObject({ root: chosen, volume: { mount, uuid: "UUID-LATE" }, label: "TelarVR" });
+  } finally {
+    mounts.cleanup();
+  }
+});
+
+test("reading the root never waits on a drive that does not answer", async () => {
+  const mounts = fakeMounts();
+  try {
+    const mount = mounts.mount("TelarVR");
+    const chosen = path.join(mount, "checkouts");
+    fs.mkdirSync(chosen);
+    fs.writeFileSync(locationFile(), JSON.stringify({ version: 1, root: chosen, volume: { mount, uuid: "UUID-1" }, label: "TelarVR", movedAt: 1 }));
+    let stats = 0;
+    const hung = { ...mounts.deps, statAsync: () => (stats++, new Promise<fs.Stats>(() => undefined)) };
+
+    expect(readWorktreesRoot(root, hung)).toMatchObject({ kind: "configured", root: chosen });
+    expect(readWorktreesRoot(root, hung).kind).toBe("configured");
+    expect(stats).toBe(3);
+  } finally {
+    mounts.cleanup();
+  }
+});
+
+test("a drive pulled out is absent once the background probe has asked", async () => {
+  const mounts = fakeMounts();
+  try {
+    const mount = mounts.mount("TelarVR");
+    const chosen = path.join(mount, "checkouts");
+    fs.mkdirSync(chosen);
+    fs.writeFileSync(locationFile(), JSON.stringify({ version: 1, root: chosen, volume: { mount, uuid: "UUID-2" }, label: "TelarVR", movedAt: 1 }));
+    expect((await probeWorktreesRoot(root, mounts.deps)).kind).toBe("configured");
+
+    mounts.unmount("TelarVR");
+    expect((await probeWorktreesRoot(root, mounts.deps)).kind).toBe("absent");
+    expect(readWorktreesRoot(root, mounts.deps).kind).toBe("absent");
   } finally {
     mounts.cleanup();
   }
