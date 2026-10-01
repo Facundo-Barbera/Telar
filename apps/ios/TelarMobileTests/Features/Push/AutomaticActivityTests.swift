@@ -36,8 +36,8 @@ struct AutomaticActivityTests {
         }
         let sessions = [try session("q", "queued", at: 9), try session("w1", "working", at: 1), try session("w2", "working", at: 5),
                         try session("b", "blocked", at: 1), try session("m", "monitoring", at: 9), try session("i", "idle", at: 9)]
-        let carried = [SessionActivityRow(id: "w1", status: "Working", project: "web"), SessionActivityRow(id: "old", status: "Failed")]
-        let rows = AutomaticCard.rows(sessions, previews: true, carried: carried)
+        let carried = [SessionActivityRow(id: "old", status: "Failed")]
+        let rows = AutomaticCard.rows(sessions, previews: true, projects: ["w1": "web"], carried: carried)
         #expect(rows.map(\.id) == ["b", "w2", "w1", "q"])
         #expect(rows.map(\.status) == ["Needs you", "Working", "Working", "Queued"])
         #expect(rows[2].project == "web")
@@ -57,13 +57,28 @@ struct AutomaticActivityTests {
         }
         let sessions = [try session("orch", "idle", title: ""), try session("a", "working", parent: "orch"), try session("b", "blocked", parent: "orch"),
                         try session("c", "queued", parent: "orch"), try session("orphan", "working", parent: "gone")]
-        let rows = AutomaticCard.rows(sessions, previews: true, carried: [SessionActivityRow(id: "orch", status: "Working", project: "ozom-gv")])
+        let rows = AutomaticCard.rows(sessions, previews: true, projects: ["a": "ozom-gv"])
         #expect(rows.map(\.id) == ["orch", "orphan"])
         #expect(rows[0].status == "Needs you" && rows[0].workers == 3 && rows[0].workersLabel == "3 workers")
-        #expect(rows[0].title == nil && rows[0].project == "ozom-gv")
+        #expect(rows[0].title == nil && rows[0].project == "ozom-gv" && rows[0].label == "ozom-gv · 3 workers")
         #expect(rows[1].workers == nil && rows[1].title == "Title orphan")
         let state = AutomaticCard.initialState(sessions, previews: true, now: Date(timeIntervalSince1970: 1_800_000_000))
         #expect(state.activeCount == 2 && state.sessionId == "orch")
+    }
+
+    @Test func aRowIsNamedByItsTitleOrItsProjectButNeverItsMac() {
+        #expect(SessionActivityRow(id: "a", status: "Working", title: "Fix login", project: "Telar", workers: 2).label == "Fix login")
+        #expect(SessionActivityRow(id: "a", status: "Working", title: "Fix login", project: "Telar", workers: 2).detail == "Telar · 2 workers")
+        #expect(SessionActivityRow(id: "a", status: "Working", project: "Telar", workers: 6).label == "Telar · 6 workers")
+        #expect(SessionActivityRow(id: "b", status: "Working", project: "Telar", workers: 3).label == "Telar · 3 workers")
+        #expect(SessionActivityRow(id: "c", status: "Working", project: "Telar").detail == nil)
+        #expect(SessionActivityRow(id: "d", status: "Working").label == "Session")
+    }
+
+    @Test func theCardNamesTheMacWithoutItsDomain() {
+        #expect(HostLabel.short("mini-fbarbera.snakebird-cardassia.ts.net") == "mini-fbarbera")
+        #expect(HostLabel.short("Studio") == "Studio")
+        #expect(HostLabel.short(nil) == "Mac")
     }
 
     @Test func thePhoneStartsACardOnlyForAWorkingMacWithoutOneThatCannotPushIt() {

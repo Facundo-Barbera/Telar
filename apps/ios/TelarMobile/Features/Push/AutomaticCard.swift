@@ -56,23 +56,23 @@ enum AutomaticCard {
         return order.compactMap { id in active[id]!.isEmpty ? nil : (byId[id]!, active[id]!) }
     }
 
-    static func rows(_ sessions: [Session], previews: Bool, carried: [SessionActivityRow] = []) -> [SessionActivityRow] {
+    static func rows(_ sessions: [Session], previews: Bool, projects: [String: String] = [:], carried: [SessionActivityRow] = []) -> [SessionActivityRow] {
         let key = { (members: [Session]) in (members.map { rank[$0.activity]! }.min()!, -(members.compactMap(\.activityAt).max() ?? 0)) }
         let active = families(sessions).sorted { (key($0.active).0, key($0.active).1, $0.root.id) < (key($1.active).0, key($1.active).1, $1.root.id) }
-        let projects = Dictionary(carried.map { ($0.id, $0.project) }, uniquingKeysWith: { first, _ in first })
         let live = active.map { family in
             let title = family.root.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let workers = family.active.filter { $0.id != family.root.id }.count
             return SessionActivityRow(id: family.root.id, status: status[family.active.min { rank[$0.activity]! < rank[$1.activity]! }!.activity]!,
                                       title: previews && !title.isEmpty ? SessionActivityRow.clip(title, 60) : nil,
-                                      project: projects[family.root.id] ?? nil, workers: workers > 0 ? workers : nil)
+                                      project: ([family.root] + family.active).lazy.compactMap { projects[$0.id] }.first.map { SessionActivityRow.clip($0, 40) },
+                                      workers: workers > 0 ? workers : nil)
         }
         let ids = Set(active.map(\.root.id))
         return Array((live + carried.filter { $0.over && !ids.contains($0.id) }).prefix(maxRows))
     }
 
-    static func initialState(_ sessions: [Session], previews: Bool, now: Date, carried: [SessionActivityRow] = []) -> SessionActivityAttributes.ContentState {
-        let shown = rows(sessions, previews: previews, carried: carried)
+    static func initialState(_ sessions: [Session], previews: Bool, projects: [String: String] = [:], now: Date, carried: [SessionActivityRow] = []) -> SessionActivityAttributes.ContentState {
+        let shown = rows(sessions, previews: previews, projects: projects, carried: carried)
         let active = shown.filter { !$0.over }
         let count = families(sessions).count
         let lead = sessions.first { $0.id == active.first?.id }?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -81,8 +81,8 @@ enum AutomaticCard {
                      sessionId: shown.first?.id, activeCount: count, rows: shown)
     }
 
-    static func refreshed(_ current: SessionActivityAttributes.ContentState, _ sessions: [Session], previews: Bool, now: Date) -> SessionActivityAttributes.ContentState? {
-        var next = initialState(sessions, previews: previews, now: now, carried: current.rows ?? [])
+    static func refreshed(_ current: SessionActivityAttributes.ContentState, _ sessions: [Session], previews: Bool, projects: [String: String] = [:], now: Date) -> SessionActivityAttributes.ContentState? {
+        var next = initialState(sessions, previews: previews, projects: projects, now: now, carried: current.rows ?? [])
         next.startedAt = current.startedAt
         let same = (next.title, next.status, next.sessionId, next.activeCount, next.rows) == (current.title, current.status, current.sessionId, current.activeCount, current.rows)
         return same ? nil : next

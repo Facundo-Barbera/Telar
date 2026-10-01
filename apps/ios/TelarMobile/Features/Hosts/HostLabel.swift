@@ -8,6 +8,10 @@ enum HostLabel {
         return raw
     }
 
+    static func short(_ raw: String?) -> String {
+        name(raw).split(separator: ".").first.map(String.init) ?? unknown
+    }
+
     static func header(name raw: String?, hostCount: Int) -> String? {
         guard hostCount > 1 else { return nil }
         return name(raw)
