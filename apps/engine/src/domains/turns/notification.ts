@@ -1,8 +1,12 @@
 import type { CohortMember, NotificationDetail, NotificationEntry, WakeKind } from "@telar/engine-client";
-import { agentNotice, type AgentNoticeInput } from "./agent-notice";
+import { agentNotice, type AgentNoticeInput, inlineExcerpt } from "./agent-notice";
 import { firstLine } from "./turn-summary";
 
 const SUMMARY_CHARS = 240;
+
+const BODY_CHARS = 8_000;
+
+const QUOTE_FLOOR = 160;
 
 export const MAX_COHORT_ENTRIES = 50;
 
@@ -156,24 +160,46 @@ const OUTCOME_PHRASE: Record<NonNullable<CohortMember["outcome"]>, string> = {
   deleted: "deleted before it reported",
 };
 
-function soloExcerpt(member: CohortMember): string[] {
-  if (!member.excerpt) return [];
-  const cut = member.chars !== undefined && member.chars > member.excerpt.length;
-  return [
-    cut ? `It begins (${(member.chars! - member.excerpt.length).toLocaleString("en-US")} more chars not shown; the read above has them):` : "In full:",
-    "<<<",
-    member.excerpt,
-    ">>>",
-  ];
-}
-
-function memberLine(member: CohortMember): string {
+function memberLine(member: CohortMember, said: boolean): string {
   const who = `${member.sessionId}${member.title ? ` "${member.title}"` : ""}`;
   const ended = member.outcome ? OUTCOME_PHRASE[member.outcome] : `STILL PENDING${member.blocked ? " (its blocker is unanswered)" : " (no result sent)"}`;
   const state = member.spent ? `${ended} (${member.spent})` : ended;
-  const said = member.firstLine ? `: ${member.firstLine}` : "";
+  const text = said && member.firstLine ? `: ${member.firstLine}` : "";
   const read = member.fetch ? ` · sessions_read(sessionId: "${member.fetch.sessionId}", runId: "${member.fetch.runId}")` : "";
-  return `${who} — ${state}${said}${read}`;
+  return `${who} — ${state}${text}${read}`;
+}
+
+const cutLabel = (more: number) => `It begins (${more.toLocaleString("en-US")} more chars not shown; the read above has them):`;
+
+function quoteOf(member: CohortMember, room: number): string[] | undefined {
+  if (!member.excerpt || member.excerpt === member.firstLine) return undefined;
+  const whole = member.chars ?? member.excerpt.length;
+  const textRoom = room - cutLabel(whole).length - "\n<<<\n\n>>>\n".length - 1;
+  if (textRoom < QUOTE_FLOOR) return undefined;
+  const { shown, omitted } = inlineExcerpt(member.excerpt, textRoom);
+  const more = Math.max(0, whole - member.excerpt.length) + omitted;
+  return [more > 0 ? cutLabel(more) : "In full:", "<<<", shown, ">>>"];
+}
+
+const sizeOf = (lines: readonly string[]) => lines.reduce((sum, line) => sum + line.length + 1, 0);
+
+function memberSection(members: readonly CohortMember[], room: number): string {
+  const numbered = (index: number, line: string) => `${index + 1}. ${line}`;
+  const plain = members.map((member, index) => numbered(index, memberLine(member, true)));
+  const lines = sizeOf(plain) <= room ? plain : members.map((member, index) => numbered(index, memberLine(member, false)));
+  let left = room - sizeOf(lines);
+  const quotable = members.map((_, index) => index).filter((index) => members[index]!.excerpt).sort((a, b) => members[a]!.excerpt!.length - members[b]!.excerpt!.length);
+  const quotes = new Map<number, { line: string; quote: string[] }>();
+  for (const [order, index] of quotable.entries()) {
+    const line = numbered(index, memberLine(members[index]!, false));
+    const saved = sizeOf([lines[index]!]) - sizeOf([line]);
+    const quote = quoteOf(members[index]!, Math.floor(left / (quotable.length - order)) + saved);
+    if (!quote) continue;
+    quotes.set(index, { line, quote });
+    left -= sizeOf(quote) - saved;
+  }
+  const section = lines.flatMap((line, index) => (quotes.has(index) ? [quotes.get(index)!.line, ...quotes.get(index)!.quote] : [line])).join("\n");
+  return section.length <= room ? section : `${section.slice(0, room - 1)}…`;
 }
 
 export function cohortNotification(input: {
@@ -189,17 +215,12 @@ export function cohortNotification(input: {
   const header = input.reason === "all"
     ? `[cohort done · all ${input.members.length} sessions finished]`
     : `[cohort expired · ${finished.length} of ${input.members.length} sessions finished in ${input.minutes} min]`;
-  const lines = input.members.map(memberLine);
-  const body = [
-    header,
-    "—",
-    ...lines.map((line, index) => `${index + 1}. ${line}`),
-    ...(input.members.length === 1 ? soloExcerpt(input.members[0]!) : []),
-    "—",
-    `One line per session: how it ended and the first line of what it said; the call on a line reads it whole.${
-      input.reason === "expired" ? " Nothing more will arrive from this cohort — subscribe again with the pending ones to keep waiting." : ""
-    } None of this was typed by a person.`,
-  ].join("\n");
+  const lines = input.members.map((member) => memberLine(member, true));
+  const footer = `Each session: how it ended and what it said, quoted whole where it fits; the call on a line reads the rest.${
+    input.reason === "expired" ? " Nothing more will arrive from this cohort — subscribe again with the pending ones to keep waiting." : ""
+  } None of this was typed by a person.`;
+  const room = BODY_CHARS - header.length - footer.length - "\n—\n\n—\n".length;
+  const body = [header, "—", memberSection(input.members, room), "—", footer].join("\n");
   const kind = wakeKindOf(lead);
   return {
     kind: "wake",
