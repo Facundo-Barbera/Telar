@@ -111,7 +111,7 @@ export class WorktreeSetups {
     input: { checkout: string; worktree: string; config: WorkspaceConfig; env?: Record<string, string> },
   ): Promise<SetupStatus | undefined> {
     const dependencies = input.config.dependencies ?? "install";
-    if (dependencies === "share") shareDependencies(input.checkout, input.worktree);
+    if (dependencies === "share") await shareDependencies(input.checkout, input.worktree);
     const setup = input.config.setup;
     if (!setup || dependencies !== "install") return undefined;
     if (this.live.has(sessionId)) return { ...this.live.get(sessionId)!.status };

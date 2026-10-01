@@ -1,4 +1,4 @@
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import type { AsyncGitRunner } from "../../platform/git/runner";
 
@@ -6,24 +6,37 @@ const DEPENDENCY_DIRS = new Set(["node_modules", ".venv"]);
 const BUILD_OUTPUT_DIRS = new Set([".next", "dist", ".turbo"]);
 const SKIP_DIRS = new Set([".git", ...DEPENDENCY_DIRS, ...BUILD_OUTPUT_DIRS]);
 const MAX_DEPTH = 4;
+export const DEPENDENCY_LIMITS = { scannedEntries: 20_000, linksPerDirectory: 20_000 };
 
-function find(root: string, names: Set<string>): string[] {
+class OverLimit extends Error {}
+
+const exists = (file: string) => fs.lstat(file).then(() => true, () => false);
+
+async function find(root: string, names: Set<string>): Promise<string[]> {
   const found: string[] = [];
-  const walk = (relative: string, depth: number) => {
-    let entries: fs.Dirent[];
+  let budget = DEPENDENCY_LIMITS.scannedEntries;
+  const walk = async (relative: string, depth: number) => {
+    let directory: import("node:fs").Dir;
     try {
-      entries = fs.readdirSync(path.join(root, relative), { withFileTypes: true });
+      directory = await fs.opendir(path.join(root, relative));
     } catch {
       return;
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const child = path.join(relative, entry.name);
-      if (names.has(entry.name)) found.push(child);
-      else if (depth < MAX_DEPTH && !SKIP_DIRS.has(entry.name)) walk(child, depth + 1);
+    const children: string[] = [];
+    try {
+      for await (const entry of directory) {
+        if (--budget < 0) break;
+        if (!entry.isDirectory()) continue;
+        const child = path.join(relative, entry.name);
+        if (names.has(entry.name)) found.push(child);
+        else if (depth < MAX_DEPTH && !SKIP_DIRS.has(entry.name)) children.push(child);
+      }
+    } catch {
+      return;
     }
+    for (const child of children) if (budget > 0) await walk(child, depth + 1);
   };
-  walk("", 0);
+  await walk("", 0);
   return found;
 }
 
@@ -33,36 +46,44 @@ function inside(root: string, target: string): string | undefined {
 }
 
 // A real directory of links keeps `node_modules/` ignore rules matching; workspace packages resolve to the worktree's copy.
-function linkTarget(checkout: string, worktree: string, source: string): string {
-  if (!fs.lstatSync(source).isSymbolicLink()) return source;
-  let real: string;
-  try {
-    real = fs.realpathSync(source);
-  } catch {
-    return source;
-  }
-  const relative = inside(fs.realpathSync(checkout), real);
+async function linkTarget(realCheckout: string, worktree: string, source: string): Promise<string> {
+  if (!(await fs.lstat(source)).isSymbolicLink()) return source;
+  const real = await fs.realpath(source).catch(() => undefined);
+  const relative = real && inside(realCheckout, real);
   return relative && !relative.split(path.sep).includes("node_modules") ? path.join(worktree, relative) : source;
 }
 
-function linkEntries(checkout: string, worktree: string, from: string, to: string): void {
-  fs.mkdirSync(to, { recursive: true });
-  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+type Link = { source: string; destination: string; directory: boolean };
+
+async function planLinks(from: string, to: string, plan: Link[]): Promise<void> {
+  for await (const entry of await fs.opendir(from)) {
+    if (plan.length >= DEPENDENCY_LIMITS.linksPerDirectory) throw new OverLimit();
     const source = path.join(from, entry.name);
     const destination = path.join(to, entry.name);
-    if (fs.existsSync(destination)) continue;
-    if (entry.name.startsWith("@") && entry.isDirectory()) linkEntries(checkout, worktree, source, destination);
-    else fs.symlinkSync(linkTarget(checkout, worktree, source), destination);
+    const scope = entry.name.startsWith("@") && entry.isDirectory();
+    plan.push({ source, destination, directory: scope });
+    if (scope) await planLinks(source, destination, plan);
   }
 }
 
-export function shareDependencies(checkout: string, worktree: string): string[] {
+async function linkEntries(realCheckout: string, worktree: string, from: string, to: string): Promise<void> {
+  const plan: Link[] = [];
+  await planLinks(from, to, plan);
+  await fs.mkdir(to, { recursive: true });
+  for (const link of plan) {
+    if (link.directory) await fs.mkdir(link.destination, { recursive: true });
+    else if (!(await exists(link.destination))) await fs.symlink(await linkTarget(realCheckout, worktree, link.source), link.destination);
+  }
+}
+
+export async function shareDependencies(checkout: string, worktree: string): Promise<string[]> {
   const shared: string[] = [];
-  for (const relative of find(checkout, DEPENDENCY_DIRS)) {
+  const realCheckout = await fs.realpath(checkout).catch(() => checkout);
+  for (const relative of await find(checkout, DEPENDENCY_DIRS)) {
     const destination = path.join(worktree, relative);
-    if (!fs.existsSync(path.dirname(destination)) || fs.existsSync(destination)) continue;
+    if (!(await exists(path.dirname(destination))) || (await exists(destination))) continue;
     try {
-      linkEntries(checkout, worktree, path.join(checkout, relative), destination);
+      await linkEntries(realCheckout, worktree, path.join(checkout, relative), destination);
     } catch {
       continue;
     }
@@ -72,12 +93,12 @@ export function shareDependencies(checkout: string, worktree: string): string[] 
 }
 
 export async function pruneBuildOutputs(git: AsyncGitRunner, worktree: string): Promise<string[]> {
-  if (!fs.existsSync(worktree)) return [];
-  const candidates = find(worktree, BUILD_OUTPUT_DIRS);
+  if (!(await exists(worktree))) return [];
+  const candidates = await find(worktree, BUILD_OUTPUT_DIRS);
   if (candidates.length === 0) return [];
   const ignored = await git(worktree, ["check-ignore", "--", ...candidates]);
   if (ignored.timedOut || (ignored.status !== 0 && ignored.status !== 1)) return [];
   const pruned = ignored.stdout.split("\n").filter((line) => candidates.includes(line));
-  for (const relative of pruned) fs.rmSync(path.join(worktree, relative), { recursive: true, force: true });
+  for (const relative of pruned) await fs.rm(path.join(worktree, relative), { recursive: true, force: true });
   return pruned;
 }

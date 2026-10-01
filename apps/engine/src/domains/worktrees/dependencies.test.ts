@@ -4,12 +4,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defaultWorktreeGitRunner } from "./checkout";
-import { pruneBuildOutputs, shareDependencies } from "./dependencies";
+import { DEPENDENCY_LIMITS, pruneBuildOutputs, shareDependencies } from "./dependencies";
 import { WorktreeSetups } from "./setup";
 import type { RunLauncher } from "../terminal";
 
 const roots: string[] = [];
+const limits = { ...DEPENDENCY_LIMITS };
 afterEach(() => {
+  Object.assign(DEPENDENCY_LIMITS, limits);
   for (const directory of roots.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -51,10 +53,10 @@ function fixture(): { checkout: string; worktree: string } {
 
 const read = (file: string) => fs.readFileSync(file, "utf8");
 
-test("share links the checkout's dependencies, but workspace packages resolve to the worktree's own", () => {
+test("share links the checkout's dependencies, but workspace packages resolve to the worktree's own", async () => {
   const { checkout, worktree } = fixture();
 
-  expect(shareDependencies(checkout, worktree).sort()).toEqual([".venv", path.join("apps/web/node_modules"), "node_modules"]);
+  expect((await shareDependencies(checkout, worktree)).sort()).toEqual([".venv", path.join("apps/web/node_modules"), "node_modules"]);
 
   expect(read(path.join(worktree, "node_modules/left-pad/index.js"))).toBe("left-pad");
   expect(read(path.join(worktree, "node_modules/@types/node/index.d.ts"))).toBe("types");
@@ -65,17 +67,17 @@ test("share links the checkout's dependencies, but workspace packages resolve to
   expect(git(worktree, "status", "--porcelain")).toBe(" M packages/lib/index.js\n");
 });
 
-test("share leaves dependencies the worktree already has", () => {
+test("share leaves dependencies the worktree already has", async () => {
   const { checkout, worktree } = fixture();
   write(worktree, "node_modules/own/index.js", "own");
 
-  expect(shareDependencies(checkout, worktree)).not.toContain("node_modules");
+  expect(await shareDependencies(checkout, worktree)).not.toContain("node_modules");
   expect(fs.readdirSync(path.join(worktree, "node_modules"))).toEqual(["own"]);
 });
 
 test("pruning removes ignored build output and keeps tracked output and the checkout's files", async () => {
   const { checkout, worktree } = fixture();
-  shareDependencies(checkout, worktree);
+  await shareDependencies(checkout, worktree);
   write(worktree, "apps/web/.next/cache/big", "cache");
   write(worktree, "dist/bundle.js", "bundle");
   write(checkout, "node_modules/left-pad/dist/index.js", "shipped by the package");
@@ -87,6 +89,28 @@ test("pruning removes ignored build output and keeps tracked output and the chec
   expect(fs.existsSync(path.join(worktree, "dist"))).toBe(false);
   expect(read(path.join(worktree, "shipped/dist/keep.js"))).toBe("tracked");
   expect(read(path.join(checkout, "node_modules/left-pad/dist/index.js"))).toBe("shipped by the package");
+});
+
+test("share skips a dependency directory too large to link, leaving nothing half-linked", async () => {
+  const { checkout, worktree } = fixture();
+  for (const name of ["a", "b", "c", "d", "e", "f"]) write(checkout, `apps/web/node_modules/${name}/index.js`);
+  DEPENDENCY_LIMITS.linksPerDirectory = 5;
+
+  const shared = await shareDependencies(checkout, worktree);
+
+  expect(shared).toContain("node_modules");
+  expect(shared).not.toContain(path.join("apps/web/node_modules"));
+  expect(fs.existsSync(path.join(worktree, "apps/web/node_modules"))).toBe(false);
+});
+
+test("the scan stops after its entry budget instead of walking the whole tree", async () => {
+  const { checkout, worktree } = fixture();
+  write(worktree, "dist/bundle.js");
+  DEPENDENCY_LIMITS.scannedEntries = 0;
+
+  expect(await shareDependencies(checkout, worktree)).toEqual([]);
+  expect(await pruneBuildOutputs(defaultWorktreeGitRunner, worktree)).toEqual([]);
+  expect(fs.existsSync(path.join(worktree, "dist/bundle.js"))).toBe(true);
 });
 
 test("setup runs the command only when dependencies are installed", async () => {
