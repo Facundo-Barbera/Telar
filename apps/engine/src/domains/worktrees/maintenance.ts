@@ -509,7 +509,7 @@ export class WorktreeMaintenance {
             ? await this.deps.queue(project.root, () =>
                 removeSessionWorktreeAsync(this.deps.git, project.root, row.path, this.deps.availability(project)),
               )
-            : removeUnregisteredCheckout(row.path, inventory.roots);
+            : await removeUnregisteredCheckout(row.path, inventory.roots);
         if (!removed) {
           results.push({ path: row.path, ok: false, refusal: "failed", detail: "the checkout is still there" });
           continue;

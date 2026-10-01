@@ -5,7 +5,7 @@ import type { ProjectAvailability } from "../../platform/fs/volumes";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, type WorktreesRootState } from "./location";
 import { detectCacheDedup, type CacheDedupVerdict } from "../storage";
 import type { GitRunner, AsyncGitRunner } from "../../platform/git/runner";
-import { WORKTREE_ADD_TIMEOUT_MS, WorktreeError, lockSessionWorktree, unlockWorktree, isGitWorkTree } from "./checkout";
+import { WORKTREE_TREE_TIMEOUT_MS, WorktreeError, lockSessionWorktree, unlockWorktree, isGitWorkTree } from "./checkout";
 
 /** Serialise work under a key; see `createWorktreeQueue`. */
 export type WorktreeQueue = <T>(key: string, work: () => Promise<T>) => Promise<T>;
@@ -159,7 +159,7 @@ export async function createSessionWorktreeAsync(
   const added = await git(
     input.projectRoot,
     ["worktree", "add", plan.named ? "-b" : "-B", plan.branch, plan.path, baseSha],
-    { timeoutMs: WORKTREE_ADD_TIMEOUT_MS },
+    { timeoutMs: WORKTREE_TREE_TIMEOUT_MS },
   );
   if (added.status !== 0) {
     throw new WorktreeError(`git worktree add failed: ${added.stderr.trim() || added.stdout.trim()}`);
@@ -184,7 +184,7 @@ export async function removeSessionWorktreeAsync(
   if (!fs.existsSync(root)) return false;
   await unlockWorktree(git, projectRoot, worktreePath);
   try {
-    await git(projectRoot, ["worktree", "remove", "--force", worktreePath]);
+    await git(projectRoot, ["worktree", "remove", "--force", worktreePath], { timeoutMs: WORKTREE_TREE_TIMEOUT_MS });
   } catch {
     // Best-effort: the default runner never throws, this guards a fake that might.
   }

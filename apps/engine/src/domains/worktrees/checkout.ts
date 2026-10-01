@@ -3,13 +3,13 @@ import path from "node:path";
 import { mountPointForRoot } from "../../platform/fs/volumes";
 import { createAsyncGitRunner, type GitRunner, type AsyncGitRunner } from "../../platform/git/runner";
 
-export const WORKTREE_ADD_TIMEOUT_MS = 120_000;
-export const WORKTREE_ADMISSION_MS = 300_000;
+// Adding or removing a checkout writes or deletes a whole tree, which on a slow drive takes minutes.
+export const WORKTREE_TREE_TIMEOUT_MS = 300_000;
+export const WORKTREE_ADMISSION_MS = 600_000;
 
 export const defaultWorktreeGitRunner: AsyncGitRunner = createAsyncGitRunner({
   concurrency: 2,
-  // Cuts wait behind cuts, and a cut may legitimately run for two minutes.
-  // See `WORKTREE_ADMISSION_MS`.
+  // Cuts wait behind cuts, and a cut may legitimately run for five minutes.
   defaultAdmissionMs: WORKTREE_ADMISSION_MS,
 });
 
@@ -49,7 +49,7 @@ export async function unlockWorktree(git: AsyncGitRunner, projectRoot: string, w
   }
 }
 
-export function removeUnregisteredCheckout(target: string, roots: readonly string[]): boolean {
+export async function removeUnregisteredCheckout(target: string, roots: readonly string[]): Promise<boolean> {
   const resolved = path.resolve(target);
   const parent = path.dirname(resolved);
   if (!roots.some((root) => path.resolve(root) === parent)) return false;
@@ -57,22 +57,14 @@ export function removeUnregisteredCheckout(target: string, roots: readonly strin
   // root itself is not a checkout this may touch.
   const name = path.basename(resolved);
   if (!name || name === "." || name === ".." || resolved === parent) return false;
-  let stat: fs.Stats;
-  try {
-    stat = fs.lstatSync(resolved);
-  } catch {
-    return !fs.existsSync(resolved); // Already gone is the outcome asked for.
-  }
+  const stat = await fs.promises.lstat(resolved).catch((error: NodeJS.ErrnoException) => error);
+  if (stat instanceof Error) return stat.code === "ENOENT"; // Already gone is the outcome asked for.
   // A symlink is removed as the link it is, never followed — but a checkout is
   // a directory, and anything else here is not the thing the row described.
   if (!stat.isDirectory()) return false;
-  try {
-    fs.rmSync(resolved, { recursive: true, force: true });
-  } catch {
-    // Best-effort, and the caller reports the honest answer below rather than
-    // an exception: a checkout that is still there has not been given back.
-  }
-  return !fs.existsSync(resolved);
+  // Best-effort: a checkout that is still there afterwards has not been given back.
+  await fs.promises.rm(resolved, { recursive: true, force: true }).catch(() => undefined);
+  return fs.promises.access(resolved).then(() => false, () => true);
 }
 
 export async function repairWorktree(git: AsyncGitRunner, projectRoot: string, worktreePath: string): Promise<boolean> {

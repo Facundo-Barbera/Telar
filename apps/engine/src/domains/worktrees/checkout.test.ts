@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { DEFAULT_GIT_ADMISSION_MS, DEFAULT_GIT_TIMEOUT_MS, type AsyncGitRunner } from "../../platform/git/runner";
-import { createSessionWorktreeAsync, lockSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WORKTREE_ADD_TIMEOUT_MS, WORKTREE_ADMISSION_MS, worktreeLockReason } from "./index";
+import { createSessionWorktreeAsync, lockSessionWorktree, removeSessionWorktreeAsync, repairWorktree, WORKTREE_TREE_TIMEOUT_MS, WORKTREE_ADMISSION_MS, worktreeLockReason } from "./index";
 import { tmp, removeTmp, worktreeFixtures, repo } from "../../../test/worktree-fixtures";
 
 afterEach(removeTmp);
@@ -113,13 +113,12 @@ test("repair re-points git at a worktree that moved, which a byte copy never doe
   expect(listed).not.toContain(`${cut.path} `);
 });
 
-/** `worktree add` no longer shares a number with `git rev-parse` — #813. */
-test("a worktree cut is given its own deadline, not a read's", () => {
-  expect(WORKTREE_ADD_TIMEOUT_MS).toBeGreaterThan(DEFAULT_GIT_TIMEOUT_MS);
-  expect(WORKTREE_ADD_TIMEOUT_MS).toBe(120_000);
+test("a worktree cut or removal is given its own deadline, not a read's", () => {
+  expect(WORKTREE_TREE_TIMEOUT_MS).toBeGreaterThan(DEFAULT_GIT_TIMEOUT_MS);
+  expect(WORKTREE_TREE_TIMEOUT_MS).toBe(300_000);
   // And a starved cut may wait longer than a starved read, because the callers
   // ahead of it may each legitimately hold a slot for a cut's whole budget.
-  expect(WORKTREE_ADMISSION_MS).toBeGreaterThan(WORKTREE_ADD_TIMEOUT_MS);
+  expect(WORKTREE_ADMISSION_MS).toBeGreaterThan(WORKTREE_TREE_TIMEOUT_MS);
   expect(DEFAULT_GIT_ADMISSION_MS).toBeGreaterThan(DEFAULT_GIT_TIMEOUT_MS);
 });
 
@@ -139,5 +138,17 @@ test("createSessionWorktreeAsync passes the worktree deadline down to git", asyn
   });
   const add = calls.find((call) => call.args[0] === "worktree" && call.args[1] === "add");
   expect(add).toBeDefined();
-  expect(add!.options?.timeoutMs).toBe(WORKTREE_ADD_TIMEOUT_MS);
+  expect(add!.options?.timeoutMs).toBe(WORKTREE_TREE_TIMEOUT_MS);
+});
+
+test("removing a session worktree gives git the tree deadline", async () => {
+  const calls: Array<{ args: string[]; options?: { timeoutMs?: number } }> = [];
+  const recording: AsyncGitRunner = async (_cwd, args, options) => {
+    calls.push({ args, ...(options ? { options } : {}) });
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const worktree = path.join(tmp("telar-remove-deadline-"), "cut");
+  await removeSessionWorktreeAsync(recording, tmp("telar-remove-deadline-project-"), worktree);
+  const remove = calls.find((call) => call.args[0] === "worktree" && call.args[1] === "remove");
+  expect(remove?.options?.timeoutMs).toBe(WORKTREE_TREE_TIMEOUT_MS);
 });
