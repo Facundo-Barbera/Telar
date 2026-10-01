@@ -313,11 +313,36 @@ describe("a composer too narrow for its controls", () => {
   const tray = (host: HTMLElement) => host.querySelector("[data-slot=composer-foot]")!;
   const oneLine = (host: HTMLElement) => model(tray(host)) !== null;
 
-  test("narrow puts the controls on one line, with the model in the tray below", async () => {
-    const { host } = await narrowable({ session }, 100);
+  const expand = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('button[aria-label="Open the full composer"]');
+  const collapsed = "calc(5lh + 1.25rem)";
+
+  test("narrow shows the collapsed composer it takes while reading back", async () => {
+    const { host, editor } = await narrowable({ session }, 100);
+    expect(expand(host)).not.toBeNull();
+    expect(editor.style.maxHeight).toBe(collapsed);
     expect(oneLine(host)).toBe(true);
     expect(host.querySelector('button[aria-label="Send"]')).not.toBeNull();
-    expect(host.querySelector('button[aria-label="Add context"]')).not.toBeNull();
+  });
+
+  test("focusing and typing while narrow keeps it collapsed, and Enter sends", async () => {
+    let sends = 0;
+    const { host, editor } = await narrowable({ session, onSubmit: () => sends++ }, 100);
+    await click(editor);
+    await type(editor, "quick note");
+    key(editor, { key: "Enter" });
+    await flush();
+    expect(sends).toBe(1);
+    expect(expand(host)).not.toBeNull();
+    expect(oneLine(host)).toBe(true);
+  });
+
+  test("expanded while narrow, the full box keeps the model in the tray", async () => {
+    const { host, editor } = await narrowable({ session, initial: "longer thought" }, 100);
+    await click(expand(host)!);
+    expect(expand(host)).toBeNull();
+    expect(editor.style.maxHeight).toBe("");
+    expect(oneLine(host)).toBe(true);
+    expect(editor.textContent).toBe("longer thought");
   });
 
   test("wide keeps the full composer, with the model in the card", async () => {
@@ -344,7 +369,9 @@ describe("a composer too narrow for its controls", () => {
 
   test("hovering at the boundary does not flicker", async () => {
     const { host, resize } = await narrowable({ session }, 2000);
-    let edge = 1000;
+    let edge = 400;
+    await resize(edge);
+    expect(oneLine(host)).toBe(false);
     while (!oneLine(host) && edge > 0) await resize((edge -= 10));
     expect(edge).toBeGreaterThan(100);
     const flips: boolean[] = [];

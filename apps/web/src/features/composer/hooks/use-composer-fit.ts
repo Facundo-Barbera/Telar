@@ -28,18 +28,19 @@ export function useComposerFit() {
     if (!element) return;
     const check = () => {
       const width = element.clientWidth;
+      if (fit.narrow) {
+        if (width >= fit.threshold + SLACK_PX) setFit({ narrow: false, threshold: fit.threshold });
+        return;
+      }
       const over = row ? overflow(row) : 0;
-      setFit((prev) => {
-        if (row) return over > 0 ? { narrow: true, threshold: width + over } : prev;
-        return prev.narrow && width >= prev.threshold + SLACK_PX ? { narrow: false, threshold: prev.threshold } : prev;
-      });
+      if (over > 0) setFit({ narrow: true, threshold: width + over });
     };
     check();
     const observer = new ResizeObserver(check);
     observer.observe(element);
     if (row) observer.observe(row);
     return () => observer.disconnect();
-  }, [row]);
+  }, [row, fit]);
 
   return { root, row: setRow, narrow: fit.narrow };
 }

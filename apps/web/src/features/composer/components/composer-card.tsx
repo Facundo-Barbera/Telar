@@ -25,20 +25,18 @@ const keepSelectionMenu = (event: React.MouseEvent<HTMLDivElement>) => {
   event.nativeEvent.stopImmediatePropagation();
 };
 
-function CompactControls({ addFiles, onExpand, trailing }: { addFiles: (files: File[]) => void; onExpand?: () => void; trailing: ReactNode }) {
+function CompactControls({ addFiles, onExpand, trailing }: { addFiles: (files: File[]) => void; onExpand: () => void; trailing: ReactNode }) {
   return (
     <InputGroupAddon align="inline-end" className="gap-1 self-end py-1.5 pr-1.5">
-      {onExpand && (
-        <button
-          type="button"
-          aria-label="Open the full composer"
-          title="Open the full composer"
-          onClick={onExpand}
-          className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <Maximize2Icon className="size-3.5" />
-        </button>
-      )}
+      <button
+        type="button"
+        aria-label="Open the full composer"
+        title="Open the full composer"
+        onClick={onExpand}
+        className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <Maximize2Icon className="size-3.5" />
+      </button>
       <AddContextMenu onPick={addFiles} />
       {trailing}
     </InputGroupAddon>
@@ -88,7 +86,7 @@ export function ComposerCard({
   onSelectionChange: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void;
   onFocus: () => void;
-  onExpand?: () => void;
+  onExpand: () => void;
   stash: ComposerStash;
   menu: ComposerCompletions;
   pick: (completion: Completion) => void;
@@ -125,7 +123,7 @@ export function ComposerCard({
       <ComposerChromeMenu {...chrome}>
         <InputGroup
           {...drop.handlers}
-          className={cn("rounded-2xl border-border/80 bg-card/95 shadow-2 backdrop-blur-xl", dropping && "relative border-ring ring-2 ring-ring/40", compact && "h-auto flex-wrap has-[>[data-align=block-start]]:flex-row")}
+          className={cn("rounded-2xl border-border/80 bg-card/95 shadow-2 backdrop-blur-xl", dropping && "relative border-ring ring-2 ring-ring/40", compact && "h-auto")}
         >
           {dropping && (
             <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-3.5 z-10 flex justify-center">
@@ -167,7 +165,7 @@ export function ComposerCard({
             </InputGroupAddon>
           )}
           {compact ? (
-            <CompactControls addFiles={addFiles} trailing={trailing} {...(onExpand ? { onExpand } : {})} />
+            <CompactControls addFiles={addFiles} onExpand={onExpand} trailing={trailing} />
           ) : (
             <InputGroupAddon ref={controlsRef} align="block-end" className="min-h-10 flex-wrap justify-between gap-1 border-t border-border/40 px-2 pt-1 pb-1.5">
               <div className="flex min-w-0 flex-wrap items-center gap-1">
