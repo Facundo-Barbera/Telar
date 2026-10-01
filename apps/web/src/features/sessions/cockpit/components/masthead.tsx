@@ -114,16 +114,16 @@ export function SessionMasthead({ projectId, hostId, projectName, projectResolve
           {/* The folder glyph stands in while the rail is open, so the breadcrumb never shifts. */}
           <MainSidebarTrigger className="-mx-[7px]" fallback={<FolderGit2Icon className="size-3.5 shrink-0 text-muted-foreground" />} />
           {projectId === undefined ? (
-            <span className="shrink-0 truncate text-muted-foreground">Main</span>
+            <span className="min-w-0 truncate text-muted-foreground">Main</span>
           ) : (
             <Link
               href={canvasHref(projectId, hostId)}
-              className="app-no-drag shrink-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              className="app-no-drag min-w-0 truncate text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
             >
               {projectLabel({ name: projectName, hostName: hostName(hostId), resolved: projectResolved === true })}
             </Link>
           )}
-          <span className="text-border">/</span>
+          <span className="shrink-0 text-border">/</span>
           {editing ? (
             <TitleEditor value={draftTitle} onChange={setDraftTitle} onCommit={commit} onCancel={() => setEditing(false)} />
           ) : (
