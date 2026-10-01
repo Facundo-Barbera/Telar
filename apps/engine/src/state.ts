@@ -608,7 +608,7 @@ export class EngineStore {
       getProject: (id) => this.projectRegistry.get(id),
       availability: (project) => this.projectProbes.availability(project),
       assertProjectAvailable: (id) => this.projectRegistry.assertAvailable(id),
-      restoreWorktree: (id) => void this.worktrees.restore(id),
+      reopenWorktree: (id) => this.worktrees.reopen(id),
       prepareWorktree: (id, root, plan, baseSha) => this.lifecycle.prepareWorktree(id, root, plan, baseSha),
       planWorktree: prepareSessionWorktree,
       derivedBranchFor,

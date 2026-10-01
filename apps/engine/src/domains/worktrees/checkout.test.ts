@@ -26,9 +26,8 @@ test("every session worktree is locked the moment it exists, on any disk", async
 
 test("the lock reason names the volume only when there is one", () => {
   expect(worktreeLockReason("/Users/someone/Telar/engine/worktrees/x", "darwin")).not.toContain("removable volume");
-  // A real mount point cannot be faked here, so this pins the other half: an
-  // ordinary path never picks up #630's sentence.
   expect(worktreeLockReason("/Users/someone/Telar/engine/worktrees/x", "darwin")).toContain("A Telar session is working in this worktree");
+  expect(worktreeLockReason("/Volumes/Drive/worktrees/x", "darwin")).toContain("removable volume");
 });
 
 test("gh's own worktree removal cannot take a live session's checkout", async () => {

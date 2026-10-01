@@ -1,8 +1,11 @@
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import { statePaths } from "../../platform/fs/state-paths";
+import { existsWithin, VolumeGate } from "../../platform/fs/volume-gate";
 
 const REAP_EVERY_MS = 24 * 60 * 60 * 1000;
+const TREE_TIMEOUT_MS = 120_000;
 
 export type ReapCandidate = {
   sessionId: string;
@@ -16,65 +19,56 @@ type ReapedTree = { sessionId: string; path: string; bytes: number; files: numbe
 export type NodeModulesReap = {
   reaped: ReapedTree[];
   refused: { live: number; working: number };
-  standDown?: "root-unreadable" | "swept-recently";
+  standDown?: "swept-recently";
 };
 
 export type ReapDeps = {
   now?: () => number;
-  remove?: (directory: string) => void;
-  exists?: (target: string) => boolean;
+  gate?: VolumeGate;
+  remove?: (directory: string) => Promise<void>;
 };
 
-function treeSize(directory: string): { bytes: number; files: number } {
+async function treeSize(directory: string, signal: AbortSignal): Promise<{ bytes: number; files: number }> {
   let bytes = 0;
   let files = 0;
   const frontier = [directory];
   while (frontier.length > 0) {
+    if (signal.aborted) throw signal.reason;
     const at = frontier.pop()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(at, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const full = path.join(at, entry.name);
-      if (entry.isDirectory() && !entry.isSymbolicLink()) { frontier.push(full); continue; }
-      try { bytes += fs.lstatSync(full).size; files += 1; } catch { }
-    }
+    const entries = await fsp.readdir(at, { withFileTypes: true }).catch(() => []);
+    const sizes = await Promise.all(
+      entries.map(async (entry) => {
+        const full = path.join(at, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) { frontier.push(full); return undefined; }
+        return fsp.lstat(full).then((stat) => stat.size, () => undefined);
+      }),
+    );
+    for (const size of sizes) if (size !== undefined) { bytes += size; files += 1; }
   }
   return { bytes, files };
 }
 
-export function reapNodeModules(
-  engineRoot: string,
-  input: { rootReadable: boolean; candidates: readonly ReapCandidate[] },
-  deps: ReapDeps = {},
-): NodeModulesReap {
+export async function reapNodeModules(engineRoot: string, candidates: readonly ReapCandidate[], deps: ReapDeps = {}): Promise<NodeModulesReap> {
   const now = deps.now ?? (() => Date.now());
-  const remove = deps.remove ?? ((directory: string) => fs.rmSync(directory, { recursive: true, force: true }));
-  const exists = deps.exists ?? ((target: string) => fs.existsSync(target));
-  const empty: NodeModulesReap = { reaped: [], refused: { live: 0, working: 0 } };
-
-  if (!input.rootReadable) return { ...empty, standDown: "root-unreadable" };
+  const gate = deps.gate ?? new VolumeGate();
+  const remove = deps.remove ?? ((directory: string) => fsp.rm(directory, { recursive: true, force: true }));
 
   const marker = statePaths(engineRoot).nodeModulesReaped;
   const last = Number(readMarker(marker));
-  if (Number.isFinite(last) && last > 0 && now() - last < REAP_EVERY_MS) return { ...empty, standDown: "swept-recently" };
+  if (Number.isFinite(last) && last > 0 && now() - last < REAP_EVERY_MS) return { reaped: [], refused: { live: 0, working: 0 }, standDown: "swept-recently" };
 
+  await gate.admit(candidates.filter((candidate) => candidate.archived && !candidate.live).map((candidate) => candidate.worktree));
   const reaped: ReapedTree[] = [];
   const refused = { live: 0, working: 0 };
-  for (const candidate of input.candidates) {
+  for (const candidate of candidates) {
     if (candidate.live) { if (candidate.archived) refused.working += 1; else refused.live += 1; continue; }
     if (!candidate.archived) { refused.live += 1; continue; }
     const tree = path.join(candidate.worktree, "node_modules");
-    if (!exists(tree)) continue;
-    const { bytes, files } = treeSize(tree);
-    try {
-      remove(tree);
-      reaped.push({ sessionId: candidate.sessionId, path: tree, bytes, files });
-    } catch {
-    }
+    if (!(await existsWithin(gate, tree))) continue;
+    const size = await gate.run(tree, (signal) => treeSize(tree, signal), TREE_TIMEOUT_MS);
+    if (!size) continue;
+    const removed = await gate.run(tree, () => remove(tree).then(() => true), TREE_TIMEOUT_MS);
+    if (removed) reaped.push({ sessionId: candidate.sessionId, path: tree, ...size });
   }
 
   try {

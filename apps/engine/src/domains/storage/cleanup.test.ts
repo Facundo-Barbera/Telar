@@ -174,10 +174,13 @@ test("paused or ambient background tasks are not live work: the sweep and the re
     const { store, checkout } = await setup();
     backgroundTask(store, state, ambient ? { ambient } : {});
     expect(store.records.get("session_one").activity).toBe("idle");
-    expect(store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", live: false })]);
     store.cleanup.setPolicy({ unchanged: true });
     await store.worktrees.runCleanup();
     expect(fs.existsSync(checkout), `${state}${ambient ? " ambient" : ""}`).toBe(false);
+    const archived = await setup();
+    backgroundTask(archived.store, state, ambient ? { ambient } : {});
+    archived.store.lifecycle.archiveSession("session_one");
+    expect(archived.store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", live: false })]);
   }
 });
 
@@ -188,6 +191,7 @@ test("an open terminal: the unchanged sweep skips the session's checkout, and th
   await store.worktrees.runCleanup();
   expect(fs.existsSync(checkout)).toBe(true);
   expect(store.cleanup.last()).toMatchObject({ released: 0, skipped: 1 });
+  store.lifecycle.archiveSession("session_one");
   expect(store.worktrees.reapable()).toEqual([expect.objectContaining({ sessionId: "session_one", live: true })]);
 });
 
