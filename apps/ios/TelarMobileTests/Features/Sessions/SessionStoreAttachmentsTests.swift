@@ -69,6 +69,19 @@ private final class UploadStub: URLProtocol {
         #expect(store.pendingAttachments.map(\.id) == ["att_up"])
     }
 
+    @Test func attachedFilesComeBackWhenTheSessionIsOpenedAgain() async {
+        UploadStub.status = 201
+        defer { cleanUp() }
+        let first = SessionStore(api: api(), sessionId: session, hostId: host)
+        _ = await first.attach(data: Data("pdf".utf8), name: "notes.pdf", mediaType: "application/pdf")
+
+        let reopened = SessionStore(api: api(), sessionId: session, hostId: host)
+
+        #expect(reopened.pendingAttachments.map(\.name) == ["notes.pdf"])
+        reopened.removeAttachment("att_up")
+        #expect(SessionStore(api: api(), sessionId: session, hostId: host).pendingAttachments.isEmpty)
+    }
+
     @Test func aRefusedUploadSaysWhichFileAndWhy() async {
         UploadStub.status = 400
         defer { cleanUp() }

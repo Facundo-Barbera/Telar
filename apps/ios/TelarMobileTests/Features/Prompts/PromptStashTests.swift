@@ -66,4 +66,12 @@ import Testing
         #expect(stashAgo(Timestamp(9_000 * 1000), now: now) == "16m ago")
         #expect(stashAgo(Timestamp(0), now: now) == "2h ago")
     }
+
+    @Test func aStashedImageRoundTripsThroughItsDataURL() {
+        let bytes = Data([0x89, 0x50, 0x4E, 0x47])
+        let image = StashedImage(name: "a.png", type: "image/png", data: bytes)
+        #expect(image.dataUrl.hasPrefix("data:image/png;base64,"))
+        #expect(image.data == bytes)
+        #expect(StashedImage(name: "b", type: "image/png", dataUrl: "not a data url").data == nil)
+    }
 }

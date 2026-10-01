@@ -5,6 +5,21 @@ struct StashedImage: Codable, Equatable {
     var name: String
     var type: String
     var dataUrl: String
+
+    init(name: String, type: String, dataUrl: String) {
+        self.name = name
+        self.type = type
+        self.dataUrl = dataUrl
+    }
+
+    init(name: String, type: String, data: Data) {
+        self.init(name: name, type: type, dataUrl: "data:\(type);base64,\(data.base64EncodedString())")
+    }
+
+    var data: Data? {
+        guard let comma = dataUrl.firstIndex(of: ","), dataUrl[..<comma].hasSuffix(";base64") else { return nil }
+        return Data(base64Encoded: String(dataUrl[dataUrl.index(after: comma)...]))
+    }
 }
 
 struct StashEntry: Codable, Equatable, Identifiable {

@@ -12,7 +12,7 @@ import Observation
     private(set) var pendingSend: PendingSend?
     private(set) var sendError: String?
     private(set) var actionError: String?
-    private(set) var pendingAttachments: [TurnAttachment] = []
+    private(set) var pendingAttachments: [TurnAttachment] = [] { didSet { persistAttachments() } }
     private(set) var attachmentPreviews: [EngineID: Data] = [:]
     private(set) var uploading = false
     private(set) var catalogue: ModelCatalogue?
@@ -24,6 +24,7 @@ import Observation
         if let hostId { return "telar.pendingSend.\(hostId.uuidString).\(sessionId)" }
         return "telar.pendingSend.\(sessionId)"
     }
+    private var attachmentsKey: String? { hostId.map { "telar.draft.\($0).\(sessionId).attachments" } }
 
     init(api: any EngineAPI, sessionId: EngineID, hostId: HostID? = nil, cache: HostSnapshotCache? = nil) {
         self.api = api
@@ -33,6 +34,7 @@ import Observation
         if let data = UserDefaults.standard.data(forKey: pendingKey) {
             pendingSend = try? JSONDecoder().decode(PendingSend.self, from: data)
         }
+        restoreAttachments()
     }
 
     var hasActiveTurn: Bool {
@@ -85,6 +87,24 @@ import Observation
     func removeAttachment(_ id: EngineID) {
         pendingAttachments.removeAll { $0.id == id }
         attachmentPreviews[id] = nil
+    }
+
+    private func persistAttachments() {
+        guard let attachmentsKey else { return }
+        if pendingAttachments.isEmpty {
+            UserDefaults.standard.removeObject(forKey: attachmentsKey)
+        } else if let data = try? JSONEncoder().encode(pendingAttachments) {
+            UserDefaults.standard.set(data, forKey: attachmentsKey)
+        }
+    }
+
+    private func restoreAttachments() {
+        guard let attachmentsKey, let data = UserDefaults.standard.data(forKey: attachmentsKey),
+              let rows = try? JSONDecoder().decode([TurnAttachment].self, from: data) else { return }
+        pendingAttachments = rows
+        for row in rows where row.mediaType.hasPrefix("image/") && row.bytes <= ComposerIntake.previewCap {
+            attachmentPreviews[row.id] = AttachmentCache.shared.cached(host: hostId, session: sessionId, attachmentId: row.id)
+        }
     }
 
     func loadModels() async {

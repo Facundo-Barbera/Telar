@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ComposerView: View {
     @Binding var draft: String
@@ -155,7 +156,7 @@ struct ComposerView: View {
             Button("Clear draft", systemImage: "eraser") { clearDraft() }
                 .disabled(draft.isEmpty)
             Button("Stash draft", systemImage: "tray.and.arrow.down", action: stashDraft)
-                .disabled(!hasDraftText)
+                .disabled(!hasDraftText && host.pendingAttachments.isEmpty)
         }
         .overlay {
             if dropping { shape.strokeBorder(Theme.accent, lineWidth: 2) }
@@ -289,7 +290,7 @@ struct ComposerView: View {
                     if ComposerPicker.hasCamera { Button("Camera", systemImage: "camera") { picking = .camera } }
                     Button("Files", systemImage: "folder") { picking = .files }
                 }
-                if hasDraftText { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
+                if hasDraftText || !host.pendingAttachments.isEmpty { Button("Stash this prompt", systemImage: "tray.and.arrow.down", action: stashDraft) }
                 Button("Show stashed prompts", systemImage: "tray.full") { showingStash = true }
             }
             if isRunning && slot != .stop {
@@ -472,20 +473,38 @@ struct ComposerView: View {
 
     private func stashDraft() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        let ok = PromptStash.shared.stash(StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: []))
-        guard ok else {
+        let attached = host.pendingAttachments
+        let images = attached.compactMap { row in
+            host.attachmentPreviews[row.id].map { StashedImage(name: row.name, type: row.mediaType, data: $0) }
+        }
+        var entry = StashEntry(id: UUID().uuidString, at: Timestamp(Date().timeIntervalSince1970 * 1000), prompt: text, images: images)
+        let carriesFiles = !attached.isEmpty && images.count == attached.count && StashRules.weigh(entry) <= StashLimits.entryChars
+        if !carriesFiles { entry.images = [] }
+        guard !text.isEmpty || carriesFiles else { return }
+        guard PromptStash.shared.stash(entry) else {
             note = "There was no room to stash this. Nothing was taken from the box."
             return
         }
         draft = ""
-        note = host.pendingAttachments.isEmpty ? nil : "Stashed the text. The photos stay here."
+        if carriesFiles { attached.forEach { host.removeAttachment($0.id) } }
+        note = attached.isEmpty || carriesFiles ? nil : "Stashed the text. The files stay here."
     }
 
     private func restore(_ entry: StashEntry) {
-        guard let taken = PromptStash.shared.take(entry.id, room: 0) else { return }
+        let room = ComposerIntake.turnCap - host.pendingAttachments.count
+        guard let taken = PromptStash.shared.take(entry.id, room: room) else { return }
         draft = StashRules.appendPrompt(draft, taken.prompt)
-        note = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — this app cannot restore pictures yet." : nil
         focus.wrappedValue = true
+        let left = taken.left > 0 ? "\(taken.left == 1 ? "1 image is" : "\(taken.left) images are") still in the stash — there is no room for more here." : nil
+        note = left
+        let images = taken.images
+        guard !images.isEmpty else { return }
+        Task {
+            await attach(images.map { image in
+                image.data.map { ComposerIntake.take($0, name: image.name, type: UTType(mimeType: image.type)) }
+                    ?? .refused("\(image.name) could not be restored.")
+            })
+            if let left { note = [note, left].compactMap { $0 }.joined(separator: " ") }
+        }
     }
 }

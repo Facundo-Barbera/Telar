@@ -13,6 +13,8 @@ enum ComposerIntake {
 
     static let previewCap = 8 * 1024 * 1024
 
+    static let turnCap = 16
+
     static let accepted: [UTType] = [.image, .pdf, .movie, .audio, .text, .fileURL, .data]
 
     static func best(of identifiers: [String]) -> UTType? {
