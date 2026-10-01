@@ -163,10 +163,30 @@ struct DraftComposerHost: ComposerHost {
     var queuedTurns: [JournalTurn] { [] }
     var canPromoteQueued: Bool { false }
 
+    var commandContext: ComposerCommandContext {
+        ComposerCommandContext(fresh: true, runtimeMode: model.runtimeMode, driver: model.choice.driver, envMode: model.draft.envMode)
+    }
+
+    var skillsKey: String? { model.draft.target.map { "project:\($0.id):\(model.choice.driver)" } }
+
     func send(_ text: String) async { await model.send(text) }
     func stop() async {}
     func attach(data: Data, name: String, mediaType: String) async { model.attach(data: data, name: name, mediaType: mediaType) }
     func removeAttachment(_ id: EngineID) { model.removeAttachment(id) }
     func promote(_ runId: String) async {}
     func withdraw(_ runId: String) async {}
+
+    func readSkills() async throws -> ProviderSkills {
+        guard let api = model.api, let target = model.draft.target else { return .empty }
+        return try await api.projectSkills(target.project.id, driver: model.choice.driver)
+    }
+
+    func perform(_ action: ComposerCommandAction) async {
+        switch action {
+        case .runtimeMode(let mode): model.runtimeMode = mode
+        case .envMode(let mode): model.draft.setMode(mode)
+        case .driver(let driver): if model.choice.driver != driver { model.choice = ModelChoice(driver: driver) }
+        case .insert, .stop: break
+        }
+    }
 }

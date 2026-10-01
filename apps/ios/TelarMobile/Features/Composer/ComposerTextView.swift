@@ -17,6 +17,8 @@ struct ComposerTextView: UIViewRepresentable {
 
     var caretRect: Binding<CGRect?>?
     var caret: ComposerCaret?
+    var suggesting = false
+    var onSuggestionKey: (ComposerSuggestionKey) -> Void = { _ in }
     let onPaste: ([NSItemProvider]) -> Void
 
     func makeUIView(context: Context) -> ComposerUITextView {
@@ -42,6 +44,8 @@ struct ComposerTextView: UIViewRepresentable {
         context.coordinator.focused = $focused
         context.coordinator.caretRect = caretRect
         view.onPaste = onPaste
+        view.suggesting = suggesting
+        view.onSuggestionKey = onSuggestionKey
         caret?.view = view
         context.coordinator.sync(view, to: text)
 
@@ -151,9 +155,38 @@ struct ComposerTextView: UIViewRepresentable {
     }
 }
 
+enum ComposerSuggestionKey: Equatable {
+    case up, down, accept, dismiss
+
+    static let inputs: [(String, ComposerSuggestionKey)] = [
+        (UIKeyCommand.inputUpArrow, .up),
+        (UIKeyCommand.inputDownArrow, .down),
+        ("\r", .accept),
+        ("\t", .accept),
+        (UIKeyCommand.inputEscape, .dismiss),
+    ]
+}
+
 final class ComposerUITextView: UITextView {
     let placeholderLabel = UILabel()
     var onPaste: (([NSItemProvider]) -> Void)?
+    var suggesting = false
+    var onSuggestionKey: ((ComposerSuggestionKey) -> Void)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard suggesting else { return super.keyCommands }
+        let own = ComposerSuggestionKey.inputs.map { input, _ in
+            let command = UIKeyCommand(input: input, modifierFlags: [], action: #selector(suggestionKey(_:)))
+            command.wantsPriorityOverSystemBehavior = true
+            return command
+        }
+        return own + (super.keyCommands ?? [])
+    }
+
+    @objc private func suggestionKey(_ command: UIKeyCommand) {
+        guard let key = ComposerSuggestionKey.inputs.first(where: { $0.0 == command.input })?.1 else { return }
+        onSuggestionKey?(key)
+    }
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
