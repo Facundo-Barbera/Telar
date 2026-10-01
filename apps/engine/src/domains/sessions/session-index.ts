@@ -7,6 +7,7 @@ import type { SessionQueue } from "./queue";
 
 type SettlingClock = { now: number; autoSettleAfterHours: number | null };
 type Owner = { id: string; movesActivity: boolean };
+export type LiveScope = "lean" | "all" | "shelf";
 
 type IndexDeps = {
   withActivityFrom: (session: Session, turns: Turn[]) => Session;
@@ -54,6 +55,8 @@ export class SessionIndex {
   private listRevision = this.revisionClock;
   private unshelvedRevision = this.revisionClock;
   private shelvedRevision = this.revisionClock;
+  private epoch = 0;
+  private readonly generations = new Map<string, number>();
 
   constructor(
     private readonly kernel: Kernel,
@@ -68,18 +71,25 @@ export class SessionIndex {
     kernel.onRollback(() => this.dirtyRows.clear());
     kernel.onSessionDeleted((id) => {
       this.dirtyRows.delete(id);
-      this.bumpList();
+      this.generations.delete(id);
+      this.bumpMembership();
     });
   }
 
-  /** The cursor for one shape of the live list; `all` includes the shelf. */
-  revision(all: boolean): number {
+  /** The cursor for one shape of the live list: unshelved rows, the shelf alone, or both. */
+  revision(scope: LiveScope): number {
+    if (scope === "shelf") return Math.max(this.listRevision, this.shelvedRevision);
     const base = Math.max(this.listRevision, this.unshelvedRevision);
-    return all ? Math.max(base, this.shelvedRevision) : base;
+    return scope === "all" ? Math.max(base, this.shelvedRevision) : base;
+  }
+
+  stamp(sessionId: string): string {
+    return `${this.epoch}:${this.generations.get(sessionId) ?? 0}`;
   }
 
   bumpList(): void {
-    this.listRevision = this.nextRevision();
+    this.epoch += 1;
+    this.bumpMembership();
   }
 
   /** Moves the counter of the list this row is on, for a change the row itself doesn't carry. */
@@ -103,6 +113,10 @@ export class SessionIndex {
       for (const id of missing) this.store(id);
     });
     return { built: missing.length, removed: orphaned.length };
+  }
+
+  private bumpMembership(): void {
+    this.listRevision = this.nextRevision();
   }
 
   private nextRevision(): number {
@@ -153,11 +167,12 @@ export class SessionIndex {
    */
   private store(sessionId: string, movesActivity = true, at = this.settlingClock(), written?: SessionQueue): void {
     const store = this.kernel.executionStore;
+    this.generations.set(sessionId, (this.generations.get(sessionId) ?? 0) + 1);
     const stored = this.kernel.readDocument(sessionMetadataFile(this.kernel.paths, sessionId));
     const before = store.sessionRow(sessionId);
     if (stored === undefined) {
       store.deleteSessionRow(sessionId);
-      if (before) this.bumpList();
+      if (before) this.bumpMembership();
       return;
     }
     let record: Session;
@@ -195,7 +210,7 @@ export class SessionIndex {
     const shelved = after.state !== "active" || rowIsShelved(after, at);
     const wasShelved = before === undefined ? undefined : before.state !== "active" || rowIsShelved(before, at);
     if (before === undefined || wasShelved !== shelved) {
-      this.bumpList();
+      this.bumpMembership();
       return;
     }
     if (shelved) this.shelvedRevision = this.nextRevision();

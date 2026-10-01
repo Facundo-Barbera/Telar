@@ -17,22 +17,15 @@ export type LiveSessionsPage = {
   projects: Project[];
   assignments?: Record<string, SessionAssignment[]>;
   layout?: SidebarLayout;
-  /** Which engine answered — what folds two reads that reached ONE Mac.
-   *  Absent from an engine too old to stamp it; the rail then leaves its
-   *  hosts undeduplicated rather than dropping rows. */
+  /** Which engine answered, to fold two reads that reached one Mac; absent from an older engine. */
   daemonId?: string;
-  /** The settling window these rows band by, this engine's own. Absent
-   *  from an older engine; the rail falls back to its default. */
+  /** The settling window these rows band by; absent from an older engine. */
   inbox?: InboxPolicy;
-  /** What to pass as `since` next time. Absent from an engine too old to
-   *  count, which keeps every read a full one. */
+  /** What to pass as `since` next time. */
   revision?: number;
-  /** How many SETTLED rows this answer left out (#457) — the size of the shelf
-   *  behind `?all=1`. Absent from an engine that predates the filter, which
-   *  means "you have everything", never "the shelf is empty". */
+  /** How many settled rows the default answer left out; absent means it left none out. */
   settledCount?: number;
-  /** Open terminals per session in this answer, whoever opened them (#883).
-   *  Absent from an older engine, which reads as "none known". */
+  /** Open terminals per session in this answer, whoever opened them. */
   terminals?: Record<string, number>;
   unchanged?: false;
 };

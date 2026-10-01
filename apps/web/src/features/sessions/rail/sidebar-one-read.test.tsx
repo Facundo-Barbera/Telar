@@ -92,13 +92,26 @@ describe("and that one read is conditional", () => {
     expect(second.find((request) => request.path === "/api/hosts/mini/sessions/live")!.ifNoneMatch).toBe("mini-tag");
   });
 
-  test("opening the Settled shelf asks for the whole list rather than spending the cursor", async () => {
-    const requests = stubRail((request) => (request.search === "?all=1"
-      ? { body: page({ sessions: [liveRow("a"), liveRow("done", { settledOverride: "settled" })], revision: 7 }) }
+  test("opening the Settled shelf reads the shelf beside the list", async () => {
+    const requests = stubRail((request) => (request.search === "?all=1&shelf=1"
+      ? { body: page({ sessions: [liveRow("done", { settledOverride: "settled" })] }) }
       : { body: page({ revision: 7, settledCount: 1 }) }));
     const host = await mountRail();
     await click(shelfButton(host));
-    expect(liveReads(requests).at(-1)!.search).toBe("?all=1");
+    expect(liveReads(requests).at(-1)!.search).toBe("?all=1&shelf=1");
+    expect(host.textContent).toContain("Title done");
+    expect(host.textContent).toContain("Title a");
+  });
+
+  test("an open shelf is not read again while the list is unchanged", async () => {
+    const requests = stubRail((request) => (request.search.includes("shelf")
+      ? { etag: "shelf-1", body: page({ sessions: [liveRow("done", { settledOverride: "settled" })] }) }
+      : request.ifNoneMatch === "lean-1" ? { status: 304, etag: "lean-1" } : { etag: "lean-1", body: page({ settledCount: 1 }) }));
+    const host = await mountRail();
+    await click(shelfButton(host));
+    const before = liveReads(requests).length;
+    await nextPass();
+    expect(liveReads(requests).slice(before).map((request) => request.search)).toEqual([""]);
     expect(host.textContent).toContain("Title done");
   });
 });
@@ -152,6 +165,12 @@ describe("the route forwards what the engine stamped", () => {
     const again = await read("", { "if-none-match": etag });
     expect(again.status).toBe(304);
     expect(again.headers.get("etag")).toBe(etag);
+  });
+
+  test("?shelf=1 answers the settled rows alone, under a tag of its own", async () => {
+    const shelf = await read("?shelf=1");
+    expect((await shelf.json()).sessions.map((session: { id: string }) => session.id)).toEqual(["session_done"]);
+    expect((await read("?shelf=1", { "if-none-match": shelf.headers.get("etag")! })).status).toBe(304);
   });
 
   test("a narrow tag is not spent against the whole list", async () => {

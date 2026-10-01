@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { InboxPolicy, Project, PublicHost, SidebarLayout } from "@telar/engine-client";
 import { LOCAL_HOST_ID } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine";
+import { createEngineApi, type LiveSessionsPage } from "@/platform/engine";
 import { hostFetcher } from "@/platform/engine/host-client";
 import { PROJECTS_CHANGED_EVENT } from "@/features/projects";
 import { dedupeAcrossHosts } from "../session-groups";
-import { toSidebarSession, type SidebarSession } from "../session-list";
+import { sessionKey, toSidebarSession, type SidebarSession } from "../session-list";
 import { applyRowChange, type SessionRowChange } from "../session-mutations";
-import { readSidebarCache, rememberRows, staleRows, writeSidebarCache } from "./sidebar-cache";
+import { readSettledCache, readSidebarCache, rememberRows, staleRows, writeSettledCache, writeSidebarCache } from "./sidebar-cache";
 import { observeSidebarLayout } from "./sidebar-layout";
 import { LOCAL_HOST } from "../snapshot-cache";
 
@@ -24,28 +24,49 @@ type HostPage = {
   settledCount?: number;
 };
 
-type HostCache = { tags: Map<string, string>; revisions: Map<string, number>; pages: Map<string, HostPage> };
+type HostCache = {
+  tags: Map<string, string>;
+  revisions: Map<string, number>;
+  pages: Map<string, HostPage>;
+  staleShelves: Set<string>;
+};
 
-async function readHostPage(cache: HostCache, wide: boolean, host: { id: string; name: string } | undefined): Promise<HostPage> {
-  const hostApi = createEngineApi(hostFetcher(host?.id ?? LOCAL_HOST_ID));
-  const key = host?.id ?? LOCAL_HOST;
+type Scope = "lean" | "shelf";
+type HostApi = ReturnType<typeof createEngineApi>;
+
+const SHELF = "#shelf";
+const shelfKey = (key: string): string => `${key}${SHELF}`;
+
+function markShelvesStale(cache: HostCache): void {
+  cache.staleShelves.add(LOCAL_HOST);
+  for (const key of cache.pages.keys()) if (!key.endsWith(SHELF)) cache.staleShelves.add(key);
+}
+
+async function readList(cache: HostCache, hostApi: HostApi, key: string, scope: Scope, host: { id: string; name: string } | undefined): Promise<{ page: HostPage; changed: boolean }> {
   const known = cache.tags.get(key);
   const cursor = cache.revisions.get(key);
-  const answer = known === undefined && !wide && cursor !== undefined
+  const shelf = scope === "shelf";
+  const answer = known === undefined && !shelf && cursor !== undefined
     ? await hostApi.liveSessionsSince(cursor).then((page) => (page.unchanged ? { notModified: true as const, etag: "" } : { ...page, notModified: false as const, etag: undefined }))
     : await hostApi.liveSessionsMatching({
       ...(known === undefined ? {} : { etag: known }),
-      ...(wide ? { all: true } : {}),
+      ...(shelf ? { shelf: true } : {}),
     });
   if (answer.notModified) {
     const held = cache.pages.get(key);
-    if (held) return held;
+    if (held) return { page: held, changed: false };
   }
-  const result = answer.notModified ? await hostApi.liveSessions({ all: wide }) : answer;
+  const result = answer.notModified ? await hostApi.liveSessions({ shelf }) : answer;
   if (answer.etag) cache.tags.set(key, answer.etag);
   else cache.tags.delete(key);
-  if (result.revision === undefined) cache.revisions.delete(key);
+  if (result.revision === undefined || shelf) cache.revisions.delete(key);
   else cache.revisions.set(key, result.revision);
+  const page = toHostPage(result, host);
+  if (cache.tags.has(key) || cache.revisions.has(key)) cache.pages.set(key, page);
+  return { page, changed: true };
+}
+
+function toHostPage(result: LiveSessionsPage, host: { id: string; name: string } | undefined): HostPage {
   const daemonId = result.daemonId;
   const policy = result.inbox;
   const names = new Map(result.projects.map((project) => [project.id, project.name]));
@@ -70,7 +91,7 @@ async function readHostPage(cache: HostCache, wide: boolean, host: { id: string;
       result.terminals?.[session.id],
     ),
   );
-  const page: HostPage = {
+  return {
     projects: result.projects,
     sessions,
     ...(daemonId ? { daemonId } : {}),
@@ -78,8 +99,35 @@ async function readHostPage(cache: HostCache, wide: boolean, host: { id: string;
     ...(result.layout ? { layout: result.layout } : {}),
     ...(result.settledCount === undefined ? {} : { settledCount: result.settledCount }),
   };
-  if (cache.tags.has(key) || cache.revisions.has(key)) cache.pages.set(key, page);
-  return page;
+}
+
+function withShelf(rows: readonly SidebarSession[], shelf: readonly SidebarSession[]): SidebarSession[] {
+  const listed = new Set(rows.map(sessionKey));
+  return [...rows, ...shelf.filter((row) => !listed.has(sessionKey(row)))];
+}
+
+/** The unsettled list, and with `wide` the shelf beside it: read again only when opened, changed, or the list moved. */
+async function readHostPage(cache: HostCache, wide: boolean, host: { id: string; name: string } | undefined): Promise<HostPage> {
+  const hostApi = createEngineApi(hostFetcher(host?.id ?? LOCAL_HOST_ID));
+  const key = host?.id ?? LOCAL_HOST;
+  const lean = await readList(cache, hostApi, key, "lean", host);
+  if (!wide) return lean.page;
+  const held = cache.pages.get(shelfKey(key));
+  const shelf = held && !lean.changed && !cache.staleShelves.has(key) ? held : (await readList(cache, hostApi, shelfKey(key), "shelf", host)).page;
+  cache.staleShelves.delete(key);
+  const tag = cache.tags.get(shelfKey(key));
+  if (shelf !== held && tag) writeSettledCache({ ...readSettledCache(), [key]: { etag: tag, sessions: shelf.sessions } });
+  return { ...lean.page, sessions: withShelf(lean.page.sessions, shelf.sessions) };
+}
+
+function heldShelves(cache: HostCache): SidebarSession[] {
+  const remembered = readSettledCache();
+  for (const [key, entry] of Object.entries(remembered)) {
+    if (cache.pages.has(shelfKey(key))) continue;
+    cache.pages.set(shelfKey(key), { projects: [], sessions: entry.sessions });
+    cache.tags.set(shelfKey(key), entry.etag);
+  }
+  return [...cache.pages].flatMap(([key, page]) => (key.endsWith(SHELF) ? page.sessions : []));
 }
 
 /** Every host's live sessions and projects, polled faster while anything runs. */
@@ -97,7 +145,7 @@ export function useRailData() {
   const [staleByHost, setStaleByHost] = useState<Map<string, SidebarSession[]>>(() => new Map());
   const loadAllRunning = useRef(false);
   const loadAllAgain = useRef(false);
-  const cache = useRef<HostCache>({ tags: new Map(), revisions: new Map(), pages: new Map() });
+  const cache = useRef<HostCache>({ tags: new Map(), revisions: new Map(), pages: new Map(), staleShelves: new Set() });
   const wantsSettled = useRef(false);
 
   const loadHost = useCallback((host: { id: string; name: string } | undefined) => readHostPage(cache.current, wantsSettled.current, host), []);
@@ -172,6 +220,7 @@ export function useRailData() {
 
   const onRowChanged = useCallback((change: SessionRowChange) => {
     setSessions((rows) => applyRowChange(rows, change));
+    markShelvesStale(cache.current);
     for (const [key, page] of cache.current.pages) {
       const next = applyRowChange(page.sessions, change);
       if (next.length !== page.sessions.length || next.some((row, index) => row !== page.sessions[index])) {
@@ -184,7 +233,11 @@ export function useRailData() {
     const next = !wantsSettled.current;
     wantsSettled.current = next;
     setSettledOpen(next);
-    if (next) void loadAll();
+    if (!next) return;
+    markShelvesStale(cache.current);
+    const held = heldShelves(cache.current);
+    if (held.length > 0) setSessions((rows) => withShelf(rows, held));
+    void loadAll();
   }, [loadAll]);
 
   useEffect(() => {

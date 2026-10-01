@@ -49,8 +49,12 @@ function lastResultTurn(turns: readonly Turn[]): Turn | undefined {
   return latest;
 }
 
+type Folded = { sessions: Session[]; assignments: Record<string, SessionAssignment[]> };
+
 /** What each session is doing, folded from its queue, open requests, tasks, subscriptions and schedules. */
 export class SessionActivity {
+  private readonly shelved = new Map<string, { stamp: string; session: Session; assignments?: SessionAssignment[] }>();
+
   constructor(
     private readonly kernel: Kernel,
     private readonly deps: ActivityDeps,
@@ -129,7 +133,7 @@ export class SessionActivity {
    * One pass over the live sessions, reading each queue once for both the
    * activity and the assignments. `only` narrows it to rows already chosen.
    */
-  foldLive(only?: Iterable<string>): { sessions: Session[]; assignments: Record<string, SessionAssignment[]> } {
+  foldLive(only?: Iterable<string>): Folded {
     const sessions: Session[] = [];
     const assignments: Record<string, SessionAssignment[]> = {};
     for (const id of only ?? this.kernel.executionStore.sessionIds()) {
@@ -151,19 +155,47 @@ export class SessionActivity {
     return { sessions, assignments };
   }
 
+  // Keeps only idle folds without subscriptions: a subscriber's activity also reads other sessions' queues.
+  foldShelved(ids: Iterable<string>, stampOf: (sessionId: string) => string): Folded {
+    const sessions: Session[] = [];
+    const assignments: Record<string, SessionAssignment[]> = {};
+    const stamps = new Map<string, string>();
+    const take = (id: string, session: Session, held?: SessionAssignment[]) => {
+      sessions.push(session);
+      if (held) assignments[id] = held;
+    };
+    for (const id of ids) {
+      const stamp = stampOf(id);
+      const kept = this.shelved.get(id);
+      if (kept?.stamp === stamp) take(id, kept.session, kept.assignments);
+      else stamps.set(id, stamp);
+    }
+    const fresh = this.foldLive(stamps.keys());
+    for (const session of fresh.sessions) {
+      const held = fresh.assignments[session.id];
+      take(session.id, session, held);
+      if (session.activity === "idle" && this.deps.subscriptionsOf(session.id).length === 0) {
+        this.shelved.set(session.id, { stamp: stamps.get(session.id)!, session, ...(held ? { assignments: held } : {}) });
+      } else this.shelved.delete(session.id);
+    }
+    sessions.sort(newestFirst);
+    return { sessions, assignments };
+  }
+
   /** Which rows the rail would draw, decided from the index alone. */
-  shelf(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; settledCount: number } {
+  shelf(inbox: InboxPolicy, all: boolean, keep?: string): { chosen: Set<string>; shelved: Set<string>; settledCount: number } {
     const at = { now: this.kernel.now(), autoSettleAfterHours: inbox.autoSettleAfterHours };
     const chosen = new Set<string>();
-    let settledCount = 0;
+    const shelved = new Set<string>();
     for (const row of this.kernel.executionStore.liveSessionRows()) {
       if (row.id !== keep && rowIsShelved(row, at)) {
-        settledCount += 1;
+        shelved.add(row.id);
         if (!all) continue;
       }
       chosen.add(row.id);
     }
-    return { chosen, settledCount };
+    for (const id of this.shelved.keys()) if (!shelved.has(id)) this.shelved.delete(id);
+    return { chosen, shelved, settledCount: shelved.size };
   }
 
   // Only when every open row is a recognised wait; a cold JSON session answers nothing rather than parse.
