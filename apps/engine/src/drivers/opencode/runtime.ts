@@ -10,6 +10,7 @@ import { pluginBriefings } from "../../domains/plugins";
 import { writeOrientationInstructions } from "../../domains/sessions";
 import type { DriverRun } from "../contract";
 import { agentEnv } from "../../platform/process/agent-env";
+import { OWN_GROUP, stopGroup } from "../../platform/process/group";
 
 export type OpenCodeRuntime = { client: OpencodeClient; closed: boolean; close(): void };
 
@@ -144,7 +145,7 @@ export async function startOpenCodeRuntime(input: DriverRun): Promise<OpenCodeRu
   Object.assign(env, openCodeCompactionEnv(input.autoCompact));
   for (const [name, value] of Object.entries(env)) if (value === undefined) delete env[name];
   const child = spawn(binary, ["serve", "--hostname=127.0.0.1", "--port=0"], {
-    cwd: input.cwd, env, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
+    cwd: input.cwd, env, detached: OWN_GROUP, stdio: ["ignore", "pipe", "pipe"],
   });
   let closed = false;
   let terminated = false;
@@ -152,11 +153,7 @@ export async function startOpenCodeRuntime(input: DriverRun): Promise<OpenCodeRu
     if (terminated) return;
     terminated = true;
     closed = true;
-    if (child.pid && process.platform !== "win32") {
-      try { process.kill(-child.pid, "SIGTERM"); } catch { /* already exited */ }
-      const kill = setTimeout(() => { try { process.kill(-child.pid!, "SIGKILL"); } catch { /* exited */ } }, 1_000);
-      kill.unref();
-    } else child.kill();
+    stopGroup(child);
   };
   child.once("exit", () => { closed = true; });
   try {
