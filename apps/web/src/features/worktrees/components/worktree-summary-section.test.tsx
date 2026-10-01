@@ -158,6 +158,13 @@ describe("Settings ▸ Storage ▸ where worktrees live", () => {
     expect(view.text()).toContain("Plug the drive in to move these.");
     view.unmount();
   });
+
+  test("a volume the engine skipped because it was slow or gone is named once", async () => {
+    summary = { ...summaryWith([CURRENT, OLD]), degradedVolumes: [{ mount: "/Volumes/Focaltec HD", state: "slow" }] };
+    const view = await mount();
+    expect(view.text()).toContain("Focaltec HD is slow or not connected.");
+    view.unmount();
+  });
 });
 
 describe("Settings ▸ Storage ▸ worktrees by state", () => {
