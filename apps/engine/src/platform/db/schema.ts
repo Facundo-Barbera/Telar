@@ -35,7 +35,8 @@ export function openDatabase(root: string): { db: Database; searchIndex: "fts5" 
     fs.chmodSync(file, 0o600);
     // busy_timeout first: journal_mode=WAL takes a lock and needs the retry budget. synchronous after WAL,
     // which resets it. checkpoint_fullfsync is on under bun:sqlite by default and off under node:sqlite.
-    db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA checkpoint_fullfsync=ON;");
+    // journal_size_limit truncates the WAL after a checkpoint instead of keeping it at its peak size.
+    db.exec("PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA checkpoint_fullfsync=ON; PRAGMA journal_size_limit=33554432;");
     const version = Number(db.prepare("PRAGMA user_version").get()?.user_version ?? 0);
     if (version > 1) throw new Error("execution database requires a newer Telar version");
     // Every later table and column is additive and user_version stays 1, so an older binary still opens the store.
