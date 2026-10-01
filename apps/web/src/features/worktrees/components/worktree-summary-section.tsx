@@ -18,7 +18,7 @@ const POLL_MS = 3_000;
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
 function tallyLabel(tally: WorktreeTally): string {
-  if (tally.count === 0) return "None";
+  if (tally.count === 0) return "No worktrees";
   const size = tally.unmeasured === tally.count ? "measuring…" : `${formatBytes(tally.bytes)}${tally.unmeasured > 0 ? "+" : ""}`;
   return `${plural(tally.count, "worktree")} · ${size}`;
 }
@@ -219,6 +219,7 @@ export function WorktreeSummarySection({ version = 0 }: { version?: number }) {
 
   const current = summary?.locations.find((location) => location.current);
   const total = summary?.locations.reduce((sum, location) => sum + location.worktrees.count, 0) ?? 0;
+  const occupied = summary?.states.filter((entry) => entry.worktrees.count > 0) ?? [];
   const checked = summary ? `Checked ${fmtAgo(summary.checkedAt)}${summary.measuring ? ", still measuring sizes" : ""}.` : "Counting…";
 
   return (
@@ -227,13 +228,13 @@ export function WorktreeSummarySection({ version = 0 }: { version?: number }) {
         title="Where worktrees live"
         description={[summary?.blocker, failure ?? checked, summary?.partial ? "Some folders could not be read, so sizes are a floor." : undefined].filter(Boolean).join(" ")}
         action={
-          <span className="flex items-center gap-2">
+          <span className="flex items-center gap-2 whitespace-nowrap">
             {loading ? <Spinner className="size-3.5" /> : null}
             <Button size="sm" variant="ghost" disabled={loading} onClick={() => void load(true)}>
               Refresh
             </Button>
             <Button size="sm" variant="outline" disabled={total === 0} onClick={() => setListing(true)}>
-              Show all {total}…
+              Show all ({total})
             </Button>
           </span>
         }
@@ -245,7 +246,8 @@ export function WorktreeSummarySection({ version = 0 }: { version?: number }) {
 
       {summary ? (
         <SettingsGroup title="By state" description="Each worktree is counted once. Only worktrees proven safe to lose are released; branches and conversations are kept.">
-          {summary.states.map((entry) => (
+          {occupied.length === 0 ? <div className="py-3 text-xs text-muted-foreground">No worktrees in any state.</div> : null}
+          {occupied.map((entry) => (
             <StateRow key={entry.state} entry={entry} idleDays={summary.idleDays} onReleased={() => void load(true)} />
           ))}
         </SettingsGroup>

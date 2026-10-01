@@ -168,6 +168,22 @@ describe("Settings ▸ Storage ▸ worktrees by state", () => {
     view.unmount();
   });
 
+  test("a state with no worktrees is not drawn", async () => {
+    const view = await mount();
+    expect(view.text()).not.toContain("No session");
+    expect(view.text()).toContain("Archived sessions");
+    view.unmount();
+  });
+
+  test("with no worktrees at all, one line says so", async () => {
+    summary = { ...summaryWith([{ ...CURRENT, worktrees: tally(0, 0) }]), states: summaryWith([]).states.map((entry) => ({ ...entry, worktrees: tally(0, 0), releasable: tally(0, 0) })) };
+    const view = await mount();
+    expect(view.text()).toContain("No worktrees in any state.");
+    expect(view.text()).not.toContain("In use");
+    expect(view.button("Show all (0)")?.hasAttribute("disabled")).toBe(true);
+    view.unmount();
+  });
+
   test("releasing asks once more, then sends only the state", async () => {
     const view = await mount();
     await view.click(view.button("Release 97 worktrees · 24 GB")!);
@@ -183,7 +199,7 @@ describe("the individual list", () => {
   test("is never on the page: it opens in a dialog, and only then is fetched", async () => {
     const view = await mount();
     expect(calls.some((call) => call.url === "/api/worktrees")).toBe(false);
-    await view.click(view.button("Show all 158…")!);
+    await view.click(view.button("Show all (158)")!);
     await act(async () => {
       await settle();
     });
