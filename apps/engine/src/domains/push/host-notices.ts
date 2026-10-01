@@ -13,7 +13,6 @@ const HOST_TIMEOUT_MS = 10_000;
 export const hostPath = (hostId: string, path: string): string =>
   path.startsWith("/projects/") ? `/hosts/${encodeURIComponent(hostId)}${path}` : "/";
 
-/** A host's alert shows on this Mac as the host's own desktop would decide, and never while the host's own Mac is in use. */
 export function showsHere(notifyOn: NotifyOn, here: Presence | undefined, hostInUse: boolean, path: string, now: number): boolean {
   return !hostInUse && notifyRoute(notifyOn, here, path, now).desktop;
 }
