@@ -7,7 +7,6 @@ struct ComposerTrigger: Equatable {
     var query: String
     var range: NSRange
 
-    // `/` must open its line so "9/10" stays prose; `$` must start a word and not be `${`.
     static func detect(in text: String, caret: Int) -> ComposerTrigger? {
         let string = text as NSString
         let cursor = min(max(0, caret), string.length)
