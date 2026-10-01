@@ -23,7 +23,7 @@ import Foundation
     var onEnd: (() -> Void)?
 
     private let api: EngineAPI
-    private let engine = AVAudioEngine()
+    private var engine: AVAudioEngine?
 
     private let claim = AudioSessionClaim()
     private var socket: URLSessionWebSocketTask?
@@ -91,9 +91,6 @@ import Foundation
     private func open(_ minted: DictationTokenAnswer) throws {
         guard let wire = Self.wireFormat else { throw DictationFailure.audio("This device cannot record in the format the service needs.") }
 
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .spokenAudio, options: [.duckOthers, .defaultToSpeaker, .allowBluetooth])
-
         try claim.take()
 
         language = minted.listenLanguage
@@ -104,6 +101,8 @@ import Foundation
         socket = task
         task.resume()
 
+        let engine = AVAudioEngine()
+        self.engine = engine
         let input = engine.inputNode
         let hardware = input.outputFormat(forBus: 0)
         guard hardware.sampleRate > 0 else { throw DictationFailure.audio("No microphone input is available right now.") }
@@ -180,9 +179,12 @@ import Foundation
     }
 
     private func teardownAudio() {
-        if engine.isRunning { engine.stop() }
-
-        if claim.isHeld { engine.inputNode.removeTap(onBus: 0) }
+        if let engine {
+            if engine.isRunning { engine.stop() }
+            engine.inputNode.removeTap(onBus: 0)
+            engine.reset()
+        }
+        engine = nil
         converter = nil
 
         claim.handBack()

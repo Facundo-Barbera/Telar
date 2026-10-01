@@ -13,12 +13,11 @@ struct ComposerTextView: UIViewRepresentable {
 
     var listening = false
 
-    var interim: Range<Int>?
-
     var caretRect: Binding<CGRect?>?
-    var caret: ComposerCaret?
     var suggesting = false
     var onSuggestionKey: (ComposerSuggestionKey) -> Void = { _ in }
+    var field: ComposerField?
+    var onTouch: () -> Void = {}
     let onPaste: ([NSItemProvider]) -> Void
 
     func makeUIView(context: Context) -> ComposerUITextView {
@@ -46,7 +45,9 @@ struct ComposerTextView: UIViewRepresentable {
         view.onPaste = onPaste
         view.suggesting = suggesting
         view.onSuggestionKey = onSuggestionKey
-        caret?.view = view
+        view.onTouch = onTouch
+        field?.view = view
+        field?.coordinator = context.coordinator
         context.coordinator.sync(view, to: text)
 
         let font = UIFontMetrics.default.scaledFont(for: .systemFont(ofSize: fontSize))
@@ -56,9 +57,6 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         view.tintColor = listening ? UIColor(Theme.accent) : nil
-        view.applyInterim(interim, font: font, color: UIColor(Theme.text))
-        if context.coordinator.listening, !listening { context.coordinator.settle(view) }
-        context.coordinator.listening = listening
         if view.placeholderLabel.text != placeholder {
             view.placeholderLabel.text = placeholder
             view.accessibilityLabel = placeholder
@@ -95,13 +93,6 @@ struct ComposerTextView: UIViewRepresentable {
 
         private var applying = false
 
-        var listening = false
-
-        func settle(_ view: ComposerUITextView) {
-            published = view.text
-            view.resync()
-        }
-
         init(text: Binding<String>, focused: Binding<Bool>) {
             self.text = text
             self.focused = focused
@@ -122,11 +113,29 @@ struct ComposerTextView: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
-            (textView as? ComposerUITextView)?.placeholderLabel.isHidden = !textView.text.isEmpty
             guard !applying else { return }
+            publish(textView)
+        }
+
+        func publish(_ textView: UITextView) {
+            (textView as? ComposerUITextView)?.placeholderLabel.isHidden = !textView.text.isEmpty
             published = textView.text
             if text.wrappedValue != textView.text { text.wrappedValue = textView.text }
             report(textView)
+        }
+
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText: String) -> Bool {
+            guard !applying, (textView as? ComposerUITextView)?.committing != true else { return true }
+            let inserted = (replacementText as NSString).length
+            ComposerLog.shared.record(ComposerLogEntry(
+                source: .user,
+                location: range.location,
+                removed: range.length,
+                inserted: inserted,
+                length: (textView.text as NSString).length - range.length + inserted,
+                marked: textView.markedTextRange != nil
+            ))
+            return true
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {
@@ -187,6 +196,8 @@ final class ComposerUITextView: UITextView {
         guard let key = ComposerSuggestionKey.inputs.first(where: { $0.0 == command.input })?.1 else { return }
         onSuggestionKey?(key)
     }
+    var onTouch: (() -> Void)?
+    var committing = false
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
@@ -215,7 +226,14 @@ final class ComposerUITextView: UITextView {
         let selection = selectedRange
         let written = edit.range.location + (edit.text as NSString).length
         let caret = ComposerTextEdit.selection(selection, after: edit.range, replacedBy: edit.text)
-            ?? NSRange(location: min(selection.location, written), length: 0)
+            ?? NSRange(location: written, length: 0)
+        ComposerLog.shared.record(ComposerLogEntry(
+            source: .binding,
+            location: edit.range.location,
+            removed: edit.range.length,
+            inserted: (edit.text as NSString).length,
+            length: (next as NSString).length
+        ))
 
         inputDelegate?.selectionWillChange(self)
         inputDelegate?.textWillChange(self)
@@ -226,42 +244,12 @@ final class ComposerUITextView: UITextView {
         undoManager?.removeAllActions()
         scrollRangeToVisible(caret)
 
-        dimmed = nil
         return true
     }
 
-    func resync() {
-        inputDelegate?.selectionWillChange(self)
-        inputDelegate?.textWillChange(self)
-        inputDelegate?.textDidChange(self)
-        inputDelegate?.selectionDidChange(self)
-    }
-
-    private var dimmed: Range<Int>?
-
-    func applyInterim(_ run: Range<Int>?, font: UIFont, color: UIColor) {
-        let count = (text as NSString).length
-        let clamped = run.flatMap { span -> Range<Int>? in
-            let lower = min(max(0, span.lowerBound), count)
-            let upper = min(max(lower, span.upperBound), count)
-            return lower < upper ? lower ..< upper : nil
-        }
-        guard clamped != dimmed else { return }
-        dimmed = clamped
-
-        let base: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-        textStorage.beginEditing()
-
-        textStorage.setAttributes(base, range: NSRange(location: 0, length: count))
-        if let clamped {
-            textStorage.addAttribute(
-                .foregroundColor,
-                value: color.withAlphaComponent(0.45),
-                range: NSRange(location: clamped.lowerBound, length: clamped.count)
-            )
-        }
-        textStorage.endEditing()
-        typingAttributes = base
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        onTouch?()
+        super.touchesBegan(touches, with: event)
     }
 
     private var clipboardHasAttachment: Bool {

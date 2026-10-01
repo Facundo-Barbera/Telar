@@ -126,4 +126,26 @@ import Testing
     @Test func clearingTheBoxLeavesTheCaretToTheField() {
         #expect(caret(7, NSRange(location: 0, length: 20), "") == nil)
     }
+
+    private func spaced(_ phrase: String, _ text: String, _ at: Int) -> String {
+        ComposerTextEdit.spaced(phrase, in: text, at: NSRange(location: at, length: 0))
+    }
+
+    @Test func aCommitIntoAnEmptyBoxIsJustThePhrase() {
+        #expect(spaced("hello", "", 0) == "hello")
+    }
+
+    @Test func aCommitAtTheStartIsSpacedFromTheWordAfterIt() {
+        #expect(spaced("hello", "world", 0) == "hello ")
+    }
+
+    @Test func aCommitInTheMiddleIsSpacedOnBothSides() {
+        #expect(spaced("the failing", "fixtest", 3) == " the failing ")
+        #expect(spaced("the failing", "fix test", 4) == "the failing ")
+    }
+
+    @Test func aCommitAtTheEndContinuesTheLastWord() {
+        #expect(spaced("and spoken", "half typed", 10) == " and spoken")
+        #expect(spaced("second", "first line\n", 11) == "second")
+    }
 }

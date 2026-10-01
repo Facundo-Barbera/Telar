@@ -35,4 +35,18 @@ enum ComposerTextEdit {
         if range.location >= selection.location + selection.length { return selection }
         return nil
     }
+
+    static func spaced(_ phrase: String, in text: String, at range: NSRange) -> String {
+        let string = text as NSString
+        let start = min(max(0, range.location), string.length)
+        let end = min(start + max(0, range.length), string.length)
+        var insert = phrase
+        if start > 0, !isSpace(string.character(at: start - 1)) { insert = " " + insert }
+        if end < string.length, !isSpace(string.character(at: end)) { insert += " " }
+        return insert
+    }
+
+    private static func isSpace(_ unit: unichar) -> Bool {
+        UnicodeScalar(unit).map { Character($0).isWhitespace } ?? false
+    }
 }
