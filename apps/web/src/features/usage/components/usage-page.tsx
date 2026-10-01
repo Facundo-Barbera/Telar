@@ -1,15 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { RotateCwIcon } from "lucide-react";
-import type { UsageReport } from "@telar/engine-client";
-import { createEngineApi } from "@/platform/engine";
+import { LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { PageHeader } from "@/ui/page-header";
 import { Button } from "@/ui/button";
 import { Spinner } from "@/ui/spinner";
 import { Segmented } from "@/features/settings";
 import { UsageChart, type ChartSeries } from "./usage-chart";
 import { UsageLimitsSection } from "./usage-limits";
+import { UsageHosts } from "./usage-hosts";
+import { ALL_HOSTS, reportFor } from "../hosts";
+import { useHostUsage } from "../use-host-usage";
 import {
   DRIVER_LABEL,
   foldUsage,
@@ -21,9 +23,7 @@ import {
 } from "../model";
 import { cn } from "@/ui/utils";
 
-const api = createEngineApi();
-
-type Metric = "cost" | "tokens";
+export type Metric = "cost" | "tokens";
 type WindowKey = "24h" | "7d" | "30d" | "90d";
 const WINDOWS: { key: WindowKey; label: string; ms: number; resolution: "day" | "hour" }[] = [
   { key: "24h", label: "24h", ms: 24 * 3_600_000, resolution: "hour" },
@@ -50,46 +50,13 @@ function Tile({ label, value }: { label: string; value: string }) {
 export function UsagePage() {
   const [metric, setMetric] = useState<Metric>("cost");
   const [windowKey, setWindowKey] = useState<WindowKey>("7d");
-  const [result, setResult] = useState<{ window: WindowKey; report: UsageReport }>();
-  const report = result?.window === windowKey ? result.report : undefined;
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
-  // Stale-while-revalidate per window: the engine's transcript rescan must never gate a button press.
-  const cache = useRef(new Map<WindowKey, UsageReport>());
-  const request = useRef(0);
-
-  const load = useCallback(async () => {
-    const generation = ++request.current;
-    const window = WINDOWS.find((entry) => entry.key === windowKey)!;
-    const cached = cache.current.get(windowKey);
-    if (cached) setResult({ window: windowKey, report: cached });
-    const untilMs = Date.now();
-    setLoading(true);
-    setError(undefined);
-    try {
-      const { usage } = await api.usage({
-        sinceMs: untilMs - window.ms,
-        untilMs,
-        resolution: window.resolution,
-        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      const previous = cache.current.get(windowKey);
-      if (!previous || usage.readAt >= previous.readAt) cache.current.set(windowKey, usage);
-      if (generation === request.current) setResult({ window: windowKey, report: usage });
-    } catch (cause) {
-      if (generation === request.current) setError(cause instanceof Error ? cause.message : "The engine did not answer.");
-    } finally {
-      if (generation === request.current) setLoading(false);
-    }
-  }, [windowKey]);
-
-  useEffect(() => {
-    const task = window.setTimeout(() => void load(), 0);
-    return () => {
-      window.clearTimeout(task);
-      request.current += 1;
-    };
-  }, [load]);
+  const [selected, setSelected] = useState<string>(ALL_HOSTS);
+  const span = WINDOWS.find((entry) => entry.key === windowKey)!;
+  const { hosts, loading, reload } = useHostUsage({ key: span.key, ms: span.ms, resolution: span.resolution });
+  const chosen = hosts.some((host) => host.hostId === selected) ? selected : ALL_HOSTS;
+  const report = useMemo(() => reportFor(hosts, chosen), [hosts, chosen]);
+  const local = hosts.find((host) => host.hostId === LOCAL_HOST_ID);
+  const error = hosts.length === 1 || chosen === LOCAL_HOST_ID ? local?.error : hosts.find((host) => host.hostId === chosen)?.error;
 
   const fold: UsageFold | undefined = useMemo(() => (report ? foldUsage(report) : undefined), [report]);
   const resolution = report?.resolution ?? "day";
@@ -111,20 +78,8 @@ export function UsagePage() {
                 { value: "tokens", label: "Tokens" },
               ]}
             />
-            <Segmented<WindowKey>
-              value={windowKey}
-              onChange={(key) => {
-                if (key === windowKey) return;
-                request.current += 1;
-                setWindowKey(key);
-                const cached = cache.current.get(key);
-                setResult(cached ? { window: key, report: cached } : undefined);
-                setError(undefined);
-                setLoading(true);
-              }}
-              options={WINDOWS.map(({ key, label }) => ({ value: key, label }))}
-            />
-            <Button size="icon-sm" variant="ghost" aria-label="Refresh" onClick={() => void load()} disabled={loading}>
+            <Segmented<WindowKey> value={windowKey} onChange={setWindowKey} options={WINDOWS.map(({ key, label }) => ({ value: key, label }))} />
+            <Button size="icon-sm" variant="ghost" aria-label="Refresh" onClick={reload} disabled={loading}>
               {loading ? <Spinner /> : <RotateCwIcon />}
             </Button>
           </div>
@@ -133,6 +88,7 @@ export function UsagePage() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-5 py-5">
           <UsageLimitsSection />
+          {hosts.length > 1 && <UsageHosts hosts={hosts} selected={chosen} onSelect={setSelected} metric={metric} />}
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           {!error && unpricedProvider && metric === "cost" && (
             <p className="text-sm text-muted-foreground">Some models have no known rate; their cost is not counted.</p>
@@ -147,7 +103,7 @@ export function UsagePage() {
 
               <Breakdown fold={fold} metric={metric} resolution={resolution} />
 
-              {report && (
+              {report && (chosen !== ALL_HOSTS || hosts.length === 1) && (
                 <p className="text-xs text-muted-foreground">
                   {report.sources
                     .map((source) =>
