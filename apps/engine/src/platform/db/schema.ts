@@ -99,7 +99,10 @@ export function openDatabase(root: string): { db: Database; searchIndex: "fts5" 
         failure_text TEXT,
         PRIMARY KEY(session_id, run_id)
       );
-      CREATE INDEX IF NOT EXISTS turn_summaries_outline ON turn_summaries(session_id, sequence);`);
+      CREATE INDEX IF NOT EXISTS turn_summaries_outline ON turn_summaries(session_id, sequence);
+      CREATE INDEX IF NOT EXISTS turn_summaries_unfinished ON turn_summaries(session_id) WHERE state IN ('queued','claimed','running','steering','ambiguous');
+      CREATE INDEX IF NOT EXISTS turn_summaries_ended ON turn_summaries(ended_at);
+      CREATE INDEX IF NOT EXISTS sessions_busy ON sessions(id) WHERE activity != 'idle';`);
     // A rowid table: large item values spill less than in a WITHOUT ROWID leaf. `ord` is first-open order.
     db.exec(`CREATE TABLE IF NOT EXISTS items (
         session_id TEXT NOT NULL,

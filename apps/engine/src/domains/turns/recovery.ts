@@ -55,7 +55,11 @@ export class TurnRecovery {
       const stopped: string[] = [];
       // The turns this boot cut off mid-flight, per session: what a planned restart may continue.
       const cutOff = new Map<string, string[]>();
-      for (const session of this.deps.records.all()) this.recoverSession(session, cutOff, stopped);
+      // The live index adds a stopped turn still holding its claim, which neither table row can show.
+      const unfinished = new Set([...this.kernel.executionStore.unfinishedSessionIds(), ...this.deps.liveQueueSessionIds()]);
+      for (const sessionId of unfinished) {
+        this.recoverSession(this.deps.records.get(sessionId), cutOff, stopped);
+      }
       const pruned = this.deps.requests.pruneHistory();
       if (pruned.dropped > 0) {
         const freed = pruned.bytes >= 1e6 ? `${(pruned.bytes / 1e6).toFixed(1)} MB` : `${Math.round(pruned.bytes / 1e3)} KB`;
@@ -76,7 +80,8 @@ export class TurnRecovery {
     return this.kernel.command("retireWorkerRegistration", () => {
       assertId(workerId, "worker id");
       const stopped: string[] = [];
-      for (const session of this.deps.records.all()) {
+      for (const sessionId of Array.from(this.deps.liveQueueSessionIds())) {
+        const session = this.deps.records.get(sessionId);
         const queue = this.deps.readQueue(session.id);
         const mine = queue.turns.filter((turn) => turn.claim?.workerId === workerId && (turn.state === "claimed" || turn.state === "running"));
         if (mine.length === 0) continue;
@@ -233,12 +238,12 @@ export class TurnRecovery {
 
       // A turn is cut off three ways: stopped by this boot, failed `interrupted`, or stopped `worker_unavailable` on a clean quit.
       const candidates = new Map(cutOff);
-      for (const session of this.deps.records.all()) {
-        if (candidates.has(session.id)) continue;
-        const interrupted = this.deps.readQueue(session.id).turns.filter(
+      for (const sessionId of this.kernel.executionStore.sessionIdsWithTurnsEndedSince(plannedAt)) {
+        if (candidates.has(sessionId)) continue;
+        const interrupted = this.deps.readQueue(sessionId).turns.filter(
           (turn) => endedByShutdown(turn) && turn.kind !== "compact" && (turn.completedAt ?? 0) >= plannedAt,
         );
-        if (interrupted.length > 0) candidates.set(session.id, interrupted.map((turn) => turn.runId));
+        if (interrupted.length > 0) candidates.set(sessionId, interrupted.map((turn) => turn.runId));
       }
       for (const [sessionId, runIds] of candidates) {
         // One bad session is skipped, never the boot.
