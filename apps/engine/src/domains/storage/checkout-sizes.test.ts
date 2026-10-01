@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -163,8 +164,50 @@ test("stopping ends the job for good", async () => {
   expect(queue.length).toBe(0);
 });
 
+test("a file's private size is counted when the disk reports one, so shared clone extents are not", async () => {
+  const tree = virtualTree(2, 4);
+  tree.fs.privateSize = (target) => (target.endsWith("f0") ? BLOCK : 0);
+  const { sizes, queue, pass } = harness(tree);
+  for (let passes = 0; passes < 100 && (passes === 0 || queue.length > 0); passes += 1) {
+    sizes.figure([ROOT]);
+    await pass();
+  }
+  expect(sizes.figure([ROOT])).toMatchObject({ measuring: false, bytes: 2 * BLOCK });
+});
+
 const daemons: EngineDaemon[] = [];
 const temporary: string[] = [];
+
+function clonedFromCache(): string | undefined {
+  if (process.platform !== "darwin") return undefined;
+  const [cache, root] = [fs.mkdtempSync(path.join(os.tmpdir(), "telar-cache-")), fs.mkdtempSync(path.join(os.tmpdir(), "telar-clone-"))];
+  temporary.push(cache, root);
+  fs.mkdirSync(path.join(root, "checkout"));
+  fs.writeFileSync(path.join(cache, "package.tgz"), crypto.randomBytes(4 * 1024 * 1024));
+  try {
+    fs.copyFileSync(path.join(cache, "package.tgz"), path.join(root, "checkout", "package.tgz"), fs.constants.COPYFILE_FICLONE_FORCE);
+  } catch {
+    return undefined;
+  }
+  return root;
+}
+
+test("a checkout's APFS clone of a package cache file is not counted as the checkout's own disk use", async () => {
+  const root = clonedFromCache();
+  if (!root) return;
+  const queue: Array<() => void> = [];
+  const sizes = new CheckoutSizes({ schedule: (next) => (queue.push(next), { cancel: () => {} }), msPerPass: 60_000 });
+  sizes.figure([root]);
+  for (let turns = 0; turns < 10_000 && (queue.length > 0 || sizes.figure([root]).measuring); turns += 1) {
+    queue.shift()?.();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const naive = fs.lstatSync(path.join(root, "checkout", "package.tgz")).blocks * 512;
+  const figure = sizes.figure([root]);
+  expect(figure.measuring).toBe(false);
+  expect(naive).toBeGreaterThanOrEqual(4 * 1024 * 1024);
+  expect(figure.bytes).toBeLessThan(1024 * 1024);
+});
 afterEach(async () => {
   for (const daemon of daemons.splice(0)) await daemon.close();
   for (const directory of temporary.splice(0)) fs.rmSync(directory, { recursive: true, force: true });

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { privateBytes } from "../../platform/fs/private-size";
 import { bytesOf, type CheckoutFigure } from "./measure";
 
 export type SizingStat = Pick<fs.Stats, "blocks" | "size" | "nlink" | "dev" | "ino" | "mtimeMs"> & { isDirectory(): boolean };
@@ -7,6 +8,7 @@ export type SizingStat = Pick<fs.Stats, "blocks" | "size" | "nlink" | "dev" | "i
 export type SizingFs = {
   lstat(target: string): Promise<SizingStat>;
   readdir(target: string): Promise<string[]>;
+  privateSize?(target: string): number | undefined;
 };
 
 export type CheckoutSizesOptions = {
@@ -25,6 +27,7 @@ export type CheckoutSizesOptions = {
 const nodeFs: SizingFs = {
   lstat: (target) => fs.promises.lstat(target),
   readdir: (target) => fs.promises.readdir(target),
+  privateSize: privateBytes,
 };
 
 type Walk = { bytes: number; partial: boolean; dirs: string[]; pending: string[]; seen: Set<string>; stamp: number };
@@ -265,7 +268,7 @@ export class CheckoutSizes {
             if (walk.seen.has(inode)) continue;
             walk.seen.add(inode);
           }
-          walk.bytes += bytesOf(stat);
+          walk.bytes += this.fs.privateSize?.(target) ?? bytesOf(stat);
         }
         continue;
       }
