@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { worktreeReady } from "../../../../test/worktree-ready";
 import { call, cleanUp, engine, orchestrator, wall, withModelCatalogue } from "./test-helpers";
 
 afterEach(cleanUp);
@@ -77,5 +78,28 @@ describe("sessions_create with tasks", () => {
     expect(created.json!.cohort).toBeUndefined();
     expect((created.json!.workers as Worker[])[0]!.runId).toBeDefined();
     expect(String(created.json!.note)).toContain("not subscribed");
+  });
+});
+
+describe("sessions_create without envMode", () => {
+  test("a local project's workers share its checkout, and a worktree project's get their own", async () => {
+    for (const mode of ["local", "worktree"] as const) {
+      const { store, projectId } = engine();
+      store.projectRegistry.update(projectId, { envMode: mode });
+      const one = await call(wall(store), "sessions_create", { projectId });
+      const many = await call(wall(store), "sessions_create", { projectId, tasks: [{ title: "a", task: "Do a." }] });
+      const ids = [one.json!.id as string, (many.json!.workers as Worker[])[0]!.id!];
+      for (const id of ids) {
+        expect(store.records.get(id).workspace.mode).toBe(mode);
+        if (mode === "worktree") await worktreeReady(store, id);
+      }
+    }
+  });
+
+  test("an explicit envMode wins over the project's", async () => {
+    const { store, projectId } = engine();
+    store.projectRegistry.update(projectId, { envMode: "worktree" });
+    const created = await call(wall(store), "sessions_create", { projectId, envMode: "local" });
+    expect(store.records.get(created.json!.id as string).workspace.mode).toBe("local");
   });
 });

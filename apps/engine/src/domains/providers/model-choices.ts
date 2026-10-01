@@ -79,7 +79,8 @@ export type CapabilitiesDeps = {
 export function sessionCapabilities(deps: CapabilitiesDeps, caller?: string): SessionCapabilities {
   const self = caller === undefined ? undefined : deps.session(caller);
   const standing = deps.sessionDefaults();
-  const projectModel = self?.projectId ? deps.project(self.projectId)?.defaultModel : undefined;
+  const project = self?.projectId ? deps.project(self.projectId) : undefined;
+  const projectModel = project?.defaultModel;
   const providers = deps.instances().filter((instance) => instance.enabled).map((instance) => {
     const fallback = deps.defaultModel(instance.id, instance.driver);
     const models = offeredRows(instance.driver, deps.rows(instance.driver) ?? []).map((row): CapabilityModel => {
@@ -114,7 +115,7 @@ export function sessionCapabilities(deps: CapabilitiesDeps, caller?: string): Se
   return {
     ...(you ? { you } : {}),
     defaults: {
-      envMode: standing.envMode,
+      envMode: project?.envMode ?? standing.envMode,
       ...(standing.runtimeMode ? { access: standing.runtimeMode } : {}),
       ...(projectModel && (projectModel.model || projectModel.effort)
         ? { project: { ...(projectModel.model ? { model: projectModel.model } : {}), ...(projectModel.effort ? { effort: projectModel.effort } : {}) } }

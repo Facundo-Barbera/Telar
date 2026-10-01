@@ -100,3 +100,17 @@ test("capabilities name the caller's model, tier and access, the defaults, and e
   expect(models[0]).toEqual({ id: "claude-opus-5-5[1m]", label: "claude-opus-5-5[1m]", tier: 3, efforts: ["low", "medium", "high"], window: 1_000_000, default: true });
   expect(models.find((each) => each.id === "claude-haiku-4-5")).toMatchObject({ tier: 1, efforts: [], window: 200_000 });
 });
+
+test("capabilities report the calling session's project mode before the app default", () => {
+  const deps = (envMode?: "local" | "worktree") => ({
+    instances: () => [],
+    rows: () => ROWS,
+    defaultModel: () => undefined,
+    sessionDefaults: () => ({ envMode: "worktree" as const }),
+    session: () => ({ ...session(), projectId: "project_one" }),
+    project: () => (envMode ? { envMode } : {}) as never,
+  });
+  expect(sessionCapabilities(deps("local"), "session_one").defaults.envMode).toBe("local");
+  expect(sessionCapabilities(deps(), "session_one").defaults.envMode).toBe("worktree");
+  expect(sessionCapabilities(deps("local")).defaults.envMode).toBe("worktree");
+});

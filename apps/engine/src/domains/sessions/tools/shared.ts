@@ -7,7 +7,7 @@ export type SessionsCapability = {
     projects: Array<{ id: string; name: string }>;
     settledCount?: number;
   }>;
-  create(input: { projectId: string; title?: string; envMode: EnvMode; driver?: ProviderDriverKind; model?: AgentModelChoice }): Promise<Session>;
+  create(input: { projectId: string; title?: string; envMode?: EnvMode; driver?: ProviderDriverKind; model?: AgentModelChoice }): Promise<Session>;
   send(sessionId: string, input: { runId: string; input: string; intent?: Turn["agentIntent"]; corrects?: string; model?: AgentModelChoice }): Promise<{
     turn: Turn;
     replayed: boolean;
