@@ -3,7 +3,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fsmonitorCheckouts, liveFsmonitorCheckouts } from "./fsmonitor";
+import { fsmonitorCheckouts, liveFsmonitorCheckouts, stopFsmonitor } from "./fsmonitor";
+import { defaultAsyncGitRunner } from "./runner";
 
 const run = (args: string[]) => spawnSync("git", args, { encoding: "utf8", timeout: 20_000, killSignal: "SIGKILL" });
 const temps: string[] = [];
@@ -61,4 +62,15 @@ test.skipIf(!daemonSupported)("finds a real daemon in a linked worktree whose pa
   expect(git(worktree, "fsmonitor--daemon", "start").status).toBe(0);
 
   expect((await liveFsmonitorCheckouts())?.filter((checkout) => checkout.startsWith(dir))).toEqual([worktree]);
+});
+
+test.skipIf(!daemonSupported)("stops a checkout's running daemon through the engine's runner", async () => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "telar-fsmonitor-stop-")));
+  temps.push(repo);
+  run(["-C", repo, "init", "-q"]);
+  started.push(repo);
+  expect(run(["-C", repo, "fsmonitor--daemon", "start"]).status).toBe(0);
+
+  await stopFsmonitor(defaultAsyncGitRunner, repo);
+  expect(run(["-C", repo, "fsmonitor--daemon", "status"]).status).not.toBe(0);
 });

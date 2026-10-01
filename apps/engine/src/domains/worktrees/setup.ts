@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { WorkspaceConfig } from "@telar/engine-client";
 import { atomicWrite } from "../../platform/fs/atomic";
+import { withoutFsmonitor } from "../../platform/git/env";
 import { shareDependencies } from "./dependencies";
 import { resolveShell, type RunHandle, type RunLauncher } from "../terminal";
 
@@ -140,7 +141,7 @@ export class WorktreeSetups {
           file: shell.file,
           args: shell.args,
           cwd: input.worktree,
-          env: { ...process.env, ...input.config.env, ...input.env },
+          env: withoutFsmonitor({ ...process.env, ...input.config.env, ...input.env }),
           ...(shell.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
         },
         {

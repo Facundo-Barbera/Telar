@@ -11,7 +11,7 @@ import {
   type WorktreeReclaimResult,
   type WorktreeSummary,
 } from "@telar/engine-client";
-import { liveFsmonitorCheckouts } from "../../platform/git/fsmonitor";
+import { liveFsmonitorCheckouts, stopFsmonitor } from "../../platform/git/fsmonitor";
 import type { AsyncGitRunner } from "../../platform/git/runner";
 import type { Kernel } from "../../platform/kernel";
 import type { ProjectAvailability } from "../../platform/fs/volumes";
@@ -252,7 +252,7 @@ export class WorktreeMaintenance {
     });
   }
 
-  /** Locks the live sessions' checkouts, skipping any on a volume that is slow or gone; settled ones lock on reopen. */
+  /** Locks the live sessions' checkouts and stops their fsmonitor daemons, skipping any on a volume that is slow or gone; settled ones lock on reopen. */
   async lockLive(): Promise<{ locked: number }> {
     const at = { now: this.kernel.now(), autoSettleAfterHours: this.deps.autoSettleAfterHours() };
     const checkouts = liveCheckouts(this.deps.records.read(), at);
@@ -264,7 +264,7 @@ export class WorktreeMaintenance {
     const locked = await lockCheckouts(checkouts, this.volumes, (checkout) => {
       const root = roots.get(checkout.projectId);
       if (root === undefined || !this.volumes.open(root)) return Promise.resolve();
-      return this.deps.queue(root, () => lockSessionWorktree(this.deps.git, root, checkout.path));
+      return this.deps.queue(root, () => lockSessionWorktree(this.deps.git, root, checkout.path)).then(() => stopFsmonitor(this.deps.git, checkout.path));
     });
     for (const sessionId of locked) this.locked.add(sessionId);
     return { locked: locked.length };

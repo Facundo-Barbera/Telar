@@ -1,4 +1,5 @@
 import { lsof } from "../process/lsof";
+import type { AsyncGitRunner } from "./runner";
 
 const SOCKET = "fsmonitor--daemon.ipc";
 
@@ -32,4 +33,8 @@ export async function liveFsmonitorCheckouts(deps: { platform?: NodeJS.Platform;
   if ((deps.platform ?? process.platform) === "win32") return undefined;
   const listing = await (deps.lsof ?? (() => lsof(["-n", "-P", "-w", "-c", "git", "-F", "pftn"], 10_000)))();
   return listing === undefined ? undefined : fsmonitorCheckouts(listing);
+}
+
+export async function stopFsmonitor(git: AsyncGitRunner, checkout: string): Promise<void> {
+  await git(checkout, ["fsmonitor--daemon", "stop"], { timeoutMs: 5_000 }).catch(() => undefined);
 }

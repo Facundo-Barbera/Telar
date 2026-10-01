@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, jest, test } from "bun:test";
-import { execFileSync, type spawn } from "node:child_process";
+import { execFileSync, spawnSync, type spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import fs from "node:fs";
@@ -369,4 +369,24 @@ describe("live git children", () => {
     expect(fs.existsSync(marker)).toBe(true);
     expect(children.live()).toBe(0);
   });
+});
+
+test("both runners hand git fsmonitor off and no optional locks, over what the caller passes", async () => {
+  const script = ["-e", "process.stdout.write(JSON.stringify([process.env.GIT_OPTIONAL_LOCKS, process.env.GIT_CONFIG_PARAMETERS, process.env.EXTRA]))"];
+  const expected = JSON.stringify(["0", "'core.fsmonitor=false' 'core.untrackedCache=false'", "yes"]);
+  expect(createGitRunner({ gitBin: process.execPath })(process.cwd(), script, { env: { EXTRA: "yes" } }).stdout).toBe(expected);
+  expect((await createAsyncGitRunner({ gitBin: process.execPath })(process.cwd(), script, { env: { EXTRA: "yes" } })).stdout).toBe(expected);
+});
+
+test("a status through the runner in a repo with fsmonitor on reads it as off", async () => {
+  const root = repo();
+  execFileSync("git", ["config", "core.fsmonitor", "true"], { cwd: root });
+  expect(defaultGitRunner(root, ["config", "core.fsmonitor"]).stdout.trim()).toBe("false");
+  try {
+    expect((await defaultAsyncGitRunner(root, ["status", "--porcelain"])).status).toBe(0);
+    expect(spawnSync("git", ["fsmonitor--daemon", "status"], { cwd: root , timeout: 20_000, killSignal: "SIGKILL" }).status).not.toBe(0);
+    expect(execFileSync("git", ["config", "--local", "core.fsmonitor"], { cwd: root, encoding: "utf8" }).trim()).toBe("true");
+  } finally {
+    spawnSync("git", ["fsmonitor--daemon", "stop"], { cwd: root , timeout: 20_000, killSignal: "SIGKILL" });
+  }
 });
