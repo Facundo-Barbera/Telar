@@ -215,6 +215,21 @@ test("a checkout with no session is found by scanning the root, and nothing else
   expect(row!.bytes).toBeGreaterThan(0);
 });
 
+test("a worktree git lists under another Telar home's root is not a row", async () => {
+  const { root, worktrees } = repo();
+  const elsewhere = path.join(tmp("telar-other-home-"), "telar--theirs-12345678");
+  execFileSync("git", ["worktree", "add", "-b", "telar/theirs", elsewhere, "main"], { cwd: root, stdio: "pipe" });
+
+  const inventory = await buildInventory(deps, {
+    roots: [worktrees],
+    rootsReadable: true,
+    sessions: [],
+    projects: [{ id: "p1", name: "Repo", root, available: true }],
+  });
+
+  expect(inventory.rows.map((entry) => entry.basename)).not.toContain("telar--theirs-12345678");
+});
+
 test("a merged, clean, settled checkout comes back reclaimable and sized", async () => {
   const { root, worktrees } = repo();
   const checkout = path.join(worktrees, "telar--done-11112222");

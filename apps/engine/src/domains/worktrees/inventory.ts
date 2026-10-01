@@ -322,8 +322,11 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
   let partial = collected.partial;
   let measuring = false;
 
+  const ownRoots = new Set(roots.map(canonical));
   const rows: WorktreeRow[] = [];
   for (const draft of collected.drafts.values()) {
+    // git lists every worktree of the project, including another Telar home's; only ours are rows.
+    if (!draft.session && !ownRoots.has(canonical(path.dirname(draft.path))) && draft.registration?.isMainCheckout !== true) continue;
     const project = draft.project;
     const readable = input.rootsReadable && (project?.available ?? true);
     const branch = draft.session?.branch ?? draft.registration?.branch;
