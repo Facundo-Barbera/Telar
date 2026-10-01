@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { FolderIcon } from "lucide-react";
 import { isTelarIcon } from "@telar/engine-client";
-import { projectHue, projectIconUrl, projectInitial } from "../project-avatar";
+import { projectIconUrl } from "../project-avatar";
+import { monogramHue, monogramInitial } from "@/ui/monogram";
 import { IdentityIcon } from "@/ui/telar-icons";
 import { cn } from "@/ui/utils";
 
@@ -67,12 +68,12 @@ export function ProjectAvatar({
         style={{
           ...box,
           fontSize: Math.max(7, Math.round(size * 0.62)),
-          backgroundColor: `hsl(${projectHue(name.trim())} 45% 50% / 0.25)`,
-          color: `hsl(${projectHue(name.trim())} 45% 38%)`,
+          backgroundColor: `hsl(${monogramHue(name.trim())} 45% 50% / 0.25)`,
+          color: `hsl(${monogramHue(name.trim())} 45% 38%)`,
         }}
         className={cn("flex shrink-0 items-center justify-center rounded-[25%] font-medium leading-none dark:brightness-150", className)}
       >
-        {projectInitial(name)}
+        {monogramInitial(name)}
       </span>
     );
   }

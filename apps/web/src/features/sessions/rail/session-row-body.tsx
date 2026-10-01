@@ -3,6 +3,7 @@
 import type { ReactNode, RefObject } from "react";
 import Link from "next/link";
 import { GitBranchIcon } from "lucide-react";
+import { HostMark } from "@/features/hosts";
 import { ProjectAvatar } from "@/features/projects";
 import { ProviderIcon } from "@/features/providers";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/ui/hover-card";
@@ -27,14 +28,12 @@ export function CardBody({
   session,
   showProject,
   marks,
-  hostMark,
   trailing,
   reserve = false,
 }: {
   session: SidebarSession;
   showProject: boolean;
   marks: ReactNode;
-  hostMark: ReactNode;
   trailing: ReactNode;
   reserve?: boolean;
 }) {
@@ -43,6 +42,7 @@ export function CardBody({
   return (
     <span className="min-w-0 flex-1 space-y-1">
       <span className="flex min-w-0 items-center gap-1.5">
+        <HostMark hostId={session.hostId} hostName={session.hostName} />
         {marks}
         {showProject && session.projectName ? (
           <>
@@ -52,7 +52,6 @@ export function CardBody({
         ) : (
           <span className="flex-1" />
         )}
-        {hostMark}
         {trailing}
       </span>
       <span className="flex min-w-0 items-center gap-1.5">
@@ -93,6 +92,7 @@ export function SlimBody({
 }) {
   return (
     <>
+      <HostMark hostId={session.hostId} hostName={session.hostName} size={14} />
       {marks}
       <span className={cn("shrink-0", recedes && "opacity-50 grayscale transition group-hover/session:opacity-100 group-hover/session:grayscale-0")}>
         {session.projectName ? (

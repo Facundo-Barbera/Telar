@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import type { Project } from "@telar/engine-client";
 import { type CommandPalettePage, useCommandHandlers, useCommandKeys } from "@/features/commands";
+import { HostMarksShown } from "@/features/hosts";
 import { type NewConversationTarget, projectSettingsHref } from "@/features/projects";
 import { Sidebar, SidebarContent, SidebarFooter, SidebarRail, type SidebarResizableOptions, type SidebarWidthProposal, useSidebar } from "@/ui/sidebar";
 import {
@@ -24,7 +25,7 @@ import { AttentionRows, RailSessionList, RailShelves } from "./rail-list";
 import { TelarSidebarHeader } from "./rail-parts";
 import { RailSearch } from "./rail-search";
 import { SidebarProjectFilter } from "./sidebar-project-filter";
-import { useRailData, type RemoteProject } from "./use-rail-data";
+import { type RailData, useRailData, type RemoteProject } from "./use-rail-data";
 import { useRailView } from "./use-rail-view";
 
 const CommandPalette = dynamic(() => import("@/features/commands/components/command-palette").then((mod) => mod.CommandPalette));
@@ -35,6 +36,10 @@ const APP_SIDEBAR_RESIZABLE = {
   shouldAcceptWidth: ({ currentWidth, nextWidth, wrapper }: SidebarWidthProposal) =>
     keepsRoomForMain(currentWidth, nextWidth, wrapper.getBoundingClientRect().width, APP_SIDEBAR_MAIN_MIN_WIDTH),
 } satisfies SidebarResizableOptions;
+
+export function connectedHosts(data: Pick<RailData, "hosts" | "unreachable">): number {
+  return 1 + data.hosts.filter((host) => !data.unreachable.has(host.id)).length;
+}
 
 export function pickerTargetsFor(projects: readonly Project[], remoteProjects: readonly RemoteProject[]): NewConversationTarget[] {
   return [
@@ -154,48 +159,50 @@ function SidebarBody() {
         </Suspense>
       )}
       <TelarSidebarHeader />
-      <SidebarContent>
-        <RailSearch
-          query={query}
-          onType={(value) => {
-            setQuery(value);
-            setSearchIndex(0);
-            setSessionLimit(SESSION_PAGE_SIZE);
-          }}
-          onClear={() => {
-            setQuery("");
-            setSearchIndex(0);
-          }}
-          results={results}
-          selectedIndex={selectedSearchIndex}
-          setSelectedIndex={setSearchIndex}
-          onOpen={openSession}
-          filter={
-            pickerTargets.length > 1 ? (
-              <SidebarProjectFilter targets={pickerTargets} selected={view.projectsShown} onToggle={filter.toggle} onClear={filter.clear} />
-            ) : undefined
-          }
-          soleTargetName={soleTarget?.name}
-          run={run}
-        />
-        <RailDrafts
-          projects={data.projects}
-          projectsShown={view.projectsShown}
-          query={query}
-          openCanvasProject={canvasProjectFromPathname(pathname)}
-          onNavigate={onNavigate}
-        />
-        {view.grouped && <AttentionRows rows={view.grouped.attention} env={view.env} />}
-        <RailSessionList
-          {...listProps}
-          onShowMore={() => setSessionLimit((limit) => limit + SESSION_PAGE_SIZE)}
-          canStart={Boolean(composerTarget)}
-          onAddProject={() => openPalette("sources")}
-        />
-        {!view.list.flat && (
-          <RailShelves data={data} view={view} settledLimit={settledLimit} onMoreSettled={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)} />
-        )}
-      </SidebarContent>
+      <HostMarksShown value={connectedHosts(data) > 1}>
+        <SidebarContent>
+          <RailSearch
+            query={query}
+            onType={(value) => {
+              setQuery(value);
+              setSearchIndex(0);
+              setSessionLimit(SESSION_PAGE_SIZE);
+            }}
+            onClear={() => {
+              setQuery("");
+              setSearchIndex(0);
+            }}
+            results={results}
+            selectedIndex={selectedSearchIndex}
+            setSelectedIndex={setSearchIndex}
+            onOpen={openSession}
+            filter={
+              pickerTargets.length > 1 ? (
+                <SidebarProjectFilter targets={pickerTargets} selected={view.projectsShown} onToggle={filter.toggle} onClear={filter.clear} />
+              ) : undefined
+            }
+            soleTargetName={soleTarget?.name}
+            run={run}
+          />
+          <RailDrafts
+            projects={data.projects}
+            projectsShown={view.projectsShown}
+            query={query}
+            openCanvasProject={canvasProjectFromPathname(pathname)}
+            onNavigate={onNavigate}
+          />
+          {view.grouped && <AttentionRows rows={view.grouped.attention} env={view.env} />}
+          <RailSessionList
+            {...listProps}
+            onShowMore={() => setSessionLimit((limit) => limit + SESSION_PAGE_SIZE)}
+            canStart={Boolean(composerTarget)}
+            onAddProject={() => openPalette("sources")}
+          />
+          {!view.list.flat && (
+            <RailShelves data={data} view={view} settledLimit={settledLimit} onMoreSettled={() => setSettledLimit((limit) => limit + SETTLED_PAGE_SIZE)} />
+          )}
+        </SidebarContent>
+      </HostMarksShown>
       <SidebarFooter>
         <AppSidebarFooterRow onNavigate={onNavigate} />
       </SidebarFooter>

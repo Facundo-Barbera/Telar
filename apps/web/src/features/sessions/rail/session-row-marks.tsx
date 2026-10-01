@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlarmClockIcon, CircleDashedIcon, CircleDotIcon, HardDriveIcon, MonitorIcon, PinIcon, SquareTerminalIcon } from "lucide-react";
+import { AlarmClockIcon, CircleDashedIcon, CircleDotIcon, HardDriveIcon, PinIcon, SquareTerminalIcon } from "lucide-react";
 import { fmtAgo } from "@/ui/format";
 import { ACTIVITY_TONE, fmtDuration, rowStatusText } from "../session-activity";
 import type { SessionBand, SidebarSession } from "../session-list";
@@ -129,15 +129,5 @@ export function RowMarks({
         </span>
       ) : null}
     </>
-  );
-}
-
-export function HostMark({ hostName }: { hostName: string | undefined }) {
-  if (!hostName) return null;
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-3xs leading-4 text-sidebar-foreground/60" title={`On ${hostName}`}>
-      <MonitorIcon className="size-2.5" />
-      <span className="max-w-24 truncate">{hostName}</span>
-    </span>
   );
 }
