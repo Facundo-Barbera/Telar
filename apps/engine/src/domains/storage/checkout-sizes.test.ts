@@ -7,11 +7,12 @@ import { EngineClient } from "@telar/engine-client";
 import { CheckoutSizes, type SizingFs, type SizingStat } from "./checkout-sizes";
 import { startEngine, type EngineDaemon } from "../../daemon";
 import { stubModels } from "../../../test/stub-models";
+import { until } from "../../../test/wait";
 
 const ROOT = "/virtual/worktrees";
 const BLOCK = 4096;
 
-function virtualTree(checkouts: number, files: number, options: { hangInside?: boolean } = {}) {
+function virtualTree(checkouts: number, files: number, options: { hangInside?: boolean; inside?: string[] } = {}) {
   const calls = { lstat: 0, readdir: 0, inFlight: 0, peak: 0 };
   const mtimes = new Map<string, number>();
   const dirStat = (target: string): SizingStat => ({ isDirectory: () => true, blocks: 0, size: 0, nlink: 2, dev: 1, ino: 0, mtimeMs: mtimes.get(target) ?? 1 });
@@ -35,7 +36,7 @@ function virtualTree(checkouts: number, files: number, options: { hangInside?: b
       if (options.hangInside && level >= 1) return new Promise<string[]>(() => {});
       return track(() => {
         if (level === 0) return Array.from({ length: checkouts }, (_, index) => `checkout-${index}`);
-        if (level === 1) return ["node_modules"];
+        if (level === 1) return options.inside ?? ["src"];
         return Array.from({ length: files }, (_, index) => `f${index}`);
       });
     },
@@ -43,7 +44,7 @@ function virtualTree(checkouts: number, files: number, options: { hangInside?: b
   return { fs: fsSeam, calls, mtimes };
 }
 
-function harness(tree: ReturnType<typeof virtualTree>, options: { opsPerPass?: number; idleMs?: number } = {}) {
+function harness(tree: ReturnType<typeof virtualTree>, options: { opsPerPass?: number; idleMs?: number; live?: () => ReadonlySet<string>; opTimeoutMs?: number } = {}) {
   let now = 1_000;
   const queue: Array<() => void> = [];
   const sizes = new CheckoutSizes({
@@ -57,7 +58,15 @@ function harness(tree: ReturnType<typeof virtualTree>, options: { opsPerPass?: n
     msPerPass: 1_000_000,
     idleMs: options.idleMs ?? 10_000,
     concurrency: 2,
+    ...(options.live ? { live: options.live } : {}),
+    ...(options.opTimeoutMs !== undefined ? { opTimeoutMs: options.opTimeoutMs } : {}),
   });
+  const drain = async () => {
+    for (let passes = 0; passes < 1_000 && (passes === 0 || queue.length > 0); passes += 1) {
+      sizes.figure([ROOT]);
+      await pass();
+    }
+  };
   const pass = async () => {
     const next = queue.shift();
     if (!next) return;
@@ -70,6 +79,7 @@ function harness(tree: ReturnType<typeof virtualTree>, options: { opsPerPass?: n
     sizes,
     queue,
     pass,
+    drain,
     advance: (ms: number) => {
       now += ms;
     },
@@ -153,6 +163,55 @@ test("it settles to the sum, then serves it from cache until a checkout changes"
   expect(sizes.figure([ROOT])).toMatchObject({ measuring: false, bytes: 3 * 50 * BLOCK });
 });
 
+test("node_modules is never descended into", async () => {
+  const tree = virtualTree(2, 50, { inside: ["node_modules", "src"] });
+  const read: string[] = [];
+  const readdir = tree.fs.readdir;
+  tree.fs.readdir = (target) => (read.push(target), readdir(target));
+  const { sizes, drain } = harness(tree);
+  await drain();
+  expect(read.some((target) => target.includes("node_modules"))).toBe(false);
+  expect(sizes.figure([ROOT])).toMatchObject({ measuring: false, bytes: 2 * 50 * BLOCK });
+});
+
+test("only the checkouts of live sessions are walked", async () => {
+  const tree = virtualTree(3, 50);
+  const live = new Set([path.join(ROOT, "checkout-1")]);
+  const { sizes, drain } = harness(tree, { live: () => live });
+  await drain();
+  expect(sizes.figure([ROOT])).toMatchObject({ measuring: false, measured: 1, of: 1, bytes: 50 * BLOCK });
+  expect(sizes.peek(path.join(ROOT, "checkout-0"), [ROOT]).bytes).toBeUndefined();
+  expect(sizes.known(path.join(ROOT, "checkout-1"))).toBe(50 * BLOCK);
+});
+
+test("with nothing changed, the checkouts are not listed again on a later read", async () => {
+  const tree = virtualTree(2, 5);
+  const { sizes, queue, drain, advance } = harness(tree);
+  await drain();
+  const reads = tree.calls.readdir;
+  advance(60 * 60_000);
+  sizes.figure([ROOT]);
+  expect(queue.length).toBe(1);
+  await drain();
+  expect(tree.calls.readdir - reads).toBe(2 * 2);
+  sizes.relist();
+  await drain();
+  expect(tree.calls.readdir - reads).toBeGreaterThan(2 * 2);
+});
+
+test("a volume that stops answering is given up on and reported partial, and the read still answers", async () => {
+  const tree = virtualTree(2, 5, { hangInside: true });
+  const { sizes, queue } = harness(tree, { opTimeoutMs: 1 });
+  await until("the walk gives up on the volume", () => {
+    queue.shift()?.();
+    return !sizes.figure([ROOT]).measuring;
+  });
+  expect(sizes.figure([ROOT])).toMatchObject({ measuring: false, partial: true });
+  const reads = tree.calls.readdir;
+  queue.shift()?.();
+  expect(tree.calls.readdir).toBe(reads);
+});
+
 test("stopping ends the job for good", async () => {
   const tree = virtualTree(3, 10_000);
   const { sizes, queue, pass } = harness(tree, { opsPerPass: 100 });
@@ -223,7 +282,11 @@ test("the storage route answers `measuring` while the checkouts' disk hangs, and
   const daemon = await startEngine({
     models: stubModels,
     engineRoot,
-    checkoutSizing: { fs: rooted, schedule: (next) => (queueMicrotask(next), { cancel: () => {} }) },
+    checkoutSizing: {
+      fs: rooted,
+      schedule: (next) => (queueMicrotask(next), { cancel: () => {} }),
+      live: () => new Set(Array.from({ length: 140 }, (_, index) => path.join(worktreesRoot, `checkout-${index}`))),
+    },
   });
   daemons.push(daemon);
   worktreesRoot = path.join(daemon.store.paths.root, "worktrees");

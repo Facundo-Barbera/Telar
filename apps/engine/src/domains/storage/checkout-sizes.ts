@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { privateBytes } from "../../platform/fs/private-size";
+import { mountPointForRoot } from "../../platform/fs/volumes";
 import { bytesOf, type CheckoutFigure } from "./measure";
 
 export type SizingStat = Pick<fs.Stats, "blocks" | "size" | "nlink" | "dev" | "ino" | "mtimeMs"> & { isDirectory(): boolean };
@@ -21,7 +22,9 @@ export type CheckoutSizesOptions = {
   msPerPass?: number;
   idleMs?: number;
   ttlMs?: number;
-  relistMs?: number;
+  opTimeoutMs?: number;
+  /** The checkouts of live sessions; only these are walked. Absent walks every checkout. */
+  live?: () => ReadonlySet<string>;
 };
 
 const nodeFs: SizingFs = {
@@ -29,6 +32,14 @@ const nodeFs: SizingFs = {
   readdir: (target) => fs.promises.readdir(target),
   privateSize: privateBytes,
 };
+
+const LIVE_TTL_MS = 5_000;
+
+class VolumeTimeout extends Error {}
+
+function volumeOf(target: string): string {
+  return mountPointForRoot(target) ?? path.parse(target).root;
+}
 
 type Walk = { bytes: number; partial: boolean; dirs: string[]; pending: string[]; seen: Set<string>; stamp: number };
 type Settled = { bytes: number; partial: boolean; at: number; stamp: number; stale: boolean };
@@ -43,7 +54,10 @@ export class CheckoutSizes {
   private readonly msPerPass: number;
   private readonly idleMs: number;
   private readonly ttlMs: number;
-  private readonly relistMs: number;
+  private readonly opTimeoutMs: number;
+  private readonly liveOf: (() => ReadonlySet<string>) | undefined;
+  private live: { at: number; paths: ReadonlySet<string> } | undefined;
+  private readonly degraded = new Set<string>();
 
   private readonly checkouts = new Map<string, Checkout>();
   private loose = { bytes: 0, partial: false };
@@ -72,7 +86,8 @@ export class CheckoutSizes {
     this.msPerPass = options.msPerPass ?? 50;
     this.idleMs = options.idleMs ?? 15_000;
     this.ttlMs = options.ttlMs ?? 10 * 60_000;
-    this.relistMs = options.relistMs ?? 30_000;
+    this.opTimeoutMs = options.opTimeoutMs ?? 10_000;
+    this.liveOf = options.live;
   }
 
   figure(roots: readonly string[]): CheckoutFigure {
@@ -81,11 +96,11 @@ export class CheckoutSizes {
     let partial = this.loose.partial;
     let measured = 0;
     const counted = this.inRoots();
-    for (const checkout of counted) {
+    for (const [key, checkout] of counted) {
       const shown = checkout.settled ?? checkout.walk;
       bytes += shown?.bytes ?? 0;
-      partial ||= shown?.partial ?? false;
-      if (!this.due(checkout)) measured += 1;
+      partial ||= (shown?.partial ?? false) || this.degraded.has(volumeOf(key));
+      if (!this.due(checkout, key)) measured += 1;
     }
     const of = counted.length;
     const measuring = this.listedAt === undefined || measured < of;
@@ -94,19 +109,25 @@ export class CheckoutSizes {
 
   peek(target: string, roots: readonly string[]): { bytes?: number; partial: boolean } {
     const key = path.resolve(target);
-    if (!this.checkouts.has(key)) this.checkouts.set(key, { stamp: 0, adopted: true });
+    if (!this.checkouts.has(key) && this.isLive(key)) this.checkouts.set(key, { stamp: 0, adopted: true });
     this.want(roots);
     const settled = this.checkouts.get(key)?.settled;
     return settled ? { bytes: settled.bytes, partial: settled.partial } : { partial: false };
   }
 
+  known(target: string): number | undefined {
+    return this.checkouts.get(path.resolve(target))?.settled?.bytes;
+  }
+
   invalidate(): void {
     for (const checkout of this.checkouts.values()) if (checkout.settled) checkout.settled.stale = true;
-    this.listedAt = undefined;
+    this.degraded.clear();
+    this.relist();
   }
 
   relist(): void {
     this.listedAt = undefined;
+    this.live = undefined;
   }
 
   stop(): void {
@@ -120,25 +141,54 @@ export class CheckoutSizes {
     const resolved = [...new Set(roots.map((root) => path.resolve(root)))];
     if (resolved.join("\0") !== this.roots.join("\0")) {
       this.roots = resolved;
-      this.listedAt = undefined;
+      this.relist();
     }
     this.lastDemand = this.now();
     if (this.stopped || this.running) return;
-    if (this.needsListing() || [...this.checkouts.values()].some((checkout) => this.due(checkout))) {
+    if (this.needsListing() || [...this.checkouts].some(([key, checkout]) => this.due(checkout, key))) {
       this.running = true;
       this.pending = this.schedule(() => void this.tick());
     }
   }
 
-  private inRoots(): Checkout[] {
-    return [...this.checkouts.entries()].filter(([key, checkout]) => !checkout.adopted && this.roots.includes(path.dirname(key))).map(([, checkout]) => checkout);
+  private inRoots(): Array<[string, Checkout]> {
+    return [...this.checkouts.entries()].filter(([key, checkout]) => !checkout.adopted && this.roots.includes(path.dirname(key)));
   }
 
   private needsListing(): boolean {
-    return this.listedAt === undefined || this.now() - this.listedAt > this.relistMs;
+    return this.listedAt === undefined;
   }
 
-  private due(checkout: Checkout): boolean {
+  private isLive(key: string): boolean {
+    if (!this.liveOf) return true;
+    if (!this.live || this.now() - this.live.at > LIVE_TTL_MS) this.live = { at: this.now(), paths: new Set([...this.liveOf()].map((live) => path.resolve(live))) };
+    return this.live.paths.has(key);
+  }
+
+  private timed<T>(target: string, work: Promise<T>): Promise<T> {
+    const volume = volumeOf(target);
+    if (this.degraded.has(volume)) return Promise.reject(new VolumeTimeout(volume));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        this.degraded.add(volume);
+        reject(new VolumeTimeout(volume));
+      }, this.opTimeoutMs);
+      timer.unref?.();
+    });
+    return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+  }
+
+  private lstat(target: string): Promise<SizingStat> {
+    return this.timed(target, this.fs.lstat(target));
+  }
+
+  private readdir(target: string): Promise<string[]> {
+    return this.timed(target, this.fs.readdir(target));
+  }
+
+  private due(checkout: Checkout, key?: string): boolean {
+    if (key !== undefined && this.degraded.has(volumeOf(key))) return false;
     if (checkout.walk) return true;
     const settled = checkout.settled;
     if (!settled) return true;
@@ -176,9 +226,9 @@ export class CheckoutSizes {
     if (this.needsListing()) await this.list(spend);
     for (const [key, checkout] of this.checkouts) {
       if (exhausted()) break;
-      if (this.due(checkout)) await this.advance(key, checkout, spend, exhausted, () => ops);
+      if (this.due(checkout, key)) await this.advance(key, checkout, spend, exhausted, () => ops);
     }
-    return this.needsListing() || [...this.checkouts.values()].some((checkout) => this.due(checkout));
+    return this.needsListing() || [...this.checkouts].some(([key, checkout]) => this.due(checkout, key));
   }
 
   private async list(spend: () => void): Promise<void> {
@@ -188,22 +238,27 @@ export class CheckoutSizes {
       spend();
       let names: string[];
       try {
-        names = await this.fs.readdir(root);
-      } catch {
+        names = await this.readdir(root);
+      } catch (error) {
+        if (error instanceof VolumeTimeout) loose.partial = true;
         continue;
       }
       try {
         spend();
-        loose.bytes += bytesOf(await this.fs.lstat(root));
+        loose.bytes += bytesOf(await this.lstat(root));
       } catch {
         loose.partial = true;
       }
       for (const name of names) {
         const target = path.join(root, name);
+        if (!this.isLive(target)) {
+          loose.partial ||= !name.startsWith(".");
+          continue;
+        }
         spend();
         let stat: SizingStat;
         try {
-          stat = await this.fs.lstat(target);
+          stat = await this.lstat(target);
         } catch {
           loose.partial = true;
           continue;
@@ -228,7 +283,7 @@ export class CheckoutSizes {
       }
       spend();
       try {
-        checkout.stamp = (await this.fs.lstat(key)).mtimeMs;
+        checkout.stamp = (await this.lstat(key)).mtimeMs;
       } catch {
         this.checkouts.delete(key);
       }
@@ -247,7 +302,7 @@ export class CheckoutSizes {
           batch.map(async (target) => {
             spend();
             try {
-              return { target, stat: await this.fs.lstat(target) };
+              return { target, stat: await this.lstat(target) };
             } catch {
               return { target, stat: undefined };
             }
@@ -259,7 +314,7 @@ export class CheckoutSizes {
             continue;
           }
           if (stat.isDirectory()) {
-            walk.dirs.push(target);
+            if (path.basename(target) !== "node_modules") walk.dirs.push(target);
             walk.bytes += bytesOf(stat);
             continue;
           }
@@ -280,7 +335,7 @@ export class CheckoutSizes {
       }
       spend();
       try {
-        for (const name of await this.fs.readdir(dir)) walk.pending.push(path.join(dir, name));
+        for (const name of await this.readdir(dir)) walk.pending.push(path.join(dir, name));
       } catch {
         walk.partial = true;
       }
