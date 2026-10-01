@@ -20,6 +20,7 @@ export type CodexDriverOptions = {
 };
 
 const DEFAULT_CODEX_MODEL = "gpt-5.5";
+const CODEX_INITIALIZE_TIMEOUT_MS = 30_000;
 
 // A method name no app-server message can collide with; carries a cancel out of the readline callback.
 const CANCEL_SENTINEL = "@telar/cancelled";
@@ -71,7 +72,7 @@ async function runCodexTurn(options: CodexDriverOptions, run: DriverRun): Promis
     await client.request("initialize", {
       clientInfo: { name: "telar", title: "Telar", version: "0.1.0" },
       capabilities: { experimentalApi: true, requestAttestation: false },
-    });
+    }, CODEX_INITIALIZE_TIMEOUT_MS);
     client.notify("initialized");
 
     const thread = codexThreadParams(run, { cwd, model, config: threadConfig, windowConfig, serviceTier: options.serviceTier });

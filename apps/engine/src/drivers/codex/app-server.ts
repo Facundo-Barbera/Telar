@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { requireCli } from "../../domains/providers";
+import { OWN_GROUP, stopGroup } from "../../platform/process/group";
 import { ProviderUnavailableError } from "../contract";
 import { record } from "./items";
 
@@ -46,6 +47,7 @@ export class CodexAppServer {
   private nextId = 1;
   private readonly pending = new Map<string | number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
   private closed = false;
+  private killed = false;
   private closeError: Error | null = null;
 
   readonly notifications = new AsyncChannel<CodexNotification>();
@@ -59,6 +61,7 @@ export class CodexAppServer {
     this.child = spawn(bin, ["app-server"], {
       env: Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)) as NodeJS.ProcessEnv,
       stdio: ["pipe", "pipe", "pipe"],
+      detached: OWN_GROUP,
     });
     this.child.on("error", (error) => this.close(error));
 
@@ -114,11 +117,19 @@ export class CodexAppServer {
     if (!this.closed) this.child.stdin.write(`${JSON.stringify(message)}\n`);
   }
 
-  request<T>(method: string, params?: unknown): Promise<T> {
+  request<T>(method: string, params?: unknown, timeoutMs?: number): Promise<T> {
     if (this.closed) return Promise.reject(this.closeError ?? new Error("codex app-server is closed"));
     const id = this.nextId++;
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
+      const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`codex app-server did not answer ${method} within ${timeoutMs}ms`));
+      }, timeoutMs);
+      const settle = <V>(done: (value: V) => void) => (value: V) => {
+        clearTimeout(timer);
+        done(value);
+      };
+      this.pending.set(id, { resolve: settle(resolve as (value: unknown) => void), reject: settle(reject) });
       this.write({ jsonrpc: "2.0", id, method, params });
     });
   }
@@ -135,8 +146,11 @@ export class CodexAppServer {
     this.write({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
+  // Even after the leader exits: what it spawned can still be running in its group.
   kill(): void {
-    if (!this.closed) this.child.kill();
+    if (this.killed) return;
+    this.killed = true;
+    stopGroup(this.child);
   }
 }
 
