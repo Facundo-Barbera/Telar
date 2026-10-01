@@ -7,10 +7,12 @@ struct AttachmentChip: View {
     var preview: Data?
     let onRemove: () -> Void
 
+    @State private var thumbnail: UIImage?
+
     var body: some View {
         ZStack(alignment: .topTrailing) {
             Group {
-                if let preview, let image = UIImage(data: preview) {
+                if let image = thumbnail {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
@@ -39,6 +41,10 @@ struct AttachmentChip: View {
             }
             .padding(4)
             .accessibilityLabel("Remove \(name)")
+        }
+        .task(id: preview) {
+            guard let preview else { return thumbnail = nil }
+            thumbnail = await Task.detached(priority: .userInitiated) { Thumbnail.make(preview, side: Thumbnail.tile) }.value
         }
 
         .contextMenu {
