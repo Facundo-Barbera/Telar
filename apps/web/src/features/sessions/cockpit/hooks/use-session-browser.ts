@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ProviderDriverKind, RuntimeMode } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
-import { writeDraft } from "@/features/composer";
+import { writeDraft, writeDraftFiles } from "@/features/composer";
 import { sessionModelSelection, type ModelChoice } from "@/features/providers";
 import { browserPanelTab, describeBrowserStart, latestBrowserState, type BrowserStartState } from "@/features/panel";
 import { desktopBrowserBridge } from "@/features/browser/desktop-browser-bridge";
@@ -88,6 +88,8 @@ export function useSessionBrowser({ hostId, sessionId, projectId, sync, draft, c
       if (window.location.pathname !== origin) return id;
       writeDraft(id, projectId, composer.draftText.current);
       writeDraft(undefined, projectId, "");
+      writeDraftFiles(id, projectId, composer.draftFiles.current);
+      writeDraftFiles(undefined, projectId, []);
       handOffCanvas(id, projectId, panel, { clearCanvas: true });
       composer.claim({ sessionId: id, projectId });
       sync.setSession(patched.session);

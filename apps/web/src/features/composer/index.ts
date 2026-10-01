@@ -1,6 +1,7 @@
 export { CHIP_CLASS, CHIP_ICON_CLASS, CHIP_LABEL_CLASS, chipTitle } from "./chip";
 export { isCompactDraft } from "./completions";
 export { DRAFTS_CHANGED_EVENT, listCanvasDrafts, readDraft, writeDraft, type CanvasDraft } from "./draft";
+export { loadDraftFiles, readDraftFiles, writeDraftFiles } from "./draft-files";
 export {
   canvasHrefFor,
   composerProject,

@@ -1,32 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { BotIcon, ChevronRightIcon, PaperclipIcon } from "lucide-react";
+import { BotIcon, ChevronRightIcon } from "lucide-react";
 import type { TurnAttachment } from "@telar/engine-client";
 import { Message, MessageContent, MessageResponse } from "@/ui/message";
+import { MessageAttachments } from "./message-attachments";
 import { PromptText } from "./prompt-text";
 
 type MessageSender = { sessionId?: string };
 
 export type OpenTab = NonNullable<Parameters<typeof PromptText>[0]["onOpen"]>;
-
-function MessageAttachments({ attachments }: { attachments?: readonly TurnAttachment[] }) {
-  if (!attachments?.length) return null;
-  return (
-    <ul className="mt-2 flex flex-wrap gap-1.5">
-      {attachments.map((attachment) => (
-        <li
-          key={attachment.id}
-          title={attachment.path}
-          className="flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-2xs text-muted-foreground"
-        >
-          <PaperclipIcon className="size-3 shrink-0" />
-          <span className="max-w-48 truncate">{attachment.name}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
 
 export function ConversationMessage({
   text,

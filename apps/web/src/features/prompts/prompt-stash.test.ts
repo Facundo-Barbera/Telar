@@ -234,6 +234,7 @@ describe("entrySummary", () => {
   test("an entry with no text is named by what it does have", () => {
     expect(entrySummary(entry("a", "", [picture(4), picture(4)]))).toBe("2 images");
     expect(entrySummary(entry("a", "", [picture(4)]))).toBe("1 image");
+    expect(entrySummary(entry("a", "", [picture(4), { name: "notes.pdf", type: "application/pdf", dataUrl: "data:application/pdf;base64,AA" }]))).toBe("2 files");
     expect(entrySummary(entry("a", ""))).toBe("Empty");
   });
 });

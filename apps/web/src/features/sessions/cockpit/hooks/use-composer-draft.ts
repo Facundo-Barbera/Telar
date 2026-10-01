@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MAX_ATTACHMENTS, readDraft, writeDraft } from "@/features/composer";
+import { loadDraftFiles, MAX_ATTACHMENTS, readDraft, readDraftFiles, writeDraft, writeDraftFiles } from "@/features/composer";
 import { appendToDraft } from "../model";
 
 /** The composer's unsent text, files and recalled run id, saved per session (or per project canvas) as it changes. */
@@ -12,10 +12,15 @@ export function useComposerDraft({ sessionId, projectId }: { sessionId: string |
   const owner = useRef({ sessionId, projectId });
   /** The live text, readable from an effect that must not re-run per keystroke. */
   const draftText = useRef(draft);
+  const draftFiles = useRef(attachments);
 
   useEffect(() => {
     draftText.current = draft;
   }, [draft]);
+
+  useEffect(() => {
+    draftFiles.current = attachments;
+  }, [attachments]);
 
   useEffect(() => {
     const task = window.setTimeout(() => {
@@ -23,15 +28,27 @@ export function useComposerDraft({ sessionId, projectId }: { sessionId: string |
         const leaving = owner.current;
         owner.current = { sessionId, projectId };
         writeDraft(leaving.sessionId, leaving.projectId, draftText.current);
+        writeDraftFiles(leaving.sessionId, leaving.projectId, draftFiles.current);
         setDraft(readDraft(sessionId, projectId));
+        setAttachments(readDraftFiles(sessionId, projectId));
         return;
       }
-      // After a reload the stored text only fills an empty box; it never clobbers what is typed.
+      // After a reload the stored draft only fills an empty box; it never clobbers what is typed.
       const stored = readDraft(sessionId, projectId);
       if (stored) setDraft((current) => current || stored);
+      void loadDraftFiles(sessionId, projectId).then((files) => {
+        if (files.length > 0 && owner.current.sessionId === sessionId && owner.current.projectId === projectId) {
+          setAttachments((current) => (current.length > 0 ? current : files));
+        }
+      });
     }, 0);
     return () => window.clearTimeout(task);
   }, [sessionId, projectId]);
+
+  useEffect(() => {
+    const task = window.setTimeout(() => writeDraftFiles(sessionId, projectId, attachments), 400);
+    return () => window.clearTimeout(task);
+  }, [attachments, sessionId, projectId]);
 
   useEffect(() => {
     const task = window.setTimeout(() => writeDraft(sessionId, projectId, draft), 400);
@@ -61,6 +78,6 @@ export function useComposerDraft({ sessionId, projectId }: { sessionId: string |
   };
 
   return {
-    draft, setDraft, changeDraft, attachments, setAttachments, draftRunId, setDraftRunId, claim, draftText, insertIntoComposer, attachFromPanel,
+    draft, setDraft, changeDraft, attachments, setAttachments, draftRunId, setDraftRunId, claim, draftText, draftFiles, insertIntoComposer, attachFromPanel,
   };
 }

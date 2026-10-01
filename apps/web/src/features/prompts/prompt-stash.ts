@@ -121,7 +121,9 @@ export function entrySummary(entry: StashEntry): string {
     .map((part) => part.trim())
     .find(Boolean);
   if (line) return line.length > 90 ? `${line.slice(0, 89)}…` : line;
-  if (entry.images.length > 0) return entry.images.length === 1 ? "1 image" : `${entry.images.length} images`;
+  const count = entry.images.length;
+  const noun = entry.images.every((image) => image.type.startsWith("image/")) ? "image" : "file";
+  if (count > 0) return count === 1 ? `1 ${noun}` : `${count} ${noun}s`;
   return "Empty";
 }
 

@@ -6,9 +6,8 @@ import type { StashedImage } from "@/features/prompts";
 /** Enough to read a screenshot back and know which one it was, which is all a
  *  restored attachment has to do — the model gets the re-encode either way. */
 const IMAGE_LONG_EDGE = 1600;
-/** BYTES ON THE BLOB, measured before base64 expands it by a third, so the
- *  ladder below can stop without encoding a data URL to find out. */
-const MAX_IMAGE_BYTES = 450_000;
+/** Bytes on the blob, before base64 expands them by a third. Other files are stored as they are, under the same budget. */
+const MAX_STASHED_BYTES = 450_000;
 
 const QUALITY = [0.82, 0.7, 0.6, 0.5, 0.4];
 
@@ -30,13 +29,13 @@ export function fitLongEdge(width: number, height: number, max: number): { width
  * screenshot is exactly as unrecoverable as a typed paragraph, and recording its
  * name in the entry would be a receipt for something already destroyed.
  */
-export async function encodeImagesForStash(
+export async function encodeForStash(
   files: readonly File[],
 ): Promise<{ images: StashedImage[]; kept: File[] }> {
   const images: StashedImage[] = [];
   const kept: File[] = [];
   for (const file of files) {
-    const encoded = await encode(file);
+    const encoded = (file.type.startsWith("image/") ? await encode(file) : undefined) ?? (await asIs(file));
     if (encoded) images.push(encoded);
     else kept.push(file);
   }
@@ -63,7 +62,7 @@ async function encode(file: File): Promise<StashedImage | undefined> {
       for (const quality of QUALITY) {
         const blob = await toBlob(canvas, quality);
         if (!blob) return undefined;
-        if (blob.size > MAX_IMAGE_BYTES) continue;
+        if (blob.size > MAX_STASHED_BYTES) continue;
         return { name: file.name, type: blob.type, dataUrl: await toDataUrl(blob) };
       }
       return undefined;
@@ -72,6 +71,15 @@ async function encode(file: File): Promise<StashedImage | undefined> {
     }
   } catch {
     // A format Chromium declined to decode. The file goes back to the composer.
+    return undefined;
+  }
+}
+
+async function asIs(file: File): Promise<StashedImage | undefined> {
+  if (file.size > MAX_STASHED_BYTES) return undefined;
+  try {
+    return { name: file.name, type: file.type || "application/octet-stream", dataUrl: await toDataUrl(file) };
+  } catch {
     return undefined;
   }
 }

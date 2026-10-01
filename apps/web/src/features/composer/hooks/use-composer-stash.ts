@@ -1,9 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
-import { appendPrompt, mergeAttachments, splitImages, type StashedImage, type ShelfRow, usePromptShelf } from "@/features/prompts";
+import { appendPrompt, mergeAttachments, type ShelfRow, usePromptShelf } from "@/features/prompts";
 import { randomUuid } from "@/platform/random-uuid";
-import { encodeImagesForStash, filesFromStash } from "../stash-images";
+import { encodeForStash, filesFromStash } from "../stash-images";
 import type { ComposerEditorHandle } from "../components/composer-editor";
 
 /** The contract's `TurnSubmission.attachments` ceiling, shared with the browser camera. */
@@ -15,7 +15,7 @@ export function draftAfterStash(now: string, captured: string): string {
 }
 
 export function isStashable(draft: string, attachments: readonly File[]): boolean {
-  return Boolean(draft.trim() || attachments.some((file) => file.type.startsWith("image/")));
+  return Boolean(draft.trim() || attachments.length > 0);
 }
 
 /** ⌘S sets the box aside; any composer can pull it back. Your stash and agent drafts arrive as one list of rows. */
@@ -53,17 +53,18 @@ export function useComposerStash({
   /** Capture, encode, write, and only then clear: a refused write leaves the box untouched. */
   const stash = useCallback(async () => {
     const text = draft.trim();
-    const { images, rest } = splitImages(attachments);
-    if (!text && images.length === 0) return;
+    if (!isStashable(text, attachments)) return;
     setNote(undefined);
-    let encoded: { images: StashedImage[]; kept: File[] } = { images: [], kept: [] };
-    if (images.length > 0) {
-      setStashing(true);
-      try {
-        encoded = await encodeImagesForStash(images);
-      } finally {
-        setStashing(false);
-      }
+    setStashing(true);
+    let encoded: Awaited<ReturnType<typeof encodeForStash>>;
+    try {
+      encoded = await encodeForStash(attachments);
+    } finally {
+      setStashing(false);
+    }
+    if (!text && encoded.images.length === 0) {
+      setNote("These files are too large to stash. Nothing was taken from the box.");
+      return;
     }
     const ok = shelf.stash({ id: randomUuid(), at: Date.now(), prompt: text, images: encoded.images });
     if (!ok) {
@@ -71,7 +72,7 @@ export function useComposerStash({
       return;
     }
     onDraftChange(draftAfterStash(latest.current, draft));
-    onAttach([...rest, ...encoded.kept]);
+    onAttach(encoded.kept);
     setOpen(false);
   }, [draft, attachments, shelf, onDraftChange, onAttach]);
 
@@ -89,11 +90,11 @@ export function useComposerStash({
         window.setTimeout(() => {
           if (held.current.length > before) return;
           shelf.put(images, randomUuid(), Date.now());
-          setNote("This chat cannot hold images — they are back in the stash.");
+          setNote("This chat cannot hold attachments — they are back in the stash.");
         }, 0);
       }
       if (taken.left > 0) {
-        setNote(`${taken.left === 1 ? "1 image is" : `${taken.left} images are`} still in the stash — this box is full.`);
+        setNote(`${taken.left === 1 ? "1 attachment is" : `${taken.left} attachments are`} still in the stash — this box is full.`);
       }
       setOpen(false);
       // An image-only entry changes no text, so the repaint that usually restores the caret never runs.

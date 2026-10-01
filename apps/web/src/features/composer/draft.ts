@@ -32,7 +32,7 @@ function resolve(storage?: DraftStorage): DraftStorage | undefined {
 }
 
 /** No session is a fresh canvas, keyed by project; a project-less session always has a session id. */
-function key(sessionId: string | undefined, projectId: string | undefined): string {
+export function draftKey(sessionId: string | undefined, projectId: string | undefined): string {
   return `${PREFIX}${sessionId ?? `new:${projectId ?? "none"}`}`;
 }
 
@@ -65,7 +65,7 @@ export function readDraft(
   const store = resolve(storage);
   if (!store) return "";
   try {
-    return parse(store.getItem(key(sessionId, projectId)))?.text ?? "";
+    return parse(store.getItem(draftKey(sessionId, projectId)))?.text ?? "";
   } catch {
     return "";
   }
@@ -81,10 +81,10 @@ export function writeDraft(
   if (!store) return;
   try {
     // An empty draft removes the key rather than leaving an empty entry behind.
-    if (!draft.trim()) store.removeItem(key(sessionId, projectId));
+    if (!draft.trim()) store.removeItem(draftKey(sessionId, projectId));
     else
       store.setItem(
-        key(sessionId, projectId),
+        draftKey(sessionId, projectId),
         JSON.stringify({ text: draft.slice(0, MAX_DRAFT), updatedAt: Date.now() } satisfies Stored),
       );
   } catch {

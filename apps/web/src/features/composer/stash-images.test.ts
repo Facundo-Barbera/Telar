@@ -1,14 +1,8 @@
-/**
- * The half of the image round trip a test runner can reach.
- *
- * `encodeImagesForStash` is not here and should not be: it is a canvas, this
- * app has no DOM harness, and the answer to an untestable function is to keep
- * it small enough to read rather than to build a harness for it. What IS pinned
- * is the arithmetic that decides the size, and the decode back to a `File` —
- * which bun can run, because it ships `File` and `atob`.
- */
 import { describe, expect, test } from "bun:test";
-import { fileFromStashedImage, filesFromStash, fitLongEdge } from "./stash-images";
+import { installTestDom } from "@/test/dom";
+import { encodeForStash, fileFromStashedImage, filesFromStash, fitLongEdge } from "./stash-images";
+
+installTestDom();
 
 function dataUrl(text: string, type = "image/webp") {
   return `data:${type};base64,${btoa(text)}`;
@@ -57,5 +51,24 @@ describe("filesFromStash", () => {
       { name: "two.webp", type: "image/webp", dataUrl: dataUrl("b") },
     ]);
     expect(files.map((file) => file.name)).toEqual(["one.webp", "two.webp"]);
+  });
+});
+
+describe("encodeForStash", () => {
+  test("a file that is not an image is stashed as it is and restores byte for byte", async () => {
+    const pdf = new File(["%PDF-1.7 notes"], "notes.pdf", { type: "application/pdf" });
+    const { images, kept } = await encodeForStash([pdf]);
+    expect(kept).toEqual([]);
+    const [restored] = filesFromStash(images);
+    expect(restored?.name).toBe("notes.pdf");
+    expect(restored?.type).toBe("application/pdf");
+    expect(await restored?.text()).toBe("%PDF-1.7 notes");
+  });
+
+  test("a file over the budget is handed back to the box", async () => {
+    const big = new File([new Uint8Array(600_000)], "dump.bin", { type: "application/octet-stream" });
+    const { images, kept } = await encodeForStash([big]);
+    expect(images).toEqual([]);
+    expect(kept).toEqual([big]);
   });
 });
