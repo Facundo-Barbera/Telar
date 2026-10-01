@@ -131,8 +131,14 @@ struct DirectoryEntry: Decodable, Identifiable, Equatable, Hashable {
     var id: String { path }
 }
 
+struct DirectoryRoot: Decodable, Hashable {
+    var name: String
+    var path: String
+}
+
 struct DirectoryListing: Decodable {
     var path: String
     var name: String
     var dirs: [DirectoryEntry]
+    var roots: [DirectoryRoot]?
 }
