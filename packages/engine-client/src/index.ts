@@ -33,4 +33,4 @@ export type { RunTargetInput } from "./terminal/client";
 export { EngineClient, type FetchLike } from "./platform/client";
 export { domainMethods, type EngineDomainMethods } from "./platform/domains";
 export { EngineClientError, sanitizeTransportCause } from "./platform/errors";
-export type { EngineTransport } from "./platform/transport";
+export type { Conditional, EngineTransport } from "./platform/transport";

@@ -5,11 +5,10 @@ import type { LiveSessionsAnswer } from "../sessions/schema";
 import { runBase } from "../terminal/client";
 import { domainClients, type EngineDomainMethods } from "./domains";
 import { EngineClientError, sanitizeTransportCause } from "./errors";
-import type { EngineTransport } from "./transport";
+import type { Conditional, EngineTransport } from "./transport";
 
 export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
-type Conditional<T> = { unchanged: true; etag?: string } | { unchanged: false; payload: T; etag?: string };
 type Stream = { url: string; headers: Record<string, string> };
 
 export interface EngineClient extends EngineDomainMethods {}
@@ -61,13 +60,13 @@ export class EngineClient implements EngineTransport {
   async liveSessionsMatching(
     options: { etag?: string; all?: boolean } = {},
   ): Promise<{ notModified: true; etag: string } | (LiveSessionsAnswer & { notModified?: false; etag?: string })> {
-    const read = await this.conditional<LiveSessionsAnswer>(options.all ? "/v2/sessions/live?all=1" : "/v2/sessions/live", options.etag, "liveSessionsMatching");
+    const read = await this.requestIfChanged<LiveSessionsAnswer>(options.all ? "/v2/sessions/live?all=1" : "/v2/sessions/live", options.etag, "liveSessionsMatching");
     if (read.unchanged) return { notModified: true, etag: read.etag ?? options.etag ?? "" };
     return { ...read.payload, ...(read.etag === undefined ? {} : { etag: read.etag }) };
   }
 
   eventsIfChanged(sessionId: string, after = 0, limit?: number, etag?: string): Promise<Conditional<EventPage>> {
-    return this.conditional<EventPage>(`${sessionPath(sessionId)}/events${queryOf({ after, limit })}`, etag);
+    return this.requestIfChanged<EventPage>(`${sessionPath(sessionId)}/events${queryOf({ after, limit })}`, etag);
   }
 
   async uploadAttachment(sessionId: string, file: { name: string; mediaType: string; data: ArrayBuffer | Uint8Array }): Promise<{ attachment: TurnAttachment }> {
@@ -115,7 +114,7 @@ export class EngineClient implements EngineTransport {
     return payload as T;
   }
 
-  private async conditional<T>(pathname: string, etag: string | undefined, operation?: string): Promise<Conditional<T>> {
+  async requestIfChanged<T>(pathname: string, etag?: string, operation?: string): Promise<Conditional<T>> {
     const response = await this.send(pathname, { method: "GET", headers: etag ? { "if-none-match": etag } : {} }, operation);
     const tag = response.headers.get("etag") ?? undefined;
     if (response.status === 304) return { unchanged: true, ...(tag ? { etag: tag } : {}) };

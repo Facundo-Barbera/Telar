@@ -39,6 +39,7 @@ type IngestDeps = {
   scanQueue: (sessionId: string) => SessionQueue;
   writeQueue: (sessionId: string, queue: SessionQueue) => void;
   requireRunningClaimFromQueue: (queue: SessionQueue, runId: string, claimToken: string) => Turn;
+  filesChanged: (sessionId: string) => void;
 };
 
 /** What a running turn reports, journalled and folded into the items, tasks and turn it touches. */
@@ -143,6 +144,7 @@ export class TurnIngest {
       items.set(item.id, item);
       projection.itemsTouched.add(item.id);
       this.kernel.appendEvent(sessionId, { type: "item.completed", item }, turn.runId);
+      if (item.detail.type === "file_change") this.deps.filesChanged(sessionId);
       // The text lives in `detail` from here on, so the accumulator's copy is
       // dead weight. This is what bounds the map: one entry per OPEN item.
       this.deps.prefixes.drop(sessionId, observation.itemId);

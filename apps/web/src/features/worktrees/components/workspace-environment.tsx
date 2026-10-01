@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChevronDownIcon,
   FolderGit2Icon,
@@ -458,13 +458,16 @@ export function EnvironmentStrip({
   );
 }
 
-export async function readWorkspaceGit(engine: typeof api, projectId: string, worktreeSessionId?: string): Promise<GitOverview> {
+type OwnStatus = { etag?: string; dirtyFiles?: number };
+
+export async function readWorkspaceGit(engine: typeof api, projectId: string, worktreeSessionId?: string, own: OwnStatus = {}): Promise<GitOverview> {
   const { git } = await engine.projectGit(projectId);
   if (!worktreeSessionId) return git;
   const rest = { ...git };
   delete rest.dirtyFiles;
-  const own = await engine.sessionDirtyFiles(worktreeSessionId).catch(() => undefined);
-  return own?.dirtyFiles === undefined ? rest : { ...rest, dirtyFiles: own.dirtyFiles };
+  const read = await engine.sessionGitStatus(worktreeSessionId, own.etag).catch(() => undefined);
+  if (!read?.unchanged) Object.assign(own, { etag: read?.etag, dirtyFiles: read?.payload.dirtyFiles });
+  return own.dirtyFiles === undefined ? rest : { ...rest, dirtyFiles: own.dirtyFiles };
 }
 
 export function WorkspaceEnvironment({
@@ -477,10 +480,12 @@ export function WorkspaceEnvironment({
   const worktreeSessionId = session?.workspace.mode === "worktree" ? session.id : undefined;
   const [git, setGit] = useState<GitOverview>();
   const [reachable, setReachable] = useState(true);
+  const own = useRef<OwnStatus & { sessionId?: string }>({});
 
   const load = useCallback(async () => {
+    if (own.current.sessionId !== worktreeSessionId) own.current = worktreeSessionId ? { sessionId: worktreeSessionId } : {};
     try {
-      const next = await readWorkspaceGit(api, projectId, worktreeSessionId);
+      const next = await readWorkspaceGit(api, projectId, worktreeSessionId, own.current);
       setGit(next);
       setReachable(true);
       onAvailability?.(next.availability === "available" ? undefined : next.availability);

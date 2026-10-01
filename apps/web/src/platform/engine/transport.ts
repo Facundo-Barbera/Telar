@@ -1,4 +1,4 @@
-import type { EngineTransport } from "@telar/engine-client";
+import type { Conditional, EngineTransport } from "@telar/engine-client";
 import type {
 EngineErrorCode
 } from "@telar/engine-client";
@@ -38,7 +38,7 @@ export function refusedBy(error: EngineApiError): string | undefined {
 
 /** What the request reached, as opposed to what it meant to reach: the pin on
  *  the fetcher, corrected by the name the proxy stamped on the way back. */
-export function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undefined {
+function answeringHost(fetcher: Fetcher, response?: Response): ErrorHost | undefined {
   const id = pinnedHost(fetcher);
   if (!id || id === LOCAL_HOST_ID) return undefined;
   const name = response?.headers.get(HOST_NAME_HEADER) ?? hostName(id);
@@ -74,7 +74,7 @@ function gate(budget: number) {
 
 export type Gate = ReturnType<typeof gate>;
 
-export const reads = gate(READ_BUDGET);
+const reads = gate(READ_BUDGET);
 
 /** The opening's own slot. Exported for the cockpit's sake only in the sense
  *  that `sessionBootstrap` below is the single caller — nothing else may take
@@ -98,15 +98,32 @@ export async function request<T>(
   }
 }
 
-async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function requestIfChanged<T>(fetcher: Fetcher, pathname: string, etag?: string, lane: Gate | null = reads): Promise<Conditional<T>> {
+  if (lane) await lane.take();
   let response: Response;
   try {
-    response = await fetcher(pathname, {
-      method,
-      headers: body === undefined ? undefined : { "content-type": "application/json" },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      ...(signal ? { signal } : {}),
-    });
+    response = await reach(fetcher, pathname, { method: "GET", cache: "no-store", ...(etag === undefined ? {} : { headers: { "if-none-match": etag } }) });
+  } finally {
+    lane?.give();
+  }
+  const tag = response.headers.get("etag") ?? undefined;
+  if (response.status === 304) return { unchanged: true, ...(tag ? { etag: tag } : {}) };
+  return { unchanged: false, payload: await answer<T>(fetcher, response), ...(tag ? { etag: tag } : {}) };
+}
+
+async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  const response = await reach(fetcher, pathname, {
+    method,
+    headers: body === undefined ? undefined : { "content-type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  return answer<T>(fetcher, response);
+}
+
+async function reach(fetcher: Fetcher, pathname: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetcher(pathname, init);
   } catch (cause) {
     // An abort is the CALLER's decision arriving back, not the adapter being
     // away — it must surface as itself so the UI can say "Stopped".
@@ -121,7 +138,9 @@ async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?
       host,
     );
   }
+}
 
+async function answer<T>(fetcher: Fetcher, response: Response): Promise<T> {
   const host = answeringHost(fetcher, response);
   let payload: unknown;
   try {
@@ -141,6 +160,7 @@ export function apiTransport(fetcher: Fetcher, lane: Gate | null = reads): Engin
   const apiPath = (pathname: string) => pathname.replace(/^\/v2\//, "/api/");
   return {
     request: (method, pathname, body, signal) => request(fetcher, method, apiPath(pathname), body, signal, lane),
+    requestIfChanged: (pathname, etag) => requestIfChanged(fetcher, apiPath(pathname), etag, lane),
     async readBytes(pathAndQuery) {
       const response = await fetcher(apiPath(pathAndQuery));
       if (!response.ok) throw new EngineApiError("engine_unavailable", "The engine request failed.", response.status, answeringHost(fetcher, response));

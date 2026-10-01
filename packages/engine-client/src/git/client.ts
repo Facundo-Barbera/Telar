@@ -1,4 +1,4 @@
-import type { EngineTransport } from "../platform/transport";
+import type { Conditional, EngineTransport } from "../platform/transport";
 import { diffBaseQuery, filePatchQuery, type DiffBaseOption, type FilePatchOptions } from "./diff-query";
 import type { GitCommitEntry, GitFilePatch, GitignoreRemoval, GitignoreResult, GitOverview, GitPushResult, SessionDiff } from "./schema";
 
@@ -24,8 +24,8 @@ export const gitClient = {
     return this.request("GET", `${sessionPath(sessionId)}/diff${query ? `?${query}` : ""}`);
   },
 
-  sessionDirtyFiles(this: EngineTransport, sessionId: string): Promise<{ dirtyFiles?: number }> {
-    return this.request("GET", `${sessionPath(sessionId)}/git/status`);
+  sessionGitStatus(this: EngineTransport, sessionId: string, etag?: string): Promise<Conditional<{ dirtyFiles?: number }>> {
+    return this.requestIfChanged(`${sessionPath(sessionId)}/git/status`, etag);
   },
 
   sessionFilePatch(this: EngineTransport, sessionId: string, path: string, options: FilePatchOptions = {}): Promise<{ file: GitFilePatch }> {

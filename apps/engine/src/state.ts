@@ -8,6 +8,7 @@ import {
   type ProviderDriverKind,
   type RequestKind,
   type SessionCapabilities,
+  workspacePath,
 } from "@telar/engine-client";
 import { ProjectProbes, ProjectRegistry, ProjectRemounts, WorkspaceConfigStore } from "./domains/projects";
 import { Kernel } from "./platform/kernel";
@@ -354,6 +355,10 @@ export class EngineStore {
       scanQueue: (id) => this.sessionQueues.scan(id),
       writeQueue: (id, queue) => this.sessionQueues.write(id, queue),
       requireRunningClaimFromQueue: (queue, runId, token) => requireRunningClaimFromQueue(queue, runId, token),
+      filesChanged: (id) => {
+        const root = workspacePath(this.records.require(id).workspace);
+        if (root !== undefined) this.workspaceReads.forgetUnder(root);
+      },
     });
     return { worker, settler, wakes, recovery, ingest };
   }
