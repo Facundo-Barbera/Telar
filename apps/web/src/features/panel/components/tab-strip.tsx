@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type { Artifact } from "@telar/engine-client";
 import { Maximize2Icon, Minimize2Icon, PanelRightCloseIcon, XIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
 import { KeyHint } from "@/features/commands";
@@ -14,7 +15,7 @@ import { browserScopeKey, browserTabId, describePanelTabInstance, NO_PANELS, NO_
 import type { RightPanelProps } from "./right-panel";
 import { SurfaceChooser } from "./surface-chooser";
 
-type StripProps = Pick<RightPanelProps, "tabs" | "tab" | "sessionId" | "tasks" | "onTabChange" | "onCloseTab" | "onMoveTab" | "onOpenTab" | "onOpenNewTab" | "onOpenBrowser" | "browserStart" | "enabledPlugins" | "pluginPanels" | "onClose"> & {
+type StripProps = { artifacts: ReadonlyMap<string, Artifact> } & Pick<RightPanelProps, "tabs" | "tab" | "sessionId" | "tasks" | "onTabChange" | "onCloseTab" | "onMoveTab" | "onOpenTab" | "onOpenNewTab" | "onOpenBrowser" | "browserStart" | "enabledPlugins" | "pluginPanels" | "onClose"> & {
   browser: BrowserState | undefined;
   fullscreen: boolean;
   onToggleFullscreen: () => void;
@@ -60,7 +61,7 @@ function TabChip({
   const { id } = entry;
   const { tabs, onCloseTab, fullscreen, onToggleFullscreen } = strip;
   const on = id === strip.tab;
-  const { label, icon: Icon, missing } = describePanelTabInstance(entry, { ...(strip.browser ? { browser: strip.browser } : {}), ...(live ? { live } : {}), duplicate });
+  const { label, icon: Icon, missing } = describePanelTabInstance(entry, { ...(strip.browser ? { browser: strip.browser } : {}), ...(live ? { live } : {}), duplicate, artifacts: strip.artifacts });
   const insert = drag.insert?.id === id ? drag.insert.side : undefined;
   return (
     <span
@@ -148,7 +149,7 @@ export function TabStrip(strip: StripProps) {
   return (
     <div
       className={cn(
-        "flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0",
+        "@container/strip flex h-10 shrink-0 items-center gap-1 border-b border-border px-2 py-0",
         fullscreen && "pl-[max(8px,calc(var(--titlebar-inset)+var(--app-island-inset)))] md:h-[var(--titlebar-band-height)]",
       )}
     >
@@ -178,7 +179,7 @@ export function TabStrip(strip: StripProps) {
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         {tabs.length > 1 && (
-          <span className="mr-1 flex items-center gap-0.5">
+          <span className="mr-1 hidden items-center gap-0.5 @2xl/strip:flex">
             <KeyHint command="panel-previous-tab" />
             <KeyHint command="panel-next-tab" />
           </span>
@@ -195,7 +196,9 @@ export function TabStrip(strip: StripProps) {
         <button type="button" aria-label="Close right panel" title="Close right panel" onClick={strip.onClose} className={CONTROL}>
           <PanelRightCloseIcon className="size-4" />
         </button>
-        <KeyHint command="toggle-panel" />
+        <span className="hidden @lg/strip:contents">
+          <KeyHint command="toggle-panel" />
+        </span>
       </div>
     </div>
   );
