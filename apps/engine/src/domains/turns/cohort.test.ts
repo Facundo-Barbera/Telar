@@ -87,6 +87,7 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   expect(detail.body).toContain('3. session_c "worker c" — completed: Refactored the parser.');
   expect(detail.body).not.toContain("Details follow.");
   expect(detail.entries?.map((entry) => entry.sessionId)).toEqual(["session_a", "session_b", "session_c"]);
+  expect(detail.entries?.map((entry) => entry.title)).toEqual(["worker a", "worker b", "worker c"]);
   // The last to finish leads.
   expect(delivered[0]!.wakeReason).toMatchObject({ kind: "turn_completed", sessionId: "session_c", runId: "run_c" });
   // Delivered means gone.
