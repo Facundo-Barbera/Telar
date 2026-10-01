@@ -53,3 +53,12 @@ test("on a drive, the location is one line and the unplug caveat is behind its â
   expect(view.host.querySelector("[data-info]")?.getAttribute("data-info")).toContain("Eject before unplugging");
   view.unmount();
 });
+
+test("an old store whose size was not counted in time still offers removal, without a size", async () => {
+  const retired = { source: "/Volumes/Old/telar", stamp: "1000", removable: true };
+  const view = await mount({ path: "/p", defaultPath: "/x", pinnedByEnvironment: false, retired });
+  expect(view.host.textContent).toContain("/Volumes/Old/telar. The moved store is open");
+  expect(view.host.textContent).not.toContain("undefined");
+  expect(view.labels()).toContain("Remove");
+  view.unmount();
+});

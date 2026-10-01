@@ -4,7 +4,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { readMarker, clearRetired } = require("../store/store-location");
 const { DEV_BUILD } = require("./flags");
-const { retiredSubtrees, deleteRetiredSubtrees } = require("../store/store-retired");
+const { retiredSubtrees, deleteRetiredSubtrees, totalBytes } = require("../store/store-retired");
 
 function registerWorkspaceAndStoreIpc(main) {
   const { telarHome } = main;
@@ -16,7 +16,7 @@ function registerWorkspaceAndStoreIpc(main) {
     const file = input?.kind === "file";
     let stat;
     try {
-      stat = fs.statSync(target);
+      stat = await fs.promises.stat(target);
     } catch {
       return { ok: false, error: file ? "That file is no longer on this machine." : "That folder is no longer on this machine." };
     }
@@ -48,7 +48,7 @@ function registerWorkspaceAndStoreIpc(main) {
     return result.canceled || !directory ? { cancelled: true } : { path: directory };
   });
 
-  function storeStatus() {
+  async function storeStatus() {
     const userData = app.getPath("userData");
     const { marker } = readMarker(userData);
     const active = marker?.active;
@@ -63,7 +63,7 @@ function registerWorkspaceAndStoreIpc(main) {
       retired: retired
         ? {
             ...retired,
-            bytes: retiredSubtrees(retired.source, retired.stamp).reduce((total, entry) => total + entry.bytes, 0),
+            bytes: totalBytes(await retiredSubtrees(retired.source, retired.stamp)),
             removable: (active?.lastOpenedAt ?? 0) > Number(retired.stamp),
           }
         : undefined,
@@ -72,11 +72,11 @@ function registerWorkspaceAndStoreIpc(main) {
 
   ipcMain.handle("telar:store:status", () => storeStatus());
 
-  ipcMain.handle("telar:store:remove-old", () => {
+  ipcMain.handle("telar:store:remove-old", async () => {
     const userData = app.getPath("userData");
     const { marker } = readMarker(userData);
     if (!marker?.retired) return { ok: false, message: "There is no previous store to remove." };
-    const outcome = deleteRetiredSubtrees({
+    const outcome = await deleteRetiredSubtrees({
       source: marker.retired.source,
       stamp: marker.retired.stamp,
       openedAt: marker.active?.lastOpenedAt ?? 0,
