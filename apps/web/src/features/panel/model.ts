@@ -1,5 +1,5 @@
 import { BotIcon, CircleDotIcon, FileCode2Icon, FileDiffIcon, FileIcon, GitPullRequestIcon, GlobeIcon, NotebookIcon, ShapesIcon, SquareTerminalIcon, TableIcon, TerminalIcon, type LucideIcon } from "lucide-react";
-import type { BrowserProvider, BrowserTab } from "@telar/engine-client";
+import type { Artifact, BrowserProvider, BrowserTab } from "@telar/engine-client";
 import { fileKind } from "@/features/files";
 import { isPluginSurface, PLUGIN_SURFACES, pluginSurfaces, viewerAvailable, type PluginSurfaceId, type PluginPanelSource } from "@/features/plugins";
 import type { PanelTabInstance, PanelTabParams } from "./tabs";
@@ -236,9 +236,11 @@ function livePageSuffix(live?: readonly LivePage[]): string | undefined {
 /** The suffix appears only while a sibling of the same kind is open (`duplicate`). */
 export function describePanelTabInstance(
   tab: PanelTabItem,
-  options: { browser?: BrowserState; live?: readonly LivePage[]; duplicate?: boolean } = {},
+  options: { browser?: BrowserState; live?: readonly LivePage[]; duplicate?: boolean; artifacts?: ReadonlyMap<string, Artifact> } = {},
 ): TabDescription {
-  const described = describePanelTab(tab.kind, options.browser, options.live);
+  const artifact = options.artifacts?.get(artifactPanelId(tab.kind) ?? "");
+  const named = describePanelTab(tab.kind, options.browser, options.live);
+  const described = artifact ? { ...named, label: artifact.title, blurb: artifact.title } : named;
   if (!options.duplicate) return described;
   const suffix = panelTabSuffix(tab.params) ?? (tab.kind === LIVE_BROWSER_TAB ? livePageSuffix(options.live) : undefined);
   if (!suffix) return described;

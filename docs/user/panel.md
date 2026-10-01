@@ -45,7 +45,7 @@ An agent can put a file in front of you, such as a report, a guide it wrote or a
 
 ## Artifacts in the conversation
 
-An agent can also draw something straight into the conversation: a chart, a diagram, a UI mockup or a comparison. It appears as a card with a title. **Open in panel** shows it in a panel tab with more room. When the agent revises it, the newest version is drawn and the earlier cards fold to their titles.
+An agent can also draw something straight into the conversation: a chart, a diagram, a UI mockup or a comparison. It appears as a card with a title. Diagrams and drawings can be dragged to pan and zoomed with ⌘ and the scroll wheel, a pinch, or the + and − buttons; double-click fits them again. A diagram too wide for the card stays readable and is cut off, so drag it or use **Open in panel**, which shows it in a panel tab with more room. When the agent revises it, the newest version is drawn and the earlier cards fold to their titles.
 
 Html artifacts run in a sealed frame with no network, so an agent's chart can't load anything from the internet or see the rest of Telar. Ask for one by describing what you want to see.
 

@@ -1,15 +1,16 @@
 "use client";
 
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { mermaid } from "@streamdown/mermaid";
 import type { Artifact } from "@telar/engine-client";
 import { attachmentUrl } from "@/features/plugins";
 import { hostFetcher, LOCAL_HOST_ID } from "@/platform/engine/host-client";
 import { MessageResponse } from "@/ui/message";
 import { cn } from "@/ui/utils";
-import { ARTIFACT_SANDBOX, artifactDocument, clampFrameHeight, type ArtifactHeight, type FrameKind } from "../artifacts";
-
-const DIAGRAM_CARD_HEIGHT = 560;
+import { ARTIFACT_SANDBOX, artifactDocument, clampFrameHeight, type ArtifactHeight } from "../artifacts";
+import { svgImage } from "../svg-image";
+import { readableScale } from "../viewport";
+import { SvgViewer } from "./svg-viewer";
 
 function subscribeToLook(onChange: () => void) {
   const observer = new MutationObserver(onChange);
@@ -27,7 +28,7 @@ function useMermaidSvg(source: string, dark: boolean): Diagram {
   useEffect(() => {
     let live = true;
     mermaid
-      .getMermaid({ theme: dark ? "dark" : "default" })
+      .getMermaid({ theme: dark ? "dark" : "default", htmlLabels: false, flowchart: { htmlLabels: false } })
       .render(id, source)
       .then(({ svg }) => live && setDiagram({ source, dark, svg }))
       .catch((error: unknown) => live && setDiagram({ source, dark, error: error instanceof Error ? error.message : String(error) }));
@@ -43,7 +44,21 @@ function MermaidDiagram({ source, title, fill }: { source: string; title: string
   const { svg, error } = useMermaidSvg(source, dark);
   if (error) return <p className="px-3 py-2 text-xs text-muted-foreground">This diagram could not be drawn: {error}</p>;
   if (svg === undefined) return <p className="px-3 py-2 text-xs text-muted-foreground">Drawing…</p>;
-  return <SandboxFrame kind="diagram" content={svg} title={title} fill={fill} dark={dark} cap={DIAGRAM_CARD_HEIGHT} />;
+  return <Drawing source={svg} title={title} fill={fill} />;
+}
+
+const checkerboard = (a: string, b: string): React.CSSProperties => ({ background: `repeating-conic-gradient(${a} 0% 25%, ${b} 0% 50%) 0 0 / 16px 16px` });
+
+function Drawing({ source, title, fill, ground }: { source: string; title: string; fill: boolean; ground?: React.CSSProperties }) {
+  const image = useMemo(() => svgImage(source), [source]);
+  const minScale = useMemo(() => readableScale(source), [source]);
+  if (!image) return <p className="px-3 py-2 text-xs text-muted-foreground">This drawing is not a valid svg.</p>;
+  return <SvgViewer image={image} title={title} minScale={minScale} fill={fill} {...(ground ? { ground } : {})} />;
+}
+
+function SvgDrawing({ source, title, fill }: { source: string; title: string; fill: boolean }) {
+  const ground = useDarkLook() ? checkerboard("#3d3d3d", "#343434") : checkerboard("#f3f3f3", "#e8e8e8");
+  return <Drawing source={source} title={title} fill={fill} ground={ground} />;
 }
 
 type Loaded = { attachmentId: string; text?: string; failed?: boolean };
@@ -63,7 +78,7 @@ function useArtifactText(hostId: string, sessionId: string, attachmentId: string
   return loaded.attachmentId === attachmentId ? loaded : { attachmentId };
 }
 
-function SandboxFrame({ kind, content, title, fill, dark = false, cap }: { kind: FrameKind; content: string; title: string; fill: boolean; dark?: boolean; cap?: number }) {
+function HtmlFrame({ content, title, fill }: { content: string; title: string; fill: boolean }) {
   const frame = useId();
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number>();
@@ -84,10 +99,10 @@ function SandboxFrame({ kind, content, title, fill, dark = false, cap }: { kind:
       ref={ref}
       title={title}
       sandbox={ARTIFACT_SANDBOX}
-      srcDoc={artifactDocument(kind, content, frame, dark)}
+      srcDoc={artifactDocument(content, frame)}
       referrerPolicy="no-referrer"
-      className={cn("block w-full border-0", kind === "html" && "bg-white", fill && "h-full")}
-      style={fill ? undefined : { height: Math.min(height ?? 160, cap ?? Number.POSITIVE_INFINITY) }}
+      className={cn("block w-full border-0 bg-white", fill && "h-full")}
+      style={fill ? undefined : { height: height ?? 160 }}
     />
   );
 }
@@ -96,12 +111,8 @@ export function ArtifactView({ hostId = LOCAL_HOST_ID, sessionId, artifact, fill
   const { text, failed } = useArtifactText(hostId, sessionId, artifact.attachmentId);
   if (failed) return <p className="px-3 py-2 text-xs text-muted-foreground">This artifact could not be loaded.</p>;
   if (text === undefined) return <p className="px-3 py-2 text-xs text-muted-foreground">Loading…</p>;
-  if (artifact.kind === "html") return <SandboxFrame kind="html" content={text} title={artifact.title} fill={fill} />;
-  if (artifact.kind === "svg") return <SvgFrame content={text} title={artifact.title} fill={fill} />;
+  if (artifact.kind === "html") return <HtmlFrame content={text} title={artifact.title} fill={fill} />;
+  if (artifact.kind === "svg") return <SvgDrawing source={text} title={artifact.title} fill={fill} />;
   if (artifact.kind === "mermaid") return <MermaidDiagram source={text} title={artifact.title} fill={fill} />;
   return <MessageResponse className="px-3 py-2">{text}</MessageResponse>;
-}
-
-function SvgFrame({ content, title, fill }: { content: string; title: string; fill: boolean }) {
-  return <SandboxFrame kind="svg" content={content} title={title} fill={fill} dark={useDarkLook()} />;
 }

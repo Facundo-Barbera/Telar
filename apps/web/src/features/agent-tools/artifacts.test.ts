@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 import { artifactDocument, clampFrameHeight, latestArtifacts, MAX_FRAME_HEIGHT, MIN_FRAME_HEIGHT } from "./artifacts";
 
 test("the policy leads the document, ahead of an agent's own doctype and markup", () => {
-  const doc = artifactDocument("html", "<!DOCTYPE html><html><head><meta http-equiv='Content-Security-Policy' content='default-src *'></head></html>", "f1");
+  const doc = artifactDocument("<!DOCTYPE html><html><head><meta http-equiv='Content-Security-Policy' content='default-src *'></head></html>", "f1");
   expect(doc.startsWith('<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src \'none\';')).toBe(true);
   expect(doc.match(/<!doctype/gi)).toHaveLength(1);
 });
 
 test("a frame id cannot close the reporting script", () => {
-  expect(artifactDocument("svg", "<svg/>", "</script><script>alert(1)</script>")).not.toContain("</script><script>alert(1)");
+  expect(artifactDocument("<svg/>", "</script><script>alert(1)</script>")).not.toContain("</script><script>alert(1)");
 });
 
 test("a reported height is clamped, and anything that is not a number is ignored", () => {

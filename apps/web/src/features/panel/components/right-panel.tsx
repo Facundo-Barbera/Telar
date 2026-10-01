@@ -264,7 +264,7 @@ export function RightPanel(props: RightPanelProps) {
       )}
     >
       {!fullscreen && <RightPanelResizeHandle panelRef={panelRef} />}
-      <TabStrip {...props} browser={browser} fullscreen={fullscreen} onToggleFullscreen={toggleFullscreen} />
+      <TabStrip {...props} artifacts={artifacts} browser={browser} fullscreen={fullscreen} onToggleFullscreen={toggleFullscreen} />
       <div {...(tab ? { id: `right-panel-${tab}`, role: "tabpanel" } : {})} className="min-h-0 flex-1 overflow-y-auto md:rounded-b-xl">
         {/* A Terminal once shown stays mounted and hidden: remounting rebuilds every emulator and replays its bytes. */}
         {keptTerminals.map((id) => {

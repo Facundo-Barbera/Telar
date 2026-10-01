@@ -1,4 +1,4 @@
-import { afterAll, afterEach } from "bun:test";
+import { afterAll, afterEach, beforeAll } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
@@ -88,4 +88,15 @@ export const buttonLabelled = (label: string, root: ParentNode = document) =>
 export async function click(element: Element | undefined) {
   await act(async () => (element as HTMLElement).click());
   await flush();
+}
+
+export function stubBoxSize(width: number, height: number) {
+  const keys = ["clientWidth", "clientHeight"] as const;
+  let saved: (PropertyDescriptor | undefined)[] = [];
+  beforeAll(() => {
+    saved = keys.map((key) => Object.getOwnPropertyDescriptor(HTMLElement.prototype, key));
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => width });
+    Object.defineProperty(HTMLElement.prototype, "clientHeight", { configurable: true, get: () => height });
+  });
+  afterAll(() => typeof HTMLElement !== "undefined" && keys.forEach((key, index) => (saved[index] ? Object.defineProperty(HTMLElement.prototype, key, saved[index]) : delete (HTMLElement.prototype as unknown as Record<string, unknown>)[key])));
 }

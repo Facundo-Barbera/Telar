@@ -1,4 +1,4 @@
-import type { Artifact, ArtifactKind, Item } from "@telar/engine-client";
+import type { Artifact, Item } from "@telar/engine-client";
 
 const ARTIFACT_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; form-action 'none'; base-uri 'none'";
 
@@ -16,21 +16,10 @@ export function clampFrameHeight(height: unknown): number | undefined {
 
 const escapeScript = (value: string) => JSON.stringify(value).replaceAll("<", "\\u003c");
 
-export type FrameKind = Extract<ArtifactKind, "html" | "svg"> | "diagram";
-
-const checkerboard = (a: string, b: string) => `background:repeating-conic-gradient(${a} 0% 25%,${b} 0% 50%) 0 0/16px 16px`;
-
-function frameStyle(kind: FrameKind, dark: boolean): string {
-  if (kind === "html") return "";
-  const ground = kind === "svg" ? (dark ? checkerboard("#3d3d3d", "#343434") : checkerboard("#f3f3f3", "#e8e8e8")) : "background:transparent";
-  const scrollbar = dark ? "html{scrollbar-color:#555 transparent}" : "";
-  return `<style>${scrollbar}body{display:flex;justify-content:center;align-items:flex-start;min-height:100vh;${ground}}svg{max-width:100%;height:auto}</style>`;
-}
-
-export function artifactDocument(kind: FrameKind, content: string, frame: string, dark = false): string {
+export function artifactDocument(content: string, frame: string): string {
   const body = content.replace(/^\s*<!doctype[^>]*>/i, "");
   const report = `<script>(()=>{const post=()=>parent.postMessage({artifactFrame:${escapeScript(frame)},height:document.documentElement.scrollHeight},"*");new ResizeObserver(post).observe(document.documentElement);addEventListener("load",post);post();})()</script>`;
-  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}"><meta charset="utf-8"><style>html,body{margin:0;background:transparent}</style>${frameStyle(kind, dark)}${body}${report}`;
+  return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${ARTIFACT_CSP}"><meta charset="utf-8"><style>html,body{margin:0;background:transparent}</style>${body}${report}`;
 }
 
 export function latestArtifacts(items: Iterable<Pick<Item, "detail">>): Map<string, Artifact> {
