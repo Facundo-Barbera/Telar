@@ -2,6 +2,7 @@ import { afterAll, afterEach, expect, mock, test } from "bun:test";
 import realChildProcess from "node:child_process";
 import realFs from "node:fs";
 import path from "node:path";
+import { promisify } from "node:util";
 import { engineHome, removeTmp, repo, tmp } from "../test/worktree-fixtures";
 import { sessionMetadataFile, storedSession } from "./domains/sessions";
 import { EngineStore } from "./state";
@@ -41,14 +42,17 @@ mock.module("node:fs", () => ({ ...slowFs, default: slowFs }));
 const originalChildProcess = { ...realChildProcess };
 const watchedChildProcess: Record<string, unknown> = { ...originalChildProcess };
 for (const name of ["spawn", "spawnSync", "execFile", "execFileSync", "exec", "execSync"] as const) {
-  const fn = originalChildProcess[name] as (...args: unknown[]) => unknown;
-  watchedChildProcess[name] = Object.assign((...args: unknown[]) => {
+  type Call = (...args: unknown[]) => unknown;
+  const fn = originalChildProcess[name] as Call & { [promisify.custom]?: Call };
+  const watch = (call: Call): Call => (...args) => {
     const [command, argv, options] = args as [string, unknown, { cwd?: unknown } | undefined];
     const cwd = (Array.isArray(argv) ? options : (argv as { cwd?: unknown } | undefined))?.cwd;
     const words = Array.isArray(argv) ? argv : [];
     if (/(^|\/)git$/.test(command) && [cwd, ...words].some(underSlowRoot)) gitSpawns.push([command, ...words].join(" "));
-    return fn(...args);
-  }, fn);
+    return call(...args);
+  };
+  const custom = fn[promisify.custom];
+  watchedChildProcess[name] = Object.assign(watch(fn), fn, custom ? { [promisify.custom]: watch(custom) } : {});
 }
 mock.module("node:child_process", () => ({ ...watchedChildProcess, default: watchedChildProcess }));
 
