@@ -11,14 +11,14 @@ describe("closing a terminal ends what runs in it", () => {
     { pid: 1200, ppid: 1, pgid: 1200, tpgid: 0, tty: "??", command: "unrelated" },
   ];
 
-  function closeHost(table = busyTable, killTree) {
+  async function closeHost(table = busyTable, killTree) {
     const killed = [];
     const pty = fakePty(900, "/dev/ttys009");
     const made = hostWith(pty, {
       listProcesses: async () => table,
       killTree: killTree ?? ((pid, signal) => killed.push([pid, signal])),
     });
-    const { id } = made.host.open({ shell: "/bin/zsh", env: {} });
+    const { id } = await made.host.open({ shell: "/bin/zsh", env: {} });
     return { ...made, pty, id, killed };
   }
 
@@ -27,7 +27,7 @@ describe("closing a terminal ends what runs in it", () => {
   };
 
   test("SIGTERM reaches the job's group too, not just the shell's", async () => {
-    const { host, id, killed, clock } = closeHost();
+    const { host, id, killed, clock } = await closeHost();
     const closing = host.close(id);
     await settle();
 
@@ -43,7 +43,7 @@ describe("closing a terminal ends what runs in it", () => {
   });
 
   test("SIGKILL follows after the grace, and not a moment before", async () => {
-    const { host, id, killed, clock } = closeHost();
+    const { host, id, killed, clock } = await closeHost();
     const closing = host.close(id);
     await settle();
     clock.advance(CLOSE_GRACE_MS - 1);
@@ -59,7 +59,7 @@ describe("closing a terminal ends what runs in it", () => {
   test("a close that ended cleanly stops early and signals nothing more", async () => {
     const signals = [];
     const gone = Object.assign(new Error("ESRCH"), { code: "ESRCH" });
-    const { host, id, pty, clock, endings } = closeHost(busyTable, (pid, signal) => {
+    const { host, id, pty, clock, endings } = await closeHost(busyTable, (pid, signal) => {
       signals.push([pid, signal]);
       if (signal === 0) throw gone;
     });
@@ -76,7 +76,7 @@ describe("closing a terminal ends what runs in it", () => {
   test("the shell exiting is NOT the end when something in the terminal ignored TERM", async () => {
     const signals = [];
     const gone = Object.assign(new Error("ESRCH"), { code: "ESRCH" });
-    const { host, id, pty, clock } = closeHost(busyTable, (pid, signal) => {
+    const { host, id, pty, clock } = await closeHost(busyTable, (pid, signal) => {
       signals.push([pid, signal]);
       if (signal === 0 && pid === 900) throw gone;
     });
@@ -89,7 +89,7 @@ describe("closing a terminal ends what runs in it", () => {
   });
 
   test("a table that cannot be read still closes the shell's own group", async () => {
-    const { host, id, killed, clock } = closeHost(null);
+    const { host, id, killed, clock } = await closeHost(null);
     host.listProcesses = async () => {
       throw new Error("ps: not found");
     };
@@ -105,14 +105,14 @@ describe("closing a terminal ends what runs in it", () => {
   });
 
   test("closing somebody else's terminal is the same silence as writing to it", async () => {
-    const { host, id, killed } = closeHost();
+    const { host, id, killed } = await closeHost();
     expect(await host.close(id, "engine")).toBe(false);
     expect(await host.close("term_nope")).toBe(false);
     expect(killed).toEqual([]);
   });
 
   test("closing twice is one close", async () => {
-    const { host, id, killed, clock } = closeHost();
+    const { host, id, killed, clock } = await closeHost();
     const first = host.close(id);
     const second = host.close(id);
     await settle();
@@ -123,9 +123,9 @@ describe("closing a terminal ends what runs in it", () => {
   });
 
   test("closeAll({ final }) refuses a new shell before it reads the table", async () => {
-    const { host, clock } = closeHost();
+    const { host, clock } = await closeHost();
     const closing = host.closeAll({ final: true });
-    expect(() => host.open({ shell: "/bin/zsh", env: {} })).toThrow(/shutting down/);
+    await expect(host.open({ shell: "/bin/zsh", env: {} })).rejects.toThrow(/shutting down/);
     await settle();
     clock.advance(CLOSE_GRACE_MS);
     expect(await closing).toBe(1);
@@ -135,7 +135,7 @@ describe("closing a terminal ends what runs in it", () => {
     const killed = [];
     const pty = fakePty(42);
     const { host, clock } = hostWith(pty, { killTree: (pid, signal) => killed.push([pid, signal]), host: { platform: "win32" } });
-    const { id } = host.open({ shell: "cmd.exe", env: {} });
+    const { id } = await host.open({ shell: "cmd.exe", env: {} });
     expect(await host.close(id)).toBe(true);
     expect(clock.pending()).toBe(0);
     expect(killed).toEqual([[42, "SIGTERM"]]);
@@ -199,7 +199,7 @@ describe("closing a real process group that ignores SIGTERM", () => {
     let grandchild;
     let active;
     async function runCase(host) {
-      host.open({ shell: "/bin/sh", env: {}, sessionId: "s_fixture" });
+      await host.open({ shell: "/bin/sh", env: {}, sessionId: "s_fixture" });
       await ready;
       grandchild = Number(/CHILD=(\d+)/.exec(out)[1]);
       [active] = await host.activeProcesses();
@@ -223,7 +223,7 @@ describe("closing a real process group that ignores SIGTERM", () => {
 
   test.skipIf(process.platform === "win32")("a lone process with nothing under it is not active", async () => {
     const host = new TerminalHost({ version: "9.9.9", closeGraceMs: 150, spawnPty: () => childAsPty("exec sleep 30") });
-    host.open({ shell: "/bin/sh", env: {} });
+    await host.open({ shell: "/bin/sh", env: {} });
     const [entry] = await host.activeProcesses();
     expect(entry.active).toBe(false);
     await host.closeAll();

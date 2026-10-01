@@ -218,15 +218,27 @@ function nodePtySpawner() {
   return (file, args, options) => ptyModule.spawn(file, args, options);
 }
 
-function unusableCwd(cwd, deps = {}) {
+const CWD_DEADLINE_MS = 5000;
+
+function withinDeadline(promise, deps) {
+  const setTimer = deps.setTimeout ?? setTimeout;
+  const clearTimer = deps.clearTimeout ?? clearTimeout;
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimer(() => reject(new Error(`the disk did not answer within ${CWD_DEADLINE_MS / 1000} seconds`)), CWD_DEADLINE_MS);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimer(timer));
+}
+
+async function unusableCwd(cwd, deps = {}) {
   if (cwd === undefined || cwd === null || cwd === "") return null;
   if (typeof cwd !== "string") {
     return `Telar was asked to start a terminal in ${JSON.stringify(cwd)}, which is not a path. No process was started.`;
   }
-  const io = deps.fs ?? fs;
+  const io = deps.fs ?? fs.promises;
   let stats;
   try {
-    stats = io.statSync(cwd);
+    stats = await withinDeadline(io.stat(cwd), deps);
   } catch (error) {
     return `Telar cannot start a terminal in ${cwd}: ${messageOf(error)}. No process was started.`;
   }
@@ -234,7 +246,7 @@ function unusableCwd(cwd, deps = {}) {
     return `Telar cannot start a terminal in ${cwd}: it exists but is not a directory. No process was started.`;
   }
   try {
-    io.accessSync(cwd, fs.constants.X_OK);
+    await withinDeadline(io.access(cwd, fs.constants.X_OK), deps);
   } catch (error) {
     return `Telar cannot start a terminal in ${cwd}: it is a directory this process may not enter (${messageOf(error)}). No process was started.`;
   }
@@ -255,7 +267,7 @@ class TerminalHost {
     this.setTimer = options.setTimeout ?? setTimeout;
     this.clearTimer = options.clearTimeout ?? clearTimeout;
 
-    this.fs = options.fs ?? fs;
+    this.fs = options.fs ?? fs.promises;
 
     this._spawnPty = options.spawnPty ?? null;
 
@@ -269,8 +281,12 @@ class TerminalHost {
     return this._spawnPty;
   }
 
-  open(request = {}) {
+  refuseWhenDisposed() {
     if (this.disposed) throw new Error("Telar's terminal host is shutting down and will not start another shell.");
+  }
+
+  async open(request = {}) {
+    this.refuseWhenDisposed();
     const owner = terminalOwner(request.owner);
     const origin = terminalOrigin(request.origin, owner);
     const sessionId = shortText(request.sessionId, 200);
@@ -284,7 +300,8 @@ class TerminalHost {
     const env = terminalEnv(baseEnv, this.version);
     const id = `term_${(this.sequence += 1).toString(36)}_${this.now().toString(36)}`;
 
-    const refusal = unusableCwd(request.cwd, { fs: this.fs });
+    const refusal = await unusableCwd(request.cwd, { fs: this.fs, setTimeout: this.setTimer, clearTimeout: this.clearTimer });
+    this.refuseWhenDisposed();
     if (refusal) {
       const ending = { id, fate: TerminalFate.FAILED, error: refusal, at: this.now() };
       this.onExit(id, ending);

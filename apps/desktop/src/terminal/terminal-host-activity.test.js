@@ -3,7 +3,7 @@ const { TerminalHost, parseProcessTable, terminalActivity, decideQuit, busyTermi
 const { fakePty, anyCwdIsFine, hostWith } = require("../../test/terminal-host-fakes");
 
 describe("whether a terminal has an active process", () => {
-  test("an idle shell at its prompt is not active", () => {
+  test("an idle shell at its prompt is not active", async () => {
     const rows = [{ pid: 300, ppid: 1, pgid: 300, tpgid: 300, tty: "ttys001", command: "-zsh" }];
     expect(terminalActivity({ pid: 300, tty: "/dev/ttys001" }, rows)).toEqual({
       active: false,
@@ -13,7 +13,7 @@ describe("whether a terminal has an active process", () => {
     });
   });
 
-  test("a command holding the prompt is active, and named", () => {
+  test("a command holding the prompt is active, and named", async () => {
     const rows = [
       { pid: 300, ppid: 1, pgid: 300, tpgid: 310, tty: "ttys001", command: "-zsh" },
       { pid: 310, ppid: 300, pgid: 310, tpgid: 310, tty: "ttys001", command: "bun run dev" },
@@ -26,7 +26,7 @@ describe("whether a terminal has an active process", () => {
     expect(activity.groups).toEqual([300, 310]);
   });
 
-  test("a backgrounded child makes a shell at its prompt active", () => {
+  test("a backgrounded child makes a shell at its prompt active", async () => {
     const rows = [
       { pid: 300, ppid: 1, pgid: 300, tpgid: 300, tty: "ttys001", command: "-zsh" },
       { pid: 320, ppid: 300, pgid: 320, tpgid: 300, tty: "ttys001", command: "python -m http.server" },
@@ -36,7 +36,7 @@ describe("whether a terminal has an active process", () => {
     expect(activity.command).toBe("python -m http.server");
   });
 
-  test("a run's `sh -c` with no tty known is judged by its group and children", () => {
+  test("a run's `sh -c` with no tty known is judged by its group and children", async () => {
     const rows = [
       { pid: 400, ppid: 1, pgid: 400, tpgid: 400, tty: "ttys002", command: "sh -c bun run dev" },
       { pid: 401, ppid: 400, pgid: 400, tpgid: 400, tty: "ttys002", command: "bun run dev" },
@@ -44,7 +44,7 @@ describe("whether a terminal has an active process", () => {
     expect(terminalActivity({ pid: 400 }, rows).active).toBe(true);
   });
 
-  test("never names group 1 or 0 as something to signal", () => {
+  test("never names group 1 or 0 as something to signal", async () => {
     const rows = [
       { pid: 300, ppid: 1, pgid: 300, tpgid: 300, tty: "ttys001", command: "-zsh" },
       { pid: 330, ppid: 300, pgid: 1, tpgid: 300, tty: "ttys001", command: "odd" },
@@ -53,7 +53,7 @@ describe("whether a terminal has an active process", () => {
     expect(terminalActivity({ pid: 300, tty: "ttys001" }, rows).groups).toEqual([300]);
   });
 
-  test("parses ps's columns, including a command line with spaces", () => {
+  test("parses ps's columns, including a command line with spaces", async () => {
     const text = [
       "    1     0     1    0 ??       /sbin/launchd",
       "23273 23272 23273 23273 ttys000  -/bin/zsh",
@@ -87,8 +87,8 @@ describe("whether a terminal has an active process", () => {
         ];
       },
     });
-    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_1" });
-    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_1", title: "web dev" });
+    const shell = await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_1" });
+    const run = await host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_1", title: "web dev" });
     const all = await host.activeProcesses();
     expect(reads).toBe(1);
     expect(all).toEqual([
@@ -109,19 +109,19 @@ describe("whether a terminal has an active process", () => {
         throw new Error("ps exploded");
       },
     });
-    host.open({ shell: "/bin/zsh", env: {} });
+    await host.open({ shell: "/bin/zsh", env: {} });
     const [entry] = await host.activeProcesses();
     expect(entry.active).toBe(true);
   });
 });
 
 describe("deciding whether quitting has to ask", () => {
-  test("nothing active: quit, and say how many idle terminals will close", () => {
+  test("nothing active: quit, and say how many idle terminals will close", async () => {
     expect(decideQuit([])).toEqual({ action: "quit", closing: 0 });
     expect(decideQuit([{ active: false }, { active: false }])).toEqual({ action: "quit", closing: 2 });
   });
 
-  test("anything active: ONE question, counting only what is running", () => {
+  test("anything active: ONE question, counting only what is running", async () => {
     const plan = decideQuit([
       { active: true, command: "bun run dev" },
       { active: false },
@@ -139,7 +139,7 @@ describe("deciding whether quitting has to ask", () => {
     expect(plan.dialog.cancelId).toBe(1);
   });
 
-  test("one process reads as one, and a long list is cut with a count", () => {
+  test("one process reads as one, and a long list is cut with a count", async () => {
     expect(decideQuit([{ active: true, command: "x" }]).dialog.message).toBe("1 process is still running in Telar's terminals");
     const many = Array.from({ length: 8 }, (_, index) => ({ active: true, command: `job ${index}` }));
     const detail = decideQuit(many).dialog.detail;
@@ -148,11 +148,11 @@ describe("deciding whether quitting has to ask", () => {
     expect(detail).toContain("…and 3 more");
   });
 
-  test("a command with no name still reads as something", () => {
+  test("a command with no name still reads as something", async () => {
     expect(decideQuit([{ active: true }]).dialog.detail).toContain("• a command");
   });
 
-  test("names no other product", () => {
+  test("names no other product", async () => {
     const plan = decideQuit([{ active: true, command: "bun run dev" }]);
     const copy = [plan.dialog.message, plan.dialog.detail.replace("bun run dev", ""), ...plan.dialog.buttons].join(" ");
     expect(copy).not.toMatch(/claude|codex|opencode|electron|node-pty|macos/i);
@@ -160,7 +160,7 @@ describe("deciding whether quitting has to ask", () => {
 });
 
 describe("busyTerminals — what the restart-to-update dialog prints", () => {
-  test("counts only the busy ones, and names at most five commands", () => {
+  test("counts only the busy ones, and names at most five commands", async () => {
     expect(busyTerminals([])).toEqual({ count: 0, commands: [] });
     const many = Array.from({ length: 7 }, (_, index) => ({ active: true, command: `job ${index}` }));
     expect(busyTerminals([{ active: false, command: "zsh" }, ...many])).toEqual({ count: 7, commands: ["job 0", "job 1", "job 2", "job 3", "job 4"] });
