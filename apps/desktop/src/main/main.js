@@ -296,16 +296,20 @@ async function closeTerminalsThenQuit() {
   app.quit();
 }
 
-app.on("will-quit", () => {
+app.on("will-quit", (event) => {
+  app.isQuitting = true;
   persistAllHosts();
 
   if (terminalHost) { try { void terminalHost.dispose(); } catch {} }
   if (runTerminalChannel) { try { void runTerminalChannel.close(); } catch {} runTerminalChannel = null; }
-  killServer();
+  uiServer.stopServer();
+  const engineStopped = stopEngineChild();
   stopComputerUseHelper();
   closeBrowserControl();
 
   unpublishTailscaleServe();
+  event.preventDefault();
+  void engineStopped.finally(() => app.exit(0));
 });
 
 process.on("exit", killServer);

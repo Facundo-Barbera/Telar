@@ -1,5 +1,6 @@
 const { describe, expect, test } = require("bun:test");
 const { spawnSync, spawn } = require("node:child_process");
+const { once } = require("node:events");
 const path = require("node:path");
 
 const PRELOAD = path.join(__dirname, "server-preload.js");
@@ -51,5 +52,31 @@ describe("server-preload keeps the process title main.js gave it", () => {
     } finally {
       proc.kill("SIGKILL");
     }
+  });
+});
+
+describe("server-preload when the desktop's IPC channel goes away", () => {
+  function forked(script) {
+    const proc = spawn(NODE, ["--require", PRELOAD, "-e", script], { stdio: ["ignore", "pipe", "ignore", "ipc"], serialization: "json" });
+    let stdout = "";
+    proc.stdout.on("data", (chunk) => (stdout += chunk));
+    return { proc, ready: once(proc, "message"), exited: once(proc, "exit"), stdout: () => stdout };
+  }
+
+  test("a child with no disconnect handler of its own exits at once", async () => {
+    const { proc, ready, exited } = forked("process.send('ready'); setInterval(() => {}, 1000);");
+    await ready;
+    proc.disconnect();
+    expect(await exited).toEqual([0, null]);
+  });
+
+  test("a child that handles disconnect itself finishes its shutdown first", async () => {
+    const { proc, ready, exited, stdout } = forked(
+      "process.on('disconnect', () => setImmediate(() => { console.log('closed'); process.exit(0); })); process.send('ready'); setInterval(() => {}, 1000);",
+    );
+    await ready;
+    proc.disconnect();
+    expect(await exited).toEqual([0, null]);
+    expect(stdout()).toContain("closed");
   });
 });
