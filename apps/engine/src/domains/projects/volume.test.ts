@@ -77,30 +77,30 @@ test("a project on this machine's own disk records no volume and is unchanged", 
  * One owner of availability
  * ------------------------------------------------------------------ */
 
-test("the store classifies a drive that is here, gone, and faked by an empty folder", () => {
+test("the store classifies a drive that is here, gone, and faked by an empty folder", async () => {
   const { store, mounts, root } = onADrive();
   const project = () => store.projectRegistry.get("project_one");
 
-  expect(store.projectProbes.availability(project())).toBe("available");
+  expect(await store.projectProbes.probe(project())).toBe("available");
 
   mounts.unmount("TelarVR");
-  expect(store.projectProbes.availability(project())).toBe("unmounted");
+  expect(await store.projectProbes.probe(project())).toBe("unmounted");
 
   mounts.leaveEmptyMountpoint("TelarVR");
   fs.mkdirSync(root, { recursive: true });
-  expect(store.projectProbes.availability(project())).toBe("unmounted");
+  expect(await store.projectProbes.probe(project())).toBe("unmounted");
 });
 
-test("a project on this machine's own disk goes MISSING rather than unmounted", () => {
+test("a project on this machine's own disk goes MISSING rather than unmounted", async () => {
   const mounts = fixture();
   const store = new EngineStore(home(), () => 1_000, { volumes: mounts.deps });
   const root = path.join(mounts.mountRoot, "plain-folder");
   fs.mkdirSync(root);
   store.projectRegistry.register({ id: "project_plain", name: "Plain", root });
 
-  expect(store.projectProbes.availability(store.projectRegistry.get("project_plain"))).toBe("available");
+  expect(await store.projectProbes.probe(store.projectRegistry.get("project_plain"))).toBe("available");
   fs.rmSync(root, { recursive: true });
-  expect(store.projectProbes.availability(store.projectRegistry.get("project_plain"))).toBe("missing");
+  expect(await store.projectProbes.probe(store.projectRegistry.get("project_plain"))).toBe("missing");
 });
 
 test("a TRANSITION drops what was read off the disk, rather than waiting out a TTL", async () => {
@@ -119,7 +119,7 @@ test("a TRANSITION drops what was read off the disk, rather than waiting out a T
   // Probed once while the drive is here, which is what the ten-second tick and
   // the sweep at daemon start both do: a transition needs a previous answer to
   // be a transition FROM, and on a cold store there is nothing cached to drop.
-  expect(store.projectProbes.availability(store.projectRegistry.get("project_one"))).toBe("available");
+  expect(await store.projectProbes.probe(store.projectRegistry.get("project_one"))).toBe("available");
 
   await store.workspaceReads.projectDiff("project_one");
   const primed = reads;
@@ -127,7 +127,7 @@ test("a TRANSITION drops what was read off the disk, rather than waiting out a T
   expect(reads).toBe(primed);
 
   mounts.unmount("TelarVR");
-  expect(store.projectProbes.availability(store.projectRegistry.get("project_one"))).toBe("unmounted");
+  expect(await store.projectProbes.probe(store.projectRegistry.get("project_one"))).toBe("unmounted");
 
   // Same instant — the cache's own two seconds have not passed, and the entry
   // is gone anyway because the disk it was read from is.
@@ -187,6 +187,7 @@ test("an away project spawns NO git children, however often the rail polls", asy
   expect(await until(() => spawns() > 0)).toBe(true);
 
   mounts.unmount("TelarVR");
+  await store.projectProbes.probe(store.projectRegistry.get("project_one"));
   const beforeUnplug = spawns();
   // Six passes past the ten-second tick — what the old code spent about 18
   // children a minute on, forever, failing into a drive in somebody's bag.
@@ -205,6 +206,7 @@ test("an away project shows no branch and no icon — a label read off a disk no
   expect(await until(() => row().branch === "main" && row().icon !== undefined)).toBe(true);
 
   mounts.unmount("TelarVR");
+  await store.projectProbes.probe(store.projectRegistry.get("project_one"));
   const gone = row();
   expect(gone.branch).toBeUndefined();
   expect(gone.icon).toBeUndefined();
@@ -228,14 +230,51 @@ test("git comes back on its own when the drive does", async () => {
   expect(await until(() => spawns() > quiet)).toBe(true);
 });
 
-test("reprobe answers how many projects it asked about and how many moved", () => {
+test("a read never waits on a drive whose stat hangs, and asks it only once", () => {
+  const mounts = fixture();
+  let now = 1_000;
+  let stats = 0;
+  const store = new EngineStore(home(), () => now, {
+    volumes: { ...mounts.deps, statAsync: () => { stats += 1; return new Promise<fs.Stats>(() => {}); } },
+  });
+  const root = path.join(mounts.mount("TelarVR"), "project");
+  fs.mkdirSync(root);
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
+
+  for (let pass = 0; pass < 5; pass += 1) {
+    expect(store.projectRegistry.list()[0]!.availability).toBe("available");
+    now += 11_000;
+  }
+  const oneProbe = stats;
+  expect(oneProbe).toBeGreaterThan(0);
+  store.projectRegistry.list();
+  expect(stats).toBe(oneProbe);
+});
+
+test("a drive id still being looked up at registration is recorded when it arrives", async () => {
+  const mounts = fixture();
+  let answer: (uuid: string) => void = () => {};
+  const store = new EngineStore(home(), () => 1_000, {
+    volumes: { ...mounts.deps, volumeUuid: () => new Promise<string>((resolve) => { answer = resolve; }) },
+  });
+  const mount = mounts.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+
+  expect(store.projectRegistry.register({ id: "project_one", name: "One", root }).volume).toBeUndefined();
+  answer("UUID-LATE");
+  expect(await until(() => store.projectRegistry.get("project_one").volume !== undefined)).toBe(true);
+  expect(store.projectRegistry.get("project_one").volume).toEqual({ mount, uuid: "UUID-LATE" });
+});
+
+test("reprobe answers how many projects it asked about and how many moved", async () => {
   const { store, mounts } = onADrive();
 
-  expect(store.remounts.reprobe()).toEqual({ projects: 1, changed: 1, recovered: 0 });
-  expect(store.remounts.reprobe()).toEqual({ projects: 1, changed: 0, recovered: 0 });
+  expect(await store.remounts.reprobe()).toEqual({ projects: 1, changed: 1, recovered: 0 });
+  expect(await store.remounts.reprobe()).toEqual({ projects: 1, changed: 0, recovered: 0 });
 
   mounts.unmount("TelarVR");
-  expect(store.remounts.reprobe()).toEqual({ projects: 1, changed: 1, recovered: 0 });
+  expect(await store.remounts.reprobe()).toEqual({ projects: 1, changed: 1, recovered: 0 });
 });
 
 test("restoring a project re-reads the drive rather than trusting what was stored", () => {
@@ -365,7 +404,7 @@ test("a worktree cut blames the drive, not the repository", () => {
  * The drive comes back under another name
  * ------------------------------------------------------------------ */
 
-test("a remount at `<name> 1` keeps the project id and moves its root in place", () => {
+test("a remount at `<name> 1` keeps the project id and moves its root in place", async () => {
   const { store, mounts } = onADrive();
   const before = store.projectRegistry.get("project_one");
 
@@ -374,24 +413,24 @@ test("a remount at `<name> 1` keeps the project id and moves its root in place",
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
 
-  expect(store.remounts.reprobe()).toMatchObject({ recovered: 1 });
+  expect(await store.remounts.reprobe()).toMatchObject({ recovered: 1 });
 
   const after = store.projectRegistry.get("project_one");
   expect(after.id).toBe("project_one");
   expect(after.root).toBe(path.join(moved, "project"));
   expect(after.volume).toEqual({ mount: moved, uuid: mounts.uuidOf("TelarVR") });
   expect(after.root).not.toBe(before.root);
-  expect(store.projectProbes.availability(after)).toBe("available");
+  expect(await store.projectProbes.probe(after)).toBe("available");
 });
 
-test("a local session's workspace moves with the project — the same id, a working path", () => {
+test("a local session's workspace moves with the project — the same id, a working path", async () => {
   const { store, mounts, root } = onADrive();
   store.lifecycle.createSession({ id: "session_one", projectId: "project_one" });
   expect(store.records.get("session_one").workspace).toMatchObject({ mode: "local", path: root });
 
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
-  store.remounts.reprobe();
+  await store.remounts.reprobe();
 
   const session = store.records.get("session_one");
   expect(session.id).toBe("session_one");
@@ -399,7 +438,7 @@ test("a local session's workspace moves with the project — the same id, a work
   expect(session.workspace).toMatchObject({ mode: "local", path: path.join(moved, "project") });
 });
 
-test("a WORKTREE session is left alone — its checkout never moved", () => {
+test("a WORKTREE session is left alone — its checkout never moved", async () => {
   // A worktree lives under the engine root on the internal disk while the
   // project's `.git` is on the drive (see worktree.ts). What broke while the
   // drive was away was the repository it points at, and that is fixed by the
@@ -420,13 +459,13 @@ test("a WORKTREE session is left alone — its checkout never moved", () => {
 
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
-  store.remounts.reprobe();
+  await store.remounts.reprobe();
 
   expect(store.records.get("session_tree").workspace).toEqual(cut);
   expect(store.projectRegistry.get("project_one").root).toBe(path.join(moved, "project"));
 });
 
-test("a drive that came back WITHOUT the project's folder is not a rename", () => {
+test("a drive that came back WITHOUT the project's folder is not a rename", async () => {
   const { store, mounts } = onADrive();
   const before = store.projectRegistry.get("project_one").root;
 
@@ -435,11 +474,11 @@ test("a drive that came back WITHOUT the project's folder is not a rename", () =
   // at a path that is not there either.
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.rmSync(path.join(moved, "project"), { recursive: true, force: true });
-  expect(store.remounts.reprobe()).toMatchObject({ recovered: 0 });
+  expect(await store.remounts.reprobe()).toMatchObject({ recovered: 0 });
   expect(store.projectRegistry.get("project_one").root).toBe(before);
 });
 
-test("a different drive with the same name is NOT this project — the match is the uuid", () => {
+test("a different drive with the same name is NOT this project — the match is the uuid", async () => {
   const { store, mounts } = onADrive();
   const before = store.projectRegistry.get("project_one").root;
 
@@ -449,14 +488,12 @@ test("a different drive with the same name is NOT this project — the match is 
   const impostor = mounts.mount("TelarVR", "FAKE-UUID-SOMEBODY-ELSES-DISK");
   fs.mkdirSync(path.join(impostor, "project"), { recursive: true });
 
-  expect(store.remounts.reprobe()).toMatchObject({ recovered: 0 });
+  expect(await store.remounts.reprobe()).toMatchObject({ recovered: 0 });
   expect(store.projectRegistry.get("project_one").root).toBe(before);
 });
 
-test("an unplugged drive that stays unplugged is searched for ONCE, not on every poll", () => {
-  // The search costs a `diskutil` child per mounted volume. A drive in
-  // somebody's bag must not make that a recurring cost — which would be a
-  // worse version of the git churn this whole issue is about.
+test("an unplugged drive that stays unplugged is searched for ONCE, not on every poll", async () => {
+  // Each search asks every mounted volume's id; a drive in somebody's bag must not make that a recurring cost.
   const mounts = fixture();
   let searches = 0;
   const counting = {
@@ -471,7 +508,7 @@ test("an unplugged drive that stays unplugged is searched for ONCE, not on every
 
   mounts.unmount("TelarVR");
   const registered = searches;
-  for (let pass = 0; pass < 10; pass += 1) store.remounts.reprobe();
+  for (let pass = 0; pass < 10; pass += 1) await store.remounts.reprobe();
   expect(searches).toBe(registered);
 });
 
@@ -505,7 +542,7 @@ test("a worktree cut that failed while the drive was away is retried once on rec
   repositoryReadable = true;
   const moved = mounts.remount("TelarVR", "TelarVR 1");
   fs.mkdirSync(path.join(moved, "project"), { recursive: true });
-  store.remounts.reprobe();
+  await store.remounts.reprobe();
 
   expect(await until(() => cuts > failedAfter)).toBe(true);
   expect(await until(() => store.records.get("session_tree").preparation === undefined)).toBe(true);
@@ -535,6 +572,7 @@ test("a worktree release PRUNES NOTHING while the project's drive is away", asyn
   expect(await until(() => ran.some((call) => call.startsWith("worktree add")))).toBe(true);
 
   mounts.unmount("TelarVR");
+  await store.projectProbes.probe(store.projectRegistry.get("project_one"));
   ran.length = 0;
   // Deleting the checkout on archive is an opt-in Storage switch now.
   store.cleanup.setPolicy({ archived: true });
@@ -578,7 +616,7 @@ test("the POLL finds a remount too — the floor under the desktop's mount event
   mounts.unmount("TelarVR");
   tick(11_000);
   store.projectRegistry.list();
-  expect(store.projectProbes.availability(store.projectRegistry.get("project_one"))).toBe("unmounted");
+  expect(await store.projectProbes.probe(store.projectRegistry.get("project_one"))).toBe("unmounted");
 
   // Plugged back in, and macOS gives it the name one along — the SAME drive.
   const moved = mounts.mount("TelarVR 1", mounts.uuidOf("TelarVR"));
@@ -586,7 +624,7 @@ test("the POLL finds a remount too — the floor under the desktop's mount event
 
   tick(11_000);
   store.projectRegistry.list();
+  expect(await until(() => store.projectRegistry.get("project_one").root === path.join(moved, "project"))).toBe(true);
   expect(store.projectRegistry.get("project_one").id).toBe("project_one");
-  expect(store.projectRegistry.get("project_one").root).toBe(path.join(moved, "project"));
-  expect(store.projectProbes.availability(store.projectRegistry.get("project_one"))).toBe("available");
+  expect(await store.projectProbes.probe(store.projectRegistry.get("project_one"))).toBe("available");
 });

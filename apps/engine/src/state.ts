@@ -500,7 +500,7 @@ export class EngineStore {
       asyncGit: this.asyncGit,
       volumes: this.volumes,
       forgetGitReadsUnder: (root) => this.workspaceReads.forgetUnder(root),
-      onUnavailable: (project) => void this.remounts.recover(project),
+      onUnavailable: (project) => void this.remounts.recover(project).catch(() => undefined),
     });
     const projectRegistry = new ProjectRegistry(this.kernel, {
       probes: projectProbes,

@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -12,22 +12,37 @@ export type VolumeDeps = {
   platform?: NodeJS.Platform;
   mounts?: readonly string[];
   stat?: (target: string) => fs.Stats;
+  statAsync?: (target: string) => Promise<fs.Stats>;
   readdir?: (target: string) => string[];
-  volumeUuid?: (mount: string) => string | undefined;
+  /** May answer synchronously; the default asks `diskutil` without blocking. */
+  volumeUuid?: (mount: string) => string | undefined | Promise<string | undefined>;
 };
 
 type Resolved = Required<VolumeDeps>;
 
 export { mountRootsFor, volumeSupportOn } from "@telar/engine-client";
 
+const noUuid = (): undefined => undefined;
+
+async function diskutilUuid(mount: string): Promise<string | undefined> {
+  try {
+    const { stdout } = await promisify(execFile)("diskutil", ["info", "-plist", mount], { timeout: 5_000 });
+    return parseVolumeUuid(stdout);
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveDeps(deps: VolumeDeps): Resolved {
   const platform = deps.platform ?? process.platform;
+  const stat = deps.stat;
   return {
     platform,
     mounts: deps.mounts ?? mountRootsFor(platform),
-    stat: deps.stat ?? ((target) => fs.statSync(target)),
+    stat: stat ?? ((target) => fs.statSync(target)),
+    statAsync: deps.statAsync ?? (stat ? async (target) => stat(target) : (target) => fs.promises.stat(target)),
     readdir: deps.readdir ?? ((target) => fs.readdirSync(target)),
-    volumeUuid: deps.volumeUuid ?? ((mount) => readVolumeUuid(mount, platform)),
+    volumeUuid: deps.volumeUuid ?? (platform === "darwin" ? diskutilUuid : noUuid),
   };
 }
 
@@ -54,96 +69,125 @@ export function isMountPoint(mount: string, deps: VolumeDeps = {}): boolean {
   }
 }
 
-function readVolumeUuid(mount: string, platform: NodeJS.Platform = process.platform): string | undefined {
-  if (platform !== "darwin") return undefined;
-  let plist: string;
-  try {
-    plist = execFileSync("diskutil", ["info", "-plist", mount], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 5_000,
-    });
-  } catch {
-    return undefined;
-  }
-  return parseVolumeUuid(plist);
-}
-
 export function parseVolumeUuid(plist: string): string | undefined {
   const match = /<key>VolumeUUID<\/key>\s*<string>([^<]+)<\/string>/.exec(plist);
   const uuid = match?.[1]?.trim();
   return uuid ? uuid : undefined;
 }
 
+/** Every entry under the mount roots, which live on the boot disk, so listing never waits on a drive. */
+export function listedMounts(deps: VolumeDeps = {}): string[] {
+  const resolved = resolveDeps(deps);
+  const found: string[] = [];
+  for (const mountRoot of resolved.mounts) {
+    try {
+      for (const name of resolved.readdir(mountRoot)) found.push(path.join(mountRoot, name));
+    } catch {
+      continue;
+    }
+  }
+  return found.sort();
+}
+
+type UuidEntry = { settled: boolean; uuid?: string; answer: Promise<string | undefined> };
+type UuidCache = { listing: string; entries: Map<string, UuidEntry> };
+const uuidCaches = new WeakMap<object, UuidCache>();
+
+function deviceOf(target: string, resolved: Resolved): number | undefined {
+  try {
+    return resolved.stat(target).dev;
+  } catch {
+    return undefined;
+  }
+}
+
+// Answers live until the mount set (path and device) changes, so `diskutil` runs once per plug, never per request.
+function uuidCache(resolved: Resolved): UuidCache {
+  const listing = listedMounts(resolved).map((mount) => `${mount}\0${deviceOf(mount, resolved)}`).join("\0");
+  let cache = uuidCaches.get(resolved.volumeUuid);
+  if (cache?.listing !== listing) {
+    cache = { listing, entries: new Map() };
+    uuidCaches.set(resolved.volumeUuid, cache);
+  }
+  return cache;
+}
+
+function uuidEntry(mount: string, resolved: Resolved, cache = uuidCache(resolved)): UuidEntry {
+  const cached = cache.entries.get(mount);
+  if (cached) return cached;
+  const asked = isMountPoint(mount, resolved) ? resolved.volumeUuid(mount) : undefined;
+  let entry: UuidEntry;
+  if (asked instanceof Promise) {
+    const pending: UuidEntry = { settled: false, answer: Promise.resolve(undefined) };
+    pending.answer = asked.catch(() => undefined).then((uuid) => {
+      pending.settled = true;
+      if (uuid !== undefined) pending.uuid = uuid;
+      return uuid;
+    });
+    entry = pending;
+  } else {
+    entry = { settled: true, ...(asked === undefined ? {} : { uuid: asked }), answer: Promise.resolve(asked) };
+  }
+  cache.entries.set(mount, entry);
+  return entry;
+}
+
+export function forgetVolumeIds(deps: VolumeDeps = {}): void {
+  uuidCaches.delete(resolveDeps(deps).volumeUuid);
+}
+
+function volumeMount(root: string, resolved: Resolved): string | undefined {
+  if (volumeSupportOn(resolved.platform) === "unsupported") return undefined;
+  return mountPointForRoot(root, resolved);
+}
+
+/** From the cache only; a lookup still running answers undefined and is left to finish. */
 export function volumeForRoot(root: string, deps: VolumeDeps = {}): VolumeIdentity | undefined {
   const resolved = resolveDeps(deps);
-  if (volumeSupportOn(resolved.platform) === "unsupported") return undefined;
-  const mount = mountPointForRoot(root, resolved);
+  const mount = volumeMount(root, resolved);
   if (mount === undefined) return undefined;
-  if (!isMountPoint(mount, resolved)) return undefined;
-  const uuid = resolved.volumeUuid(mount);
+  const { uuid } = uuidEntry(mount, resolved);
   return uuid === undefined ? undefined : { mount, uuid };
 }
 
-export function probeAvailability(
+export async function volumeForRootAsync(root: string, deps: VolumeDeps = {}): Promise<VolumeIdentity | undefined> {
+  const resolved = resolveDeps(deps);
+  const mount = volumeMount(root, resolved);
+  if (mount === undefined) return undefined;
+  const uuid = await uuidEntry(mount, resolved).answer;
+  return uuid === undefined ? undefined : { mount, uuid };
+}
+
+export async function probeAvailability(
   project: { root: string; volume?: VolumeIdentity },
   deps: VolumeDeps = {},
-): ProjectAvailability {
-  const resolved = resolveDeps(deps);
-  const readable = () => {
-    try {
-      return resolved.stat(project.root).isDirectory();
-    } catch {
-      return false;
-    }
-  };
-  if (project.volume === undefined) return readable() ? "available" : "missing";
-  if (!isMountPoint(project.volume.mount, resolved)) return "unmounted";
-  if (!readable()) {
-    return "missing";
-  }
-  try {
-    if (resolved.stat(project.root).dev !== resolved.stat(project.volume.mount).dev) return "unmounted";
-  } catch {
-    return "unmounted";
-  }
-  return "available";
+): Promise<ProjectAvailability> {
+  const { statAsync } = resolveDeps(deps);
+  const stat = (target: string) => statAsync(target).catch(() => undefined);
+  const volume = project.volume;
+  const [root, mount, parent] = await Promise.all([
+    stat(project.root),
+    volume && stat(volume.mount),
+    volume && path.dirname(volume.mount) !== volume.mount ? stat(path.dirname(volume.mount)) : undefined,
+  ]);
+  if (volume === undefined) return root?.isDirectory() ? "available" : "missing";
+  if (!mount || !parent || mount.dev === parent.dev) return "unmounted";
+  if (!root?.isDirectory()) return "missing";
+  return root.dev === mount.dev ? "available" : "unmounted";
 }
 
-export function mountSignature(deps: VolumeDeps = {}): string {
+export function knownVolumeMount(uuid: string, deps: VolumeDeps = {}): string | undefined {
   const resolved = resolveDeps(deps);
-  const mounted: string[] = [];
-  for (const mountRoot of resolved.mounts) {
-    let names: string[];
-    try {
-      names = resolved.readdir(mountRoot);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const mount = path.join(mountRoot, name);
-      if (isMountPoint(mount, resolved)) mounted.push(mount);
-    }
-  }
-  return JSON.stringify(mounted.sort());
+  const cache = uuidCache(resolved);
+  return listedMounts(resolved).find((mount) => uuidEntry(mount, resolved, cache).uuid === uuid);
 }
 
-export function findVolumeMount(uuid: string, deps: VolumeDeps = {}): string | undefined {
+export async function findVolumeMount(uuid: string, deps: VolumeDeps = {}): Promise<string | undefined> {
   const resolved = resolveDeps(deps);
-  for (const mountRoot of resolved.mounts) {
-    let names: string[];
-    try {
-      names = resolved.readdir(mountRoot);
-    } catch {
-      continue;
-    }
-    for (const name of names) {
-      const mount = path.join(mountRoot, name);
-      if (!isMountPoint(mount, resolved)) continue;
-      if (resolved.volumeUuid(mount) === uuid) return mount;
-    }
-  }
-  return undefined;
+  const cache = uuidCache(resolved);
+  const mounts = listedMounts(resolved);
+  const uuids = await Promise.all(mounts.map((mount) => uuidEntry(mount, resolved, cache).answer));
+  return mounts.find((_, index) => uuids[index] === uuid);
 }
 
 export function parseSolidState(info: string): boolean | undefined {

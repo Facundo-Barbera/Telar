@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { atomicWrite } from "../../platform/fs/atomic";
 import { statePaths } from "../../platform/fs/state-paths";
-import { findVolumeMount, isMountPoint, volumeForRoot, volumeSupportOn, type VolumeDeps, type VolumeIdentity } from "../../platform/fs/volumes";
+import { isMountPoint, knownVolumeMount, volumeForRoot, volumeForRootAsync, volumeSupportOn, type VolumeDeps, type VolumeIdentity } from "../../platform/fs/volumes";
 
 // Not marked for Spotlight or Time Machine: .metadata_never_index only works at a volume root,
 // and excluding uncommitted work from backups is the owner's call.
@@ -102,7 +102,7 @@ export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): Wo
     return { kind: "configured", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
   }
   // Mounted elsewhere — resolve by the drive's own id, and rewrite the hint.
-  const moved = volume.uuid ? findVolumeMount(volume.uuid, deps) : undefined;
+  const moved = volume.uuid ? knownVolumeMount(volume.uuid, deps) : undefined;
   if (moved && moved !== volume.mount) {
     const root = path.join(moved, path.relative(volume.mount, record.root));
     if (fs.existsSync(root)) {
@@ -110,8 +110,7 @@ export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): Wo
       try {
         atomicWrite(locationFile(engineRoot), next, 0o600);
       } catch {
-        // The answer is right either way; rewriting only saves the next read
-        // from resolving it again.
+        // The answer is right either way; rewriting only saves the next read resolving it again.
       }
       return { kind: "configured", root, volume: next.volume!, ...(label ? { label } : {}) };
     }
@@ -135,7 +134,18 @@ export function writeWorktreesRoot(engineRoot: string, root: string, deps: Volum
   // JSON string, which parses back to a string and reads as an unrecognised
   // shape. The refusal would be correct and the cause would be here.
   atomicWrite(locationFile(engineRoot), record, 0o600);
+  if (!volume) recordVolumeLater(engineRoot, resolved, deps);
   return record;
+}
+
+function recordVolumeLater(engineRoot: string, root: string, deps: VolumeDeps): void {
+  void (async () => {
+    const volume = await volumeForRootAsync(root, deps);
+    if (!volume) return;
+    const current = JSON.parse(await fs.promises.readFile(locationFile(engineRoot), "utf8")) as WorktreesLocation;
+    if (current.root !== root || current.volume) return;
+    atomicWrite(locationFile(engineRoot), { ...current, volume, label: path.basename(volume.mount) }, 0o600);
+  })().catch(() => undefined);
 }
 
 /** Put it back beside the store. Removing the record IS the answer — a record

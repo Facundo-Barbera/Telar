@@ -65,15 +65,16 @@ async function onADrive(): Promise<{
   client: EngineClient;
   get: (route: string) => Promise<Response>;
   mounts: FakeMounts;
+  mountChanged: () => Promise<void>;
 }> {
   const mounts = fakeMounts();
   drives.push(mounts);
-  const { client, get } = await engine(mounts);
+  const { client, get, post } = await engine(mounts);
   const mount = mounts.mount("TelarVR");
   const checkout = path.join(mount, "project");
   fs.mkdirSync(checkout);
   await client.registerProject({ id: "project_one", name: "TelarVR Work", root: checkout });
-  return { client, get, mounts };
+  return { client, get, mounts, mountChanged: async () => void (await post("/v2/projects/reprobe")).body?.cancel() };
 }
 
 test("the desktop shell can ask the engine to re-probe every project now", async () => {
@@ -104,25 +105,27 @@ test("re-probing is unauthenticated-proof like every other route", async () => {
  * ------------------------------------------------------------------ */
 
 test("registration stores the drive, and the projects list publishes its availability", async () => {
-  const { get, mounts } = await onADrive();
+  const { get, mounts, mountChanged } = await onADrive();
 
   const registered = (await (await get("/v2/projects")).json()) as { projects: Array<{ id: string; volume?: unknown; availability?: string }> };
   expect(registered.projects[0]!.volume).toEqual({ mount: path.join(mounts.mountRoot, "TelarVR"), uuid: mounts.uuidOf("TelarVR") });
   expect(registered.projects[0]!.availability).toBe("available");
 
   mounts.unmount("TelarVR");
+  await mountChanged();
   const away = (await (await get("/v2/projects")).json()) as { projects: Array<{ availability?: string }> };
   expect(away.projects[0]!.availability).toBe("unmounted");
 });
 
 test("the rail's one read carries availability, so the badge costs no second request", async () => {
-  const { client, get, mounts } = await onADrive();
+  const { client, get, mounts, mountChanged } = await onADrive();
   await client.createSession({ id: "session_one", projectId: "project_one" });
 
   const live = (await (await get("/v2/sessions/live")).json()) as { projects: Array<{ id: string; availability?: string }> };
   expect(live.projects.find((project) => project.id === "project_one")?.availability).toBe("available");
 
   mounts.unmount("TelarVR");
+  await mountChanged();
   const away = (await (await get("/v2/sessions/live")).json()) as { projects: Array<{ id: string; availability?: string }> };
   expect(away.projects.find((project) => project.id === "project_one")?.availability).toBe("unmounted");
 });
@@ -132,8 +135,9 @@ test("the rail's one read carries availability, so the badge costs no second req
  * ------------------------------------------------------------------ */
 
 test("creating a session on an away project is refused with the drive sentence", async () => {
-  const { client, mounts } = await onADrive();
+  const { client, mounts, mountChanged } = await onADrive();
   mounts.unmount("TelarVR");
+  await mountChanged();
 
   await expect(client.createSession({ id: "session_away", projectId: "project_one" })).rejects.toMatchObject({
     code: "conflict",
@@ -142,11 +146,12 @@ test("creating a session on an away project is refused with the drive sentence",
 });
 
 test("sending into a session whose drive left is refused with the same sentence", async () => {
-  const { client, mounts } = await onADrive();
+  const { client, mounts, mountChanged } = await onADrive();
   const session = await client.createSession({ id: "session_one", projectId: "project_one" });
   await client.registerWorker("worker_one");
 
   mounts.unmount("TelarVR");
+  await mountChanged();
   await expect(client.submitTurn(session.session.id, { runId: "run_one", input: "Hello" })).rejects.toMatchObject({
     code: "conflict",
     message: "The drive holding TelarVR Work is not connected. Plug it back in and this will work again.",
@@ -154,12 +159,14 @@ test("sending into a session whose drive left is refused with the same sentence"
 });
 
 test("the drive coming back is all it takes — no re-registration, same project id", async () => {
-  const { client, mounts } = await onADrive();
+  const { client, mounts, mountChanged } = await onADrive();
   mounts.unmount("TelarVR");
+  await mountChanged();
   await expect(client.createSession({ id: "session_away", projectId: "project_one" })).rejects.toMatchObject({ code: "conflict" });
 
   mounts.mount("TelarVR");
   fs.mkdirSync(path.join(mounts.mountRoot, "TelarVR", "project"), { recursive: true });
+  await mountChanged();
   const session = await client.createSession({ id: "session_back", projectId: "project_one" });
   expect(session.session.projectId).toBe("project_one");
 });

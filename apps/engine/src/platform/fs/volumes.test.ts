@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fakeMounts, type FakeMounts } from "../../../test/fake-mount";
-import { findVolumeMount, isMountPoint, mountPointForRoot, mountRootsFor, parseSolidState, parseVolumeUuid, probeAvailability, volumeForRoot } from "./volumes";
+import { findVolumeMount, isMountPoint, knownVolumeMount, mountPointForRoot, mountRootsFor, parseSolidState, parseVolumeUuid, probeAvailability, volumeForRoot, volumeForRootAsync } from "./volumes";
 
 const drives: FakeMounts[] = [];
 const fixture = (): FakeMounts => {
@@ -63,26 +63,26 @@ test("VolumeUUID is read out of diskutil's plist, and absent when it is not ther
   expect(parseVolumeUuid("<dict><key>VolumeName</key><string>TelarVR</string></dict>")).toBeUndefined();
 });
 
-test("a project on this machine's own disk is available, and missing once deleted", () => {
+test("a project on this machine's own disk is available, and missing once deleted", async () => {
   const drives = fixture();
   const root = path.join(drives.mountRoot, "not-a-mount");
   fs.mkdirSync(root);
 
-  expect(probeAvailability({ root }, drives.deps)).toBe("available");
+  expect(await probeAvailability({ root }, drives.deps)).toBe("available");
   fs.rmSync(root, { recursive: true });
-  expect(probeAvailability({ root }, drives.deps)).toBe("missing");
+  expect(await probeAvailability({ root }, drives.deps)).toBe("missing");
 });
 
-test("a project on a mounted drive is available", () => {
+test("a project on a mounted drive is available", async () => {
   const drives = fixture();
   const mount = drives.mount("TelarVR");
   const root = path.join(mount, "project");
   fs.mkdirSync(root);
 
-  expect(probeAvailability({ root, volume: { mount, uuid: drives.uuidOf("TelarVR") } }, drives.deps)).toBe("available");
+  expect(await probeAvailability({ root, volume: { mount, uuid: drives.uuidOf("TelarVR") } }, drives.deps)).toBe("available");
 });
 
-test("an unplugged drive is UNMOUNTED, not missing — the difference is a cable", () => {
+test("an unplugged drive is UNMOUNTED, not missing — the difference is a cable", async () => {
   const drives = fixture();
   const mount = drives.mount("TelarVR");
   const root = path.join(mount, "project");
@@ -90,10 +90,10 @@ test("an unplugged drive is UNMOUNTED, not missing — the difference is a cable
   const volume = { mount, uuid: drives.uuidOf("TelarVR") };
 
   drives.unmount("TelarVR");
-  expect(probeAvailability({ root, volume }, drives.deps)).toBe("unmounted");
+  expect(await probeAvailability({ root, volume }, drives.deps)).toBe("unmounted");
 });
 
-test("a RECREATED EMPTY MOUNTPOINT is unmounted, however readable it looks", () => {
+test("a RECREATED EMPTY MOUNTPOINT is unmounted, however readable it looks", async () => {
   const drives = fixture();
   const mount = drives.mount("TelarVR");
   const root = path.join(mount, "project");
@@ -104,10 +104,10 @@ test("a RECREATED EMPTY MOUNTPOINT is unmounted, however readable it looks", () 
   fs.mkdirSync(root, { recursive: true });
   expect(fs.statSync(root).isDirectory()).toBe(true);
 
-  expect(probeAvailability({ root, volume }, drives.deps)).toBe("unmounted");
+  expect(await probeAvailability({ root, volume }, drives.deps)).toBe("unmounted");
 });
 
-test("a folder deleted from a drive that IS here is missing, not unmounted", () => {
+test("a folder deleted from a drive that IS here is missing, not unmounted", async () => {
   const drives = fixture();
   const mount = drives.mount("TelarVR");
   const root = path.join(mount, "project");
@@ -115,25 +115,62 @@ test("a folder deleted from a drive that IS here is missing, not unmounted", () 
   const volume = { mount, uuid: drives.uuidOf("TelarVR") };
 
   fs.rmSync(root, { recursive: true });
-  expect(probeAvailability({ root, volume }, drives.deps)).toBe("missing");
+  expect(await probeAvailability({ root, volume }, drives.deps)).toBe("missing");
 });
 
-test("a drive is found by uuid wherever macOS mounted it this time", () => {
+test("a drive is found by uuid wherever macOS mounted it this time", async () => {
   const drives = fixture();
   drives.mount("TelarVR");
   const uuid = drives.uuidOf("TelarVR");
 
   const moved = drives.remount("TelarVR", "TelarVR 1");
-  expect(findVolumeMount(uuid, drives.deps)).toBe(moved);
+  expect(await findVolumeMount(uuid, drives.deps)).toBe(moved);
 });
 
-test("a drive that is not plugged in is not found, and an empty mountpoint is not it", () => {
+test("a drive that is not plugged in is not found, and an empty mountpoint is not it", async () => {
   const drives = fixture();
   drives.mount("TelarVR");
   const uuid = drives.uuidOf("TelarVR");
 
   drives.leaveEmptyMountpoint("TelarVR");
-  expect(findVolumeMount(uuid, drives.deps)).toBeUndefined();
+  expect(await findVolumeMount(uuid, drives.deps)).toBeUndefined();
+});
+
+test("a volume id still being looked up answers from the cache without waiting", async () => {
+  const drives = fixture();
+  const mount = drives.mount("TelarVR");
+  const root = path.join(mount, "project");
+  fs.mkdirSync(root);
+  let asked = 0;
+  let answer: (uuid: string) => void = () => {};
+  const deps = { ...drives.deps, volumeUuid: () => { asked += 1; return new Promise<string>((resolve) => { answer = resolve; }); } };
+
+  expect(volumeForRoot(root, deps)).toBeUndefined();
+  expect(knownVolumeMount("UUID-SLOW", deps)).toBeUndefined();
+  expect(asked).toBe(1);
+
+  const found = volumeForRootAsync(root, deps);
+  answer("UUID-SLOW");
+  expect(await found).toEqual({ mount, uuid: "UUID-SLOW" });
+  expect(volumeForRoot(root, deps)).toEqual({ mount, uuid: "UUID-SLOW" });
+  expect(knownVolumeMount("UUID-SLOW", deps)).toBe(mount);
+  expect(asked).toBe(1);
+});
+
+test("volume ids are asked once per mount set, and again when a drive comes or goes", async () => {
+  const drives = fixture();
+  drives.mount("TelarVR");
+  const uuid = drives.uuidOf("TelarVR");
+  let asked = 0;
+  const deps = { ...drives.deps, volumeUuid: async (mount: string) => { asked += 1; return drives.deps.volumeUuid!(mount); } };
+
+  await findVolumeMount(uuid, deps);
+  await findVolumeMount(uuid, deps);
+  expect(asked).toBe(1);
+
+  const moved = drives.remount("TelarVR", "TelarVR 1");
+  expect(await findVolumeMount(uuid, deps)).toBe(moved);
+  expect(asked).toBe(2);
 });
 
 test("diskutil's Solid State line says whether a disk spins", () => {

@@ -45,7 +45,7 @@ function cloudRepo(): { home: string; root: string } {
   return { home, root };
 }
 
-test("a cloud-folder repository registers as an ordinary project on this Mac's own disk", () => {
+test("a cloud-folder repository registers as an ordinary project on this Mac's own disk", async () => {
   const { root } = cloudRepo();
   const store = new EngineStore(tmp("telar-cloud-engine-"), () => 100);
   const project = store.projectRegistry.register({ name: "repo", root });
@@ -54,7 +54,7 @@ test("a cloud-folder repository registers as an ordinary project on this Mac's o
   // drive to wait for and nothing that would read "unplugged".
   expect(project.volume).toBeUndefined();
   expect(volumeForRoot(root, { platform: "darwin" })).toBeUndefined();
-  expect(probeAvailability(project, { platform: "darwin" })).toBe("available");
+  expect(await probeAvailability(project, { platform: "darwin" })).toBe("available");
   expect(isGitWorkTree(defaultGitRunner, root)).toBe(true);
 });
 
