@@ -25,7 +25,7 @@ export interface MobileRegistration {
 type HostCard = { token: string; startedAt: number };
 export type RelayCredential = { handle: string; keyId: string; sendKey: string };
 export interface SessionSignal {
-  id: string; title: string; activity: string; activityAt?: number;
+  id: string; title: string; activity: string; activityAt?: number; waitingOn?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean; lastTurnOrigin?: Turn["origin"];
   hasParent?: boolean; delegating?: boolean; parentId?: string; settled?: boolean;
   projectId?: string;

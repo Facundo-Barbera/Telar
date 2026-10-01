@@ -222,6 +222,7 @@ export function signals(sessions: readonly LiveSessionRow[], assignments: Record
       ...(projectId === undefined ? {} : { projectId }),
       ...(projectId !== undefined && names.has(projectId) ? { project: names.get(projectId)! } : {}),
       ...(activityAt === undefined ? {} : { activityAt }),
+      ...(session.activityDetail?.kind === "session" ? { waitingOn: session.activityDetail.sessions } : {}),
       ...(lastTurnSequence === undefined ? {} : { lastTurnSequence }),
       ...(lastReadTurnSequence === undefined ? {} : { lastReadTurnSequence }),
       ...(lastTurnEndedAt === undefined ? {} : { lastTurnEndedAt }),

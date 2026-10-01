@@ -23,7 +23,7 @@ describe("the card's session rows", () => {
 
   test("a finished or failed session stays about fifteen minutes after it ends, then leaves", () => {
     const done = session("done", "idle", { lastTurnEndedAt: ms(now - 60) });
-    const failed = session("failed", "waiting", { lastTurnEndedAt: ms(now - 30), lastTurnFailed: true });
+    const failed = session("failed", "scheduled", { lastTurnEndedAt: ms(now - 30), lastTurnFailed: true });
     expect(cardRows([done, failed, session("work", "working")], now, true).map(r => [r.id, r.status])).toEqual([["work", "Working"], ["failed", "Failed"], ["done", "Done"]]);
     expect(cardRows([done], now + ROW_DONE_S - 61, true)).toHaveLength(1);
     expect(cardRows([done], now + ROW_DONE_S - 60, true)).toHaveLength(0);
@@ -72,6 +72,17 @@ describe("sub-sessions on the card", () => {
     expect(status([session("orch", "idle", { lastTurnEndedAt: ms(now - 60) }), worker("a", "working")])).toEqual([["orch", "Working"]]);
     expect(status([session("orch", "idle"), worker("a", "idle", { lastTurnEndedAt: ms(now - 60) })])).toEqual([["orch", "Done"]]);
     expect(state([orchestrator, worker("a", "blocked")]).sessionId).toBe("orch");
+  });
+
+  test("an orchestrator waiting on the sessions it tasked keeps the card up and says how many", () => {
+    const waiting = signals([{ id: "orch", title: "Ship the release", activity: "waiting", state: "active",
+      activityDetail: { kind: "session", sessionId: "b1", sessions: 2 } }] as LiveSessionRow[]);
+    const card = state(waiting);
+    expect(card.rows).toEqual([{ id: "orch", status: "Waiting on 2 sessions", title: "Ship the release" }]);
+    expect(card.activeCount).toBe(1);
+    expect(state([session("one", "waiting", { waitingOn: 1 })]).rows[0]!.status).toBe("Waiting on a session");
+    expect(cardRows([session("orch", "waiting", { waitingOn: 2 }), worker("a", "working")], now, true)[0]!.status).toBe("Working");
+    expect(cardRows([session("w", "waiting", { waitingOn: 3 }), session("q", "queued")], now, true).map(r => r.id)).toEqual(["q", "w"]);
   });
 
   test("a row is named by its title only when titles may leave the Mac, otherwise by its project", () => {

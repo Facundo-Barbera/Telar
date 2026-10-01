@@ -113,6 +113,7 @@ struct Session: Codable, Identifiable, Equatable {
 
     var activity: SessionActivity
     var activityAt: Timestamp?
+    var activityDetail: ActivityDetail?
     var lastTurnEndedAt: Timestamp?
     var lastTurnFailed: Bool?
 
@@ -132,7 +133,7 @@ struct Session: Codable, Identifiable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         case id, projectId, title, state, createdAt, updatedAt, driver, model, providerInstanceId, resumeCursor
-        case workspace, runtimeMode, detached, usage, activity, activityAt
+        case workspace, runtimeMode, detached, usage, activity, activityAt, activityDetail
         case lastTurnEndedAt, lastTurnFailed, settledOverride, settledAt, settledBy
         case snoozedUntil, snoozedAt, startedFrom
         case lastTurnSequence, lastReadTurnSequence, readAt
@@ -157,6 +158,7 @@ struct Session: Codable, Identifiable, Equatable {
 
         activity = try c.decodeIfPresent(SessionActivity.self, forKey: .activity) ?? .idle
         activityAt = try c.decodeIfPresent(Timestamp.self, forKey: .activityAt)
+        activityDetail = try? c.decodeIfPresent(ActivityDetail.self, forKey: .activityDetail)
         lastTurnEndedAt = try c.decodeIfPresent(Timestamp.self, forKey: .lastTurnEndedAt)
         lastTurnFailed = try c.decodeIfPresent(Bool.self, forKey: .lastTurnFailed)
         settledOverride = try c.decodeIfPresent(String.self, forKey: .settledOverride)
@@ -170,6 +172,13 @@ struct Session: Codable, Identifiable, Equatable {
         lastReadTurnSequence = try c.decodeIfPresent(Int.self, forKey: .lastReadTurnSequence)
         readAt = try c.decodeIfPresent(Timestamp.self, forKey: .readAt)
     }
+
+    struct ActivityDetail: Codable, Equatable {
+        var kind: String
+        var sessions: Int?
+    }
+
+    var waitingOn: Int? { activityDetail?.kind == "session" ? activityDetail?.sessions ?? 1 : nil }
 }
 
 struct ProjectRef: Codable, Identifiable, Equatable, Hashable {

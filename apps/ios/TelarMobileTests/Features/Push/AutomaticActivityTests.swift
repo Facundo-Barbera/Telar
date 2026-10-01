@@ -66,6 +66,23 @@ struct AutomaticActivityTests {
         #expect(state.activeCount == 2 && state.sessionId == "orch")
     }
 
+    @Test func aSessionWaitingOnOthersKeepsTheCardAndSaysHowMany() throws {
+        func session(_ id: String, _ activity: String, waitingOn: Int? = nil) throws -> Session {
+            let detail = waitingOn.map { #","activityDetail":{"kind":"session","sessionId":"peer","sessions":\#($0)}"# } ?? ""
+            return try JSONDecoder().decode(Session.self, from: Data("""
+            {"id":"\(id)","title":"Title \(id)","createdAt":1,"updatedAt":1,"activity":"\(activity)","activityAt":1,
+             "driver":"claude","workspace":{"mode":"worktree","path":"/tmp/x"}\(detail)}
+            """.utf8))
+        }
+        let orchestrator = try session("orch", "waiting", waitingOn: 2)
+        #expect(orchestrator.waitingOn == 2 && AutomaticCard.isActive(orchestrator))
+        #expect(!AutomaticCard.isActive(try session("i", "idle")))
+        #expect(AutomaticCard.rows([orchestrator], previews: true).map(\.status) == ["Waiting on 2 sessions"])
+        #expect(AutomaticCard.rows([try session("one", "waiting", waitingOn: 1)], previews: true).map(\.status) == ["Waiting on a session"])
+        #expect(AutomaticCard.rows([orchestrator, try session("q", "queued")], previews: true).map(\.id) == ["q", "orch"])
+        #expect(AutomaticCard.initialState([orchestrator], previews: true, now: Date()).status == "Waiting on 2 sessions")
+    }
+
     @Test func aRowIsNamedByItsTitleOrItsProjectButNeverItsMac() {
         #expect(SessionActivityRow(id: "a", status: "Working", title: "Fix login", project: "Telar", workers: 2).label == "Fix login")
         #expect(SessionActivityRow(id: "a", status: "Working", title: "Fix login", project: "Telar", workers: 2).detail == "Telar · 2 workers")
