@@ -258,8 +258,9 @@ struct PushStatus: Decodable {
         }
     }
 
-    func startAutomaticCards(_ active: [HostedSession]) {
+    func startAutomaticCards(_ active: [HostedSession], projectName: (HostedSession) -> String?) {
         guard UIApplication.shared.applicationState == .active else { return }
+        let projects = Dictionary(active.compactMap { s in projectName(s).map { (s.session.id, $0) } }, uniquingKeysWith: { first, _ in first })
         let working = Set(active.filter { $0.session.activity != .idle }.map(\.hostId))
         dismissedCards = AutomaticCard.dismissedStillIdle(dismissedCards, working: working)
         let carded = Set(Activity<SessionActivityAttributes>.activities
@@ -273,8 +274,8 @@ struct PushStatus: Decodable {
                 Task { await ended.end(nil, dismissalPolicy: .immediate) }
             }
             let now = Date()
-            let state = AutomaticCard.initialState(active.filter { $0.hostId == host }.map(\.session), previews: previews, now: now)
-            let attributes = SessionActivityAttributes(hostId: host.uuidString, sessionId: AutomaticCard.sessionId, hostName: settings?.host(host)?.name ?? "Mac")
+            let state = AutomaticCard.initialState(active.filter { $0.hostId == host }.map(\.session), previews: previews, projects: projects, now: now)
+            let attributes = SessionActivityAttributes(hostId: host.uuidString, sessionId: AutomaticCard.sessionId, hostName: HostLabel.short(settings?.host(host)?.name))
             do {
                 let activity = try Activity.request(attributes: attributes, content: ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale)), pushType: .token)
                 watch(activity)
@@ -284,7 +285,7 @@ struct PushStatus: Decodable {
             guard activity.activityState == .active || activity.activityState == .stale,
                   let host = UUID(uuidString: activity.attributes.hostId), working.contains(host) else { continue }
             let now = Date()
-            guard let state = AutomaticCard.refreshed(activity.content.state, active.filter { $0.hostId == host }.map(\.session), previews: previews, now: now) else { continue }
+            guard let state = AutomaticCard.refreshed(activity.content.state, active.filter { $0.hostId == host }.map(\.session), previews: previews, projects: projects, now: now) else { continue }
             Task { await activity.update(ActivityContent(state: state, staleDate: now.addingTimeInterval(Self.activityStale))) }
         }
     }

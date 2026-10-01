@@ -74,6 +74,30 @@ describe("sub-sessions on the card", () => {
     expect(state([orchestrator, worker("a", "blocked")]).sessionId).toBe("orch");
   });
 
+  test("a row is named by its title only when titles may leave the Mac, otherwise by its project", () => {
+    const sessions = [orchestrator, worker("a", "working"), session("solo", "working")];
+    expect(cardRows(sessions, now, true).map(r => [r.title, r.project])).toEqual([["Ship the release", "web"], ["Title solo", "web"]]);
+    expect(cardRows(sessions, now, false)).toEqual([
+      { id: "orch", status: "Working", project: "web", workers: 1 },
+      { id: "solo", status: "Working", project: "web" },
+    ]);
+  });
+
+  test("workers counts only live children, not finished or settled ones", () => {
+    const sessions = [orchestrator, worker("a", "working"), worker("b", "blocked"), worker("done", "idle", { lastTurnEndedAt: ms(now - 60) }),
+      worker("failed", "idle", { lastTurnEndedAt: ms(now - 30), lastTurnFailed: true }), worker("shelved", "working", { settled: true })];
+    expect(cardRows(sessions, now, true)[0]!.workers).toBe(2);
+    const [, settled] = signals([{ id: "p", title: "p", activity: "working", state: "active" }, { id: "c", title: "c", activity: "working", state: "active", startedFrom: { sessionId: "p" }, settledOverride: "settled" }] as LiveSessionRow[]);
+    expect(settled!.settled).toBe(true);
+  });
+
+  test("the card's header names the Mac without its domain suffix", () => {
+    const header = (hostName?: string) => (automaticActivityDelivery({ ...record(), hostName }, [orchestrator], "b".repeat(64), now, now, "start").payload.aps.attributes as { hostName: string }).hostName;
+    expect(header("mini-fbarbera.snakebird-cardassia.ts.net")).toBe("mini-fbarbera");
+    expect(header("Studio")).toBe("Studio");
+    expect(header(undefined)).toBe("Mac");
+  });
+
   test("a child whose parent is not on the card's list stands as its own row", () => {
     expect(cardRows([worker("a", "working", { title: "Fix login" })], now, true)).toEqual([{ id: "a", status: "Working", title: "Fix login", project: "ozom-gv" }]);
   });

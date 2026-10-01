@@ -56,7 +56,7 @@ export function cardRows(sessions: SessionSignal[], now: number, previews: boole
     const shown = [root!, ...children].flatMap(session => { const status = rowStatus(session, now); return status ? [{ session, status }] : []; });
     if (!shown.length) return [];
     const status = shown.map(s => s.status).sort((a, b) => FAMILY_RANK[a]! - FAMILY_RANK[b]!)[0]!;
-    const workers = shown.filter(s => s.session !== root).length;
+    const workers = children.filter(c => c.activity in ACTIVE_STATUS && !c.settled).length;
     const project = root!.project ?? children.find(c => c.project)?.project;
     return [{ root: root!, status, at: Math.max(...shown.map(s => at(s.session))), workers, project }];
   }).sort((a, b) => ROW_RANK[a.status]! - ROW_RANK[b.status]! || b.at - a.at || a.root.id.localeCompare(b.root.id))
@@ -64,6 +64,10 @@ export function cardRows(sessions: SessionSignal[], now: number, previews: boole
     .map(({ root, status, workers, project }) => ({ id: root.id, status,
       ...(previews && root.title.trim() ? { title: clip(root.title, 60) } : {}), ...(project ? { project: clip(project, 40) } : {}),
       ...(workers ? { workers } : {}) }));
+}
+
+function cardHostName(name: string | undefined): string {
+  return name?.trim().split(".")[0] || "Mac";
 }
 
 export function cardAlert(record: MobileRegistration, blocked: SessionSignal[]): CardAlert {
@@ -91,7 +95,7 @@ export function automaticActivityDelivery(record: MobileRegistration, sessions: 
     collapseId: crypto.createHash("sha256").update(`automatic:${record.hostId}:${start ? startedAt : token}`).digest("hex"),
     payload: { aps: { timestamp: Math.floor(now), event, "content-state": state,
       "stale-date": Math.floor(now + ACTIVITY_STALE_S + (ended ? CARD_LINGER_S : 0)), ...dismissal,
-      ...(start ? { "attributes-type": "SessionActivityAttributes", attributes: { hostId: record.hostId, sessionId: AUTOMATIC_ACTIVITY, hostName: record.hostName ?? "Mac" },
+      ...(start ? { "attributes-type": "SessionActivityAttributes", attributes: { hostId: record.hostId, sessionId: AUTOMATIC_ACTIVITY, hostName: cardHostName(record.hostName) },
         "input-push-token": 1, alert: { title: "Telar", body: "Agent work in progress" } } : {}),
       ...(alert && !start ? { alert } : {}),
     } } };
