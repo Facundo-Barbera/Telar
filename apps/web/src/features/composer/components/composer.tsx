@@ -14,6 +14,7 @@ import { hasUltrathink, toggleUltrathink } from "../model-options";
 import { useComposerCommandChoices } from "../hooks/use-composer-command-choices";
 import { useComposerCompletions } from "../hooks/use-composer-completions";
 import { useComposerFit } from "../hooks/use-composer-fit";
+import { useComposerMotion } from "../hooks/use-composer-motion";
 import { composerKeyHandler, useEscArm } from "../hooks/use-composer-keys";
 import { useComposerRegistration } from "../hooks/use-composer-registration";
 import { MAX_ATTACHMENTS, useComposerStash } from "../hooks/use-composer-stash";
@@ -91,6 +92,7 @@ function ComposerContext({ usage, session, onCompact, busy, sending, compacting 
 export function Composer(props: ComposerProps) {
   const { draft, ready, compact = false, kind = "session", attachments, onAttach, fresh = false, driver, busy, sending, session, projectId, onDraftChange, onStop } = props;
   const editor = useRef<ComposerEditorHandle>(null);
+  const box = useRef<HTMLDivElement>(null);
   // Reported up by the environment strip, which already polls the project's git state.
   const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
   const { root, row, narrow } = useComposerFit();
@@ -127,6 +129,8 @@ export function Composer(props: ComposerProps) {
   const addFiles = (files: File[]) => onAttach([...attachments, ...files].slice(0, MAX_ATTACHMENTS));
   const drop = useDropTarget(editor, addFiles);
   const compactNow = ((compact && !fresh) || narrow) && !expanded && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
+  const shape = [compactNow, narrow, attachments.length > 0, question.active, Boolean(driveAway)].join();
+  const motion = useComposerMotion(box, shape, session?.id ?? `fresh:${projectId}`);
   const pills = (session || (fresh && driver)) && (
     <ComposerPills
       {...props}
@@ -144,6 +148,7 @@ export function Composer(props: ComposerProps) {
       hasContent={hasContent}
       escArmed={esc.armed}
       onStop={onStop}
+      animate={motion}
       {...(question.active ? { question: { label: question.submitLabel, ready: question.canAdvance } } : {})}
     />
   );
@@ -167,7 +172,7 @@ export function Composer(props: ComposerProps) {
       )}
     >
       <ComposerHead props={props} resuming={resuming} onResuming={setResuming} note={stash.note} onDismissNote={() => stash.setNote(undefined)} />
-      <div>
+      <div ref={box}>
         <ComposerBanners {...props} />
         {question.active && props.question && (
           <ComposerQuestionDrawer
