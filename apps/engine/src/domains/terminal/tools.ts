@@ -253,12 +253,12 @@ function configTools(tool: ToolFactory, capability: RunCapability): unknown[] {
         name: z.string().min(1).max(120).optional().describe("Menu label, e.g. 'web dev'."),
         icon: RunIcon.optional().describe("Default 'play'."),
         command: z.string().min(1).optional().describe("e.g. 'bun run dev'."),
-        shell: RunShell.optional().describe(
+        shell: RunShell.strict().optional().describe(
           "Only if it needs a specific shell, e.g. {program:'/bin/bash', args:['-lc']}.",
         ),
         cwd: z.string().optional().describe("Relative to the worktree root."),
         env: z
-          .array(z.object({ key: z.string().min(1), value: z.string(), secret: z.boolean().optional() }))
+          .array(z.strictObject({ key: z.string().min(1), value: z.string(), secret: z.boolean().optional() }))
           .optional()
           .describe("Mark secret values secret."),
         readinessUrl: z.string().url().optional().describe("Only if the command serves it."),

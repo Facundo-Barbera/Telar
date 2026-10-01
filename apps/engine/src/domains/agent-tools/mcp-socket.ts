@@ -3,6 +3,7 @@ import fs from "node:fs";
 import type http from "node:http";
 import { z } from "zod";
 import { atomicWrite } from "../../platform/fs/atomic";
+import { checkArgs, strictArgs } from "./strict-args";
 import type { ToolCallContext } from "./tool-kit";
 
 export type SocketTool = {
@@ -34,7 +35,7 @@ export function collectTools<Capability>(
 }
 
 export function toolInputSchema(shape: Record<string, unknown>): Record<string, unknown> {
-  return leanSchema(z.toJSONSchema(z.object(shape as Record<string, z.ZodType>), { io: "input" })) as Record<string, unknown>;
+  return leanSchema(z.toJSONSchema(strictArgs(shape), { io: "input" })) as Record<string, unknown>;
 }
 
 const UNADVERTISED = new Set(["$schema", "minLength", "maxLength", "maxItems"]);
@@ -60,7 +61,7 @@ export function advertiseLeanSchemas<Server>(server: Server): Server {
   if (!handlers || !list) return server;
   handlers.set("tools/list", async (request, extra) => {
     const answer = await list(request, extra);
-    return { ...answer, tools: answer.tools?.map((tool) => ({ ...tool, inputSchema: leanSchema(tool.inputSchema) })) };
+    return { ...answer, tools: answer.tools?.map((tool) => ({ ...tool, inputSchema: { ...(leanSchema(tool.inputSchema) as object), additionalProperties: false } })) };
   });
   return server;
 }
@@ -149,10 +150,10 @@ export async function handleSocketMessage(
     const tool = tools.find((candidate) => candidate.name === name);
     if (!tool) return rpcError(id, -32602, `no tool named "${name}" — tools/list names what this socket serves`);
     const args = params?.arguments && typeof params.arguments === "object" ? (params.arguments as Record<string, unknown>) : {};
-    const parsed = z.object(tool.shape as Record<string, z.ZodType>).safeParse(args);
-    if (!parsed.success) return rpcError(id, -32602, parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; "));
+    const checked = checkArgs(tool.name, tool.shape, args);
+    if (!checked.ok) return checked.unknown ? rpcResult(id, { content: [{ type: "text", text: checked.message }], isError: true }) : rpcError(id, -32602, checked.message);
     try {
-      const result = await tool.run(parsed.data);
+      const result = await tool.run(checked.args);
       return rpcResult(id, { content: result.content, ...(result.isError ? { isError: true } : {}) });
     } catch (error) {
       return rpcResult(id, {

@@ -151,7 +151,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     input: z.object({
       ...tabId,
       fields: z.array(
-        z.object({
+        z.strictObject({
           ...targeted,
           name: z.string(),
           type: z.enum(["textbox", "checkbox", "radio", "combobox", "slider"]),
@@ -215,7 +215,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
     input: z.object({
       fields: z
         .array(
-          z.object({
+          z.strictObject({
             ...targeted,
             kind: z.enum(["username", "password", "otp", "field"]),
             label: z.string().optional(),
@@ -223,7 +223,7 @@ export const BROWSER_TOOLS: readonly BrowserToolDefinition[] = [
         )
         .min(1),
       item: z.string().optional(),
-      submit: z.object({ ...targeted }).optional(),
+      submit: z.strictObject({ ...targeted }).optional(),
     }),
   },
   {

@@ -543,7 +543,7 @@ describe("the model-visible prefix", () => {
   const capture = async (sessionId: string, cwd: string, browserToken: string) => {
     let options: { systemPrompt?: unknown; mcpServers?: Record<string, { tools?: unknown[]; headers?: unknown }> } = {};
     const driver = createClaudeDriver(async () => ({
-      tool: (name: string, description: string, shape: Record<string, unknown>) => ({ name, description, inputSchema: toolInputSchema(shape) }),
+      tool: (name: string, description: string, schema: { shape: Record<string, unknown> }) => ({ name, description, inputSchema: toolInputSchema(schema.shape) }),
       createSdkMcpServer: (input: { tools: unknown[] }) => ({ tools: input.tools }),
       async *query(input: { options: typeof options }) {
         options = input.options;

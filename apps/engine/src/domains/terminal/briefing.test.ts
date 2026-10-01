@@ -60,8 +60,8 @@ async function firstRequest(extra: Record<string, unknown>): Promise<Captured> {
   let options: { systemPrompt?: { append?: string }; env?: Record<string, string | undefined>; mcpServers?: Record<string, unknown> } = {};
   const driver = createClaudeDriver(
     async () => ({
-      tool: (name: string, description: string, shape: Record<string, unknown>) => {
-        telar.push({ name, description, shape });
+      tool: (name: string, description: string, schema: { shape: Record<string, unknown> }) => {
+        telar.push({ name, description, shape: schema.shape });
         return { name };
       },
       createSdkMcpServer: (input: unknown) => input,
