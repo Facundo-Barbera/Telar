@@ -23,7 +23,7 @@ const FIND_LIMIT_MAX = 50;
 const DECISIONS = ["accept", "acceptForSession", "decline", "cancel"] as const;
 
 // Weak: two answers at one revision carry the same rows, not the same bytes. The mode is in the tag.
-const liveSessionsETag = (revision: number, all: boolean): string => `W/"live-${revision}-${all ? "all" : "lean"}"`;
+const liveSessionsETag = (revision: number, scope: string): string => `W/"live-${revision}-${scope}"`;
 
 type SessionsRouteDeps = { daemonId: string; openStreams: Set<OpenStream>; mcpInfo: () => unknown };
 
@@ -44,17 +44,18 @@ export function sessionsRoutes(store: EngineStore, { daemonId, openStreams, mcpI
       method: "GET",
       path: "/v2/sessions/live",
       auth: "engine",
-      // The rail's poll. `?full=1` is the old whole answer; `?all=1` adds the settled rows and is never `?since=`-conditional.
+      // `?full=1` is the whole record; `?all=1` adds the settled rows and `?shelf=1` is them alone, neither `?since=`-conditional.
       handle({ query, request }) {
         if (query.get("full") === "1") return ok(store.live.all());
-        const all = query.get("all") === "1";
-        const etag = liveSessionsETag(store.live.revision({ all }), all);
+        const options = { all: query.get("all") === "1", shelf: query.get("shelf") === "1" };
+        const scope = options.shelf ? "shelf" : options.all ? "all" : "lean";
+        const etag = liveSessionsETag(store.live.revision(options), scope);
         if (matchesETag(request.headers["if-none-match"], etag)) return notModified(etag);
         const since = Number(query.get("since"));
-        if (!all && Number.isSafeInteger(since) && since === store.live.revision()) {
+        if (scope === "lean" && Number.isSafeInteger(since) && since === store.live.revision()) {
           return { status: 200, body: { revision: since, unchanged: true, daemonId }, headers: { etag } };
         }
-        return { status: 200, body: { ...store.live.rows({ all }), projects: store.projectRegistry.list(), daemonId }, headers: { etag } };
+        return { status: 200, body: { ...store.live.rows(options), projects: store.projectRegistry.list(), daemonId }, headers: { etag } };
       },
     },
     sessionsStreamRoute(store, openStreams),

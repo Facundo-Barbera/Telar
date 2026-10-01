@@ -2,7 +2,8 @@ import type { InboxPolicy, LiveSessionRow, Project, ProjectAvailability, Session
 import type { Kernel } from "../../platform/kernel";
 import type { SessionActivity } from "./activity";
 import type { SessionRecords } from "./records";
-import type { SessionIndex } from "./session-index";
+import { newestFirst } from "./metadata";
+import type { LiveScope, SessionIndex } from "./session-index";
 
 // A pick rather than a delete-list, so a new `Session` field joins every poll only when someone writes it here.
 const liveRow = (session: Session): LiveSessionRow => ({
@@ -42,6 +43,10 @@ const liveRow = (session: Session): LiveSessionRow => ({
   ...(session.startedFrom === undefined ? {} : { startedFrom: session.startedFrom }),
 });
 
+type LiveOptions = { all?: boolean; shelf?: boolean };
+
+const scopeOf = (options: LiveOptions): LiveScope => (options.shelf ? "shelf" : options.all ? "all" : "lean");
+
 type LiveDeps = {
   records: SessionRecords;
   activity: SessionActivity;
@@ -68,8 +73,8 @@ export class LiveSessions {
     private readonly deps: LiveDeps,
   ) {}
 
-  revision(options: { all?: boolean } = {}): number {
-    return this.deps.index.revision(options.all === true);
+  revision(options: LiveOptions = {}): number {
+    return this.deps.index.revision(scopeOf(options));
   }
 
   /** One project's sessions, by the (project_id, updated_at) index so only its documents are parsed. */
@@ -100,8 +105,8 @@ export class LiveSessions {
     };
   }
 
-  /** `all` projected to what a rail draws, unsettled rows only unless `all`. */
-  rows(options: { all?: boolean } = {}): Omit<LiveSessionsRead, "sessions"> & {
+  /** `all` projected to what a rail draws: unsettled rows by default, everything with `all`, the shelf alone with `shelf`. */
+  rows(options: LiveOptions = {}): Omit<LiveSessionsRead, "sessions"> & {
     sessions: LiveSessionRow[];
     inbox: InboxPolicy;
     revision: number;
@@ -109,17 +114,22 @@ export class LiveSessions {
     terminals: Record<string, number>;
   } {
     // Read first, so a write that lands mid-fold is reported by the next read rather than swallowed.
-    const revision = this.revision({ all: options.all === true });
+    const scope = scopeOf(options);
+    const revision = this.deps.index.revision(scope);
     const inbox = this.deps.inbox();
-    const indexed = this.deps.activity.shelf(inbox, options.all === true);
-    const full = this.all(indexed.chosen);
+    const indexed = this.deps.activity.shelf(inbox, scope !== "lean");
+    const open = scope === "shelf" ? [] : [...indexed.chosen].filter((id) => !indexed.shelved.has(id));
+    const live = this.all(new Set(open));
+    const shelf = scope === "lean" ? { sessions: [], assignments: {} } : this.deps.activity.foldShelved(indexed.shelved, (id) => this.deps.index.stamp(id));
+    const sessions = [...live.sessions, ...shelf.sessions].sort(newestFirst);
     return {
-      ...full,
-      sessions: full.sessions.map(liveRow),
+      ...live,
+      sessions: sessions.map(liveRow),
+      assignments: { ...live.assignments, ...shelf.assignments },
       inbox,
       revision,
       settledCount: indexed.settledCount,
-      terminals: this.deps.terminalCounts(full.sessions.map((session) => session.id)),
+      terminals: this.deps.terminalCounts(sessions.map((session) => session.id)),
     };
   }
 }
