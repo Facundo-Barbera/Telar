@@ -6,9 +6,9 @@ export const CARD_ROWS = 4;
 export const ROW_DONE_S = 900;
 export const END_DISMISS_S = 300;
 export const BARE_END_DISMISS_S = 15;
-const ACTIVE_STATUS: Record<string, string> = { blocked: "Needs you", working: "Working", queued: "Queued", monitoring: "Background" };
-const ROW_RANK: Record<string, number> = { "Needs you": 0, Working: 1, Queued: 2, Background: 3, Done: 4, Failed: 4 };
-const FAMILY_RANK: Record<string, number> = { "Needs you": 0, Failed: 1, Working: 2, Queued: 3, Background: 4, Done: 5 };
+const ACTIVE_STATUS: Record<string, string> = { blocked: "Needs you", working: "Working", queued: "Queued", waiting: "Waiting", monitoring: "Background" };
+const ROW_RANK: Record<string, number> = { "Needs you": 0, Working: 1, Queued: 2, Waiting: 3, Background: 4, Done: 5, Failed: 5 };
+const FAMILY_RANK: Record<string, number> = { "Needs you": 0, Failed: 1, Working: 2, Queued: 3, Waiting: 4, Background: 5, Done: 6 };
 const REFERENCE_EPOCH = 978307200;
 
 export type CardRow = { id: string; status: string; title?: string; project?: string; workers?: number };
@@ -22,6 +22,10 @@ function clip(text: string, max: number): string {
 
 export function automaticSessions(sessions: SessionSignal[]): SessionSignal[] {
   return sessions.filter(s => s.activity in ACTIVE_STATUS);
+}
+
+function waitingLabel(sessions: number | undefined): string {
+  return sessions !== undefined && sessions > 1 ? `Waiting on ${sessions} sessions` : "Waiting on a session";
 }
 
 function rowStatus(session: SessionSignal, now: number): string | undefined {
@@ -55,13 +59,13 @@ export function cardRows(sessions: SessionSignal[], now: number, previews: boole
   return families(sessions).flatMap(([root, ...children]) => {
     const shown = [root!, ...children].flatMap(session => { const status = rowStatus(session, now); return status ? [{ session, status }] : []; });
     if (!shown.length) return [];
-    const status = shown.map(s => s.status).sort((a, b) => FAMILY_RANK[a]! - FAMILY_RANK[b]!)[0]!;
+    const lead = [...shown].sort((a, b) => FAMILY_RANK[a.status]! - FAMILY_RANK[b.status]!)[0]!;
     const workers = children.filter(c => c.activity in ACTIVE_STATUS && !c.settled).length;
     const project = root!.project ?? children.find(c => c.project)?.project;
-    return [{ root: root!, status, at: Math.max(...shown.map(s => at(s.session))), workers, project }];
+    return [{ root: root!, status: lead.status, waitingOn: lead.session.waitingOn, at: Math.max(...shown.map(s => at(s.session))), workers, project }];
   }).sort((a, b) => ROW_RANK[a.status]! - ROW_RANK[b.status]! || b.at - a.at || a.root.id.localeCompare(b.root.id))
     .slice(0, CARD_ROWS)
-    .map(({ root, status, workers, project }) => ({ id: root.id, status,
+    .map(({ root, status, waitingOn, workers, project }) => ({ id: root.id, status: status === "Waiting" ? waitingLabel(waitingOn) : status,
       ...(previews && root.title.trim() ? { title: clip(root.title, 60) } : {}), ...(project ? { project: clip(project, 40) } : {}),
       ...(workers ? { workers } : {}) }));
 }

@@ -261,7 +261,7 @@ struct PushStatus: Decodable {
     func startAutomaticCards(_ active: [HostedSession], projectName: (HostedSession) -> String?) {
         guard UIApplication.shared.applicationState == .active else { return }
         let projects = Dictionary(active.compactMap { s in projectName(s).map { (s.session.id, $0) } }, uniquingKeysWith: { first, _ in first })
-        let working = Set(active.filter { $0.session.activity != .idle }.map(\.hostId))
+        let working = Set(active.filter { AutomaticCard.isActive($0.session) }.map(\.hostId))
         dismissedCards = AutomaticCard.dismissedStillIdle(dismissedCards, working: working)
         let carded = Set(Activity<SessionActivityAttributes>.activities
             .filter { $0.attributes.sessionId == AutomaticCard.sessionId && ($0.activityState == .active || $0.activityState == .stale) }

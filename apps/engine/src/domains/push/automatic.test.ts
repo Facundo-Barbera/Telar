@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { AUTOMATIC_ACTIVITY, CARD_LINGER_S, parseRegistration, saveRegistration, readPushRecords, type PushRecord, type Delivery } from "./push";
-import { deliverRecord } from "./worker";
+import { deliverRecord, START_RETRY_S } from "./worker";
 import { BARE_END_DISMISS_S } from "./card";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -13,17 +13,31 @@ function recorder() {
   return { sent, send: async (d: Delivery) => { sent.push(d); return { status: 200 }; } };
 }
 
-test("work starts one card without a notification opt-in, and never a second while work goes on",async()=>{
+test("work starts one card without a notification opt-in, and never a second once the phone has shown it",async()=>{
   const {sent,send}=recorder();
   let r=(await deliverRecord(record(),[work],send,1000))!;
   expect(sent).toHaveLength(1);
   expect(sent[0]!.token).toBe(r.pushToStartToken!);
   expect(sent[0]!.payload.aps).toMatchObject({event:"start","attributes-type":"SessionActivityAttributes","input-push-token":1,attributes:{hostId:r.hostId,sessionId:AUTOMATIC_ACTIVITY,hostName:"Studio Mac"}});
   expect(JSON.stringify(sent[0])).not.toContain(work.title);
-  for (const at of [1010, 1300, 1600, 100000]) r=(await deliverRecord(r,[work],send,at))!;
-  expect(sent).toHaveLength(1);
+  r=(await deliverRecord({...r,card},[work],send,1010))!;
+  const {card:_swiped,...gone}=r;r=gone;
+  for (const at of [1300, 1600+START_RETRY_S, 100000]) r=(await deliverRecord(r,[work],send,at))!;
+  expect(sent.filter(d=>d.payload.aps.event==="start")).toHaveLength(1);
   r=(await deliverRecord(r,[],send,100010))!;
-  await deliverRecord(r,[work],send,100020);expect(sent).toHaveLength(2);
+  await deliverRecord(r,[work],send,100020);expect(sent.filter(d=>d.payload.aps.event==="start")).toHaveLength(2);
+});
+
+test("a start Apple accepted but the phone never showed is sent again while work goes on",async()=>{
+  const {sent,send}=recorder();
+  let r=(await deliverRecord(record(),[work],send,1000))!;
+  r=(await deliverRecord(r,[work],send,1000+START_RETRY_S-1))!;
+  expect(sent).toHaveLength(1);
+  r=(await deliverRecord(r,[work],send,1000+START_RETRY_S))!;
+  expect(sent.map(d=>d.payload.aps.event)).toEqual(["start","start"]);
+  expect(r.automaticStart).toMatchObject({at:1000+START_RETRY_S,status:200});
+  r=(await deliverRecord(r,[work],send,1000+START_RETRY_S+10))!;
+  expect(sent).toHaveLength(2);
 });
 
 test("a card on the phone is updated, never started over",async()=>{

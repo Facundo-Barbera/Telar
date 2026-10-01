@@ -14,8 +14,12 @@ enum AutomaticCard {
         enabled ? working.subtracting(carded).subtracting(dismissed).subtracting(engineStarts) : []
     }
 
-    static func engineStarts(_ report: ActivityReport) -> Bool {
-        report.blocker == nil && (report.lastStart.map { $0.status == 200 } ?? true)
+    static let startGrace: TimeInterval = 60
+
+    static func engineStarts(_ report: ActivityReport, now: Date = Date()) -> Bool {
+        guard report.blocker == nil else { return false }
+        guard let start = report.lastStart else { return true }
+        return start.status == 200 && (report.card || now.timeIntervalSince1970 - start.at < startGrace)
     }
 
     static func duplicates(_ cards: [Shown]) -> Set<String> {
@@ -32,8 +36,14 @@ enum AutomaticCard {
     }
 
     static let maxRows = 4
-    private static let rank: [SessionActivity: Int] = [.blocked: 0, .working: 1, .queued: 2, .monitoring: 3]
-    private static let status: [SessionActivity: String] = [.blocked: "Needs you", .working: "Working", .queued: "Queued", .monitoring: "Background"]
+    private static let ranks: [SessionActivity: Int] = [.blocked: 0, .working: 1, .queued: 2, .monitoring: 4]
+    private static let statuses: [SessionActivity: String] = [.blocked: "Needs you", .working: "Working", .queued: "Queued", .monitoring: "Background"]
+
+    private static func rank(_ session: Session) -> Int? { session.waitingOn != nil ? 3 : ranks[session.activity] }
+    private static func status(_ session: Session) -> String {
+        session.waitingOn.map { $0 > 1 ? "Waiting on \($0) sessions" : "Waiting on a session" } ?? statuses[session.activity]!
+    }
+    static func isActive(_ session: Session) -> Bool { rank(session) != nil }
 
     static func families(_ sessions: [Session]) -> [(root: Session, active: [Session])] {
         let byId = Dictionary(sessions.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -51,18 +61,18 @@ enum AutomaticCard {
         for session in sessions {
             let top = root(session).id
             if active[top] == nil { order.append(top); active[top] = [] }
-            if rank[session.activity] != nil { active[top]!.append(session) }
+            if isActive(session) { active[top]!.append(session) }
         }
         return order.compactMap { id in active[id]!.isEmpty ? nil : (byId[id]!, active[id]!) }
     }
 
     static func rows(_ sessions: [Session], previews: Bool, projects: [String: String] = [:], carried: [SessionActivityRow] = []) -> [SessionActivityRow] {
-        let key = { (members: [Session]) in (members.map { rank[$0.activity]! }.min()!, -(members.compactMap(\.activityAt).max() ?? 0)) }
+        let key = { (members: [Session]) in (members.map { rank($0)! }.min()!, -(members.compactMap(\.activityAt).max() ?? 0)) }
         let active = families(sessions).sorted { (key($0.active).0, key($0.active).1, $0.root.id) < (key($1.active).0, key($1.active).1, $1.root.id) }
         let live = active.map { family in
             let title = family.root.title.trimmingCharacters(in: .whitespacesAndNewlines)
             let workers = family.active.filter { $0.id != family.root.id }.count
-            return SessionActivityRow(id: family.root.id, status: status[family.active.min { rank[$0.activity]! < rank[$1.activity]! }!.activity]!,
+            return SessionActivityRow(id: family.root.id, status: status(family.active.min { rank($0)! < rank($1)! }!),
                                       title: previews && !title.isEmpty ? SessionActivityRow.clip(title, 60) : nil,
                                       project: ([family.root] + family.active).lazy.compactMap { projects[$0.id] }.first.map { SessionActivityRow.clip($0, 40) },
                                       workers: workers > 0 ? workers : nil)

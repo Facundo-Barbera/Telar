@@ -25,7 +25,7 @@ export interface MobileRegistration {
 type HostCard = { token: string; startedAt: number };
 export type RelayCredential = { handle: string; keyId: string; sendKey: string };
 export interface SessionSignal {
-  id: string; title: string; activity: string; activityAt?: number;
+  id: string; title: string; activity: string; activityAt?: number; waitingOn?: number;
   lastTurnEndedAt?: number; lastTurnFailed?: boolean; lastTurnOrigin?: Turn["origin"];
   hasParent?: boolean; delegating?: boolean; parentId?: string; settled?: boolean;
   projectId?: string;
@@ -47,7 +47,7 @@ export interface PushRecord extends MobileRegistration {
   lastStatus?: number;
   lastReason?: string;
   relayTest?: { keyId: string; at: number; status: number; reason?: string; relay?: true };
-  automaticStart?: { at: number; status: number; reason?: string; relay?: true; token?: string };
+  automaticStart?: { at: number; status: number; reason?: string; relay?: true; token?: string; carded?: true };
   updatedAt: number;
   readSync?: ReadSyncState;
   seen: Record<string, string>;
