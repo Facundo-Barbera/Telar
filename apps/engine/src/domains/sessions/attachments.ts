@@ -1,7 +1,9 @@
+import fs from "node:fs";
 import { readTaskOutput, resolveTaskOutputFile } from "../../drivers/claude";
 import { HttpError, rawBody } from "../../platform/http/http";
 import { ok, sessionRoute, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
+import { ensureWebImage } from "./web-image";
 
 /** The HTTP edge's ceiling; the store enforces the same number again for in-process callers. */
 const MAX_ATTACHMENT_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -47,14 +49,16 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       method: "GET",
       path: sessionRoute("/attachments/([A-Za-z0-9_-]+)"),
       auth: "engine",
-      handle({ params: [sessionId, attachmentId] }) {
+      async handle({ params: [sessionId, attachmentId], query }) {
         const { attachment, data } = store.attachments.bytes(sessionId!, attachmentId!);
+        const shown = query.get("variant") === "display" ? await ensureWebImage(attachment) : attachment;
+        const bytes = shown === attachment ? data : new Uint8Array(await fs.promises.readFile(shown.path));
         return {
           status: 200,
           body: null,
-          bytes: data,
+          bytes,
           // The id is minted per write, so the bytes behind it never change.
-          headers: { "content-type": attachment.mediaType, "content-length": String(data.byteLength), "cache-control": "private, max-age=31536000, immutable" },
+          headers: { "content-type": shown.mediaType, "content-length": String(bytes.byteLength), "cache-control": "private, max-age=31536000, immutable" },
         };
       },
     },
@@ -75,7 +79,9 @@ export function sessionAttachmentRoutes(store: EngineStore): Route[] {
       async handle({ params: [sessionId], request }) {
         const data = await rawBody(request, MAX_ATTACHMENT_UPLOAD_BYTES);
         const mediaType = (request.headers["content-type"] ?? "application/octet-stream").split(";")[0]!.trim();
-        return { status: 201, body: { attachment: store.attachments.put(sessionId!, { name: attachmentName(request.headers["x-telar-attachment-name"]), mediaType, data }) } };
+        const attachment = store.attachments.put(sessionId!, { name: attachmentName(request.headers["x-telar-attachment-name"]), mediaType, data });
+        await ensureWebImage(attachment);
+        return { status: 201, body: { attachment } };
       },
     },
   ];
