@@ -37,6 +37,14 @@ struct SnapshotCache: Sendable {
         write(hostDir(host).appending(path: "inbox.json"), data)
     }
 
+    func readShelf(host: HostID) -> Entry? {
+        read(hostDir(host).appending(path: "shelf.json"))
+    }
+
+    func writeShelf(host: HostID, data: Data) {
+        write(hostDir(host).appending(path: "shelf.json"), data)
+    }
+
     func dropHost(_ host: HostID) {
         try? FileManager.default.removeItem(at: hostDir(host))
     }
@@ -93,6 +101,8 @@ struct HostSnapshotCache: Sendable {
     func dropSession(_ id: EngineID) { cache.dropSession(host: hostId, id: id) }
     func readInbox() -> SnapshotCache.Entry? { cache.readInbox(host: hostId) }
     func writeInbox(_ data: Data) { cache.writeInbox(host: hostId, data: data) }
+    func readShelf() -> SnapshotCache.Entry? { cache.readShelf(host: hostId) }
+    func writeShelf(_ data: Data) { cache.writeShelf(host: hostId, data: data) }
 }
 
 func recordedAtLabel(_ savedAt: Timestamp) -> String {
