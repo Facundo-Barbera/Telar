@@ -21,11 +21,11 @@ export const runIdFor = (tool: string, toolCallId: string | undefined): string =
     ? `run_${crypto.createHash("sha256").update(`${tool}:${toolCallId}`).digest("hex").slice(0, 32)}`
     : `run_${crypto.randomUUID().replaceAll("-", "")}`;
 
-type Shared = { projectId: string; envMode: "local" | "worktree"; driver?: "claude" | "codex" };
+type Shared = { projectId: string; envMode?: "local" | "worktree"; driver?: "claude" | "codex" };
 
 const sharedOf = (args: Record<string, unknown>): Shared => ({
   projectId: String(args.projectId ?? ""),
-  envMode: args.envMode === "worktree" ? "worktree" : "local",
+  ...(args.envMode === "local" || args.envMode === "worktree" ? { envMode: args.envMode } : {}),
   ...(args.driver === "claude" || args.driver === "codex" ? { driver: args.driver } : {}),
 });
 
@@ -43,9 +43,8 @@ export function createTool(tool: ToolFactory, capability: SessionsCapability): u
         .describe("A few words; always set one."),
       envMode: z
         .enum(["local", "worktree"])
-        .describe(
-          "worktree: its own checkout, for anything that edits files. local: shares the project's checkout.",
-        ),
+        .optional()
+        .describe("Omit for the project's mode. worktree: its own checkout, to isolate code changes. local: shares the project's checkout."),
       driver: z
         .enum(["claude", "codex"])
         .optional()

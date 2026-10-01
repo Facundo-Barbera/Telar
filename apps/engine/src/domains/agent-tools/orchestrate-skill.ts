@@ -46,11 +46,17 @@ Write each worker a self-contained brief. It will not see this conversation.
 
 ## 3. Dispatch
 
-- One \`worktree\` session per task, the whole wave in ONE call:
-  \`sessions_create({ projectId, envMode: "worktree", tasks: [...] })\`, an
-  entry per task with a title that says what it is and the brief as \`task\`.
-  It creates each worker under you, assigns its work and subscribes you to
-  all of them as one cohort.
+- One session per task, the whole wave in ONE call:
+  \`sessions_create({ projectId, tasks: [...] })\`, an entry per task with a
+  title that says what it is and the brief as \`task\`. It creates each worker
+  under you, assigns its work and subscribes you to all of them as one cohort.
+- Omit \`envMode\` so the project's own mode applies. Pass \`"worktree"\` only
+  when the project allows worktrees and the task edits code that needs
+  isolation.
+- Workers in \`local\` mode share one checkout: give each disjoint files or
+  folders, and run overlapping work one after another, never in parallel.
+  They open no PRs; you review the checkout yourself, and its diff
+  (\`sessions_read\` \`view: "diff"\`) holds every local worker's changes.
 - Pick each entry's \`model\` and \`effort\` for its task, not yours: search
   or read, a Haiku; mechanical edits, a Sonnet at medium; review, a Sonnet at
   high; design or debugging, your own model. \`sessions_capabilities\` lists
