@@ -117,8 +117,9 @@ function LocationRow({ location, current, onMoved }: { location: WorktreeLocatio
     >
       {confirming && movable ? (
         <div className="mt-2 space-y-2 text-xs" role="group" aria-label="Confirm move">
-          <p className="break-all text-foreground">
-            Move {plural(movable.movable.count, "worktree")} from {location.folder} to {destination}? Each is re-made from its branch; nothing is forced.{" "}
+          <p className="text-foreground">
+            Move {plural(movable.movable.count, "worktree")} from <span className="font-mono break-all">{location.folder}</span> to{" "}
+            <span className="font-mono break-all">{destination}</span>? Each is re-made from its branch; nothing is forced.{" "}
             {stayingSentence(movable.staying) ?? "Nothing stays behind."}
           </p>
           <span className="flex items-center gap-2">
