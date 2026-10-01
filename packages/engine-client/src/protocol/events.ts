@@ -240,6 +240,7 @@ export const EngineHealth = z.object({
   }),
   browser: z.object({ provider: BrowserProvider }).optional(),
   plugins: z.array(PluginStatus).optional(),
+  git: z.object({ liveChildren: z.number().int().nonnegative(), cap: z.number().int().positive() }).optional(),
 });
 export type EngineHealth = z.infer<typeof EngineHealth>;
 

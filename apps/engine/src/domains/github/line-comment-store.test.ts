@@ -69,10 +69,12 @@ async function withSession(pullHead: (cwd: string) => string) {
     },
   });
   stores.push(store);
-  store.projectRegistry.register({ id: "project_one", name: "One", root: repo() });
+  const root = repo();
+  store.projectRegistry.register({ id: "project_one", name: "One", root });
   store.lifecycle.createSession({ id: "session_one", projectId: "project_one", envMode: "worktree" });
   const workspace = () => store.records.get("session_one").workspace;
-  expect(await until(() => workspace().mode === "worktree" && fs.existsSync((workspace() as { path: string }).path))).toBe(true);
+  const locked = () => /\nlocked (?!initializing)/.test(run(root, "worktree", "list", "--porcelain"));
+  expect(await until(() => workspace().mode === "worktree" && locked())).toBe(true);
   cwd = (workspace() as { path: string }).path;
   fs.appendFileSync(path.join(cwd, "a.ts"), "two\n");
   run(cwd, "commit", "-qam", "two");
