@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import TelarMobile
 
 @MainActor @Suite struct SentAttachmentsTests {
@@ -59,6 +60,27 @@ import Testing
         cache.store(Data("png".utf8), host: host, session: "s", attachmentId: "att_1", name: "shot.png")
         #expect(cache.cached(host: host, session: "s", attachmentId: "att_1") == Data("png".utf8))
         #expect(cache.cached(host: nil, session: "s", attachmentId: "att_1") == nil)
+    }
+
+    private func photo(width: CGFloat = 3000, height: CGFloat = 2000) -> Data {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).pngData { context in
+            UIColor.orange.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    @Test func aSentPhotoIsHeldAtThumbnailSizeNotFullSize() async {
+        let cache = tempCache()
+        cache.store(photo(), host: nil, session: "s", attachmentId: "att_1", name: "shot.png")
+
+        let image = await cache.image(host: nil, session: "s", attachmentId: "att_1", side: Thumbnail.tile) { _, _ in
+            throw URLError(.notConnectedToInternet)
+        }
+
+        let pixels = image?.cgImage.map { max($0.width, $0.height) }
+        #expect(pixels == Int(Thumbnail.tile))
     }
 
     @Test func aNameCannotEscapeItsFolder() {
