@@ -24,13 +24,14 @@ type BoxProps = {
   files?: File[];
   busy?: boolean;
   compact?: boolean;
+  fresh?: boolean;
   projectId?: string;
   session?: Session;
   onSubmit?: () => void;
   onStop?: () => void;
 };
 
-function Box({ initial = "", files = [], busy = false, compact = false, projectId, session, onSubmit = () => {}, onStop = () => {} }: BoxProps) {
+function Box({ initial = "", files = [], busy = false, compact = false, fresh = false, projectId, session, onSubmit = () => {}, onStop = () => {} }: BoxProps) {
   const [draft, setDraft] = useState(initial);
   return (
     <>
@@ -42,6 +43,8 @@ function Box({ initial = "", files = [], busy = false, compact = false, projectI
         onAttach={() => {}}
         busy={busy}
         compact={compact}
+        fresh={fresh}
+        driver="claude"
         sending={false}
         backgroundTasks={0}
         onDraftChange={setDraft}
@@ -93,7 +96,7 @@ async function type(editor: HTMLElement, text: string) {
   await flush();
 }
 
-const layout = { width: 0, observers: new Set<() => void>() };
+const layout = { width: 0, item: 40, observers: new Set<() => void>() };
 
 beforeAll(() => {
   globalThis.ResizeObserver = class {
@@ -110,11 +113,12 @@ beforeAll(() => {
     }
   } as unknown as typeof ResizeObserver;
   Object.defineProperty(HTMLElement.prototype, "clientWidth", { configurable: true, get: () => layout.width });
-  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => (layout.width ? 40 : 0) });
+  Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => (layout.width ? layout.item : 0) });
 });
 
 afterEach(() => {
   layout.width = 0;
+  layout.item = 40;
 });
 
 async function narrowable(props: BoxProps, width: number) {
@@ -367,22 +371,38 @@ describe("a composer too narrow for its controls", () => {
     expect(document.activeElement).toBe(editor);
   });
 
-  test("hovering at the boundary does not flicker", async () => {
+  test("it turns mini below a 784px column and comes back only at 800, so the edge never flickers", async () => {
     const { host, resize } = await narrowable({ session }, 2000);
-    let edge = 400;
-    await resize(edge);
     expect(oneLine(host)).toBe(false);
-    while (!oneLine(host) && edge > 0) await resize((edge -= 10));
-    expect(edge).toBeGreaterThan(100);
+    await resize(783);
     const flips: boolean[] = [];
-    for (const width of [edge + 4, edge, edge + 8, edge + 2, edge + 12, edge]) {
+    for (const width of [790, 784, 799, 786, 783]) {
       await resize(width);
       flips.push(oneLine(host));
     }
     expect(flips.every(Boolean)).toBe(true);
-    await resize(edge + 40);
+    await resize(800);
     expect(oneLine(host)).toBe(false);
-    await resize(edge + 10);
+    await resize(790);
     expect(oneLine(host)).toBe(false);
+  });
+
+  test("controls that would wrap in a wider column still turn it mini", async () => {
+    layout.item = 400;
+    const { host } = await narrowable({ session }, 1000);
+    expect(expand(host)).not.toBeNull();
+  });
+
+  test("a new conversation's canvas is mini too", async () => {
+    const { host } = await narrowable({ fresh: true }, 500);
+    expect(expand(host)).not.toBeNull();
+  });
+
+  test("a composer opened full while reading back turns mini once the column narrows", async () => {
+    const { host, resize } = await narrowable({ session, compact: true }, 2000);
+    await click(expand(host)!);
+    expect(expand(host)).toBeNull();
+    await resize(600);
+    expect(expand(host)).not.toBeNull();
   });
 });

@@ -69,11 +69,11 @@ function runAction(action: Completion["action"], props: ComposerProps, startResu
   if (action.type === "stop") props.onStop();
 }
 
-/** Opened from the compact card; back to compact once the reader returns to the bottom. */
-function useExpanded(compact: boolean) {
-  const [expanded, setExpanded] = useState(false);
-  if (!compact && expanded) setExpanded(false);
-  return [expanded, () => setExpanded(true)] as const;
+/** Opened from the compact card; back to compact once the reader returns to the bottom, or the column turns narrow. */
+function useExpanded(compact: boolean, narrow: boolean) {
+  const [state, setState] = useState({ expanded: false, narrow });
+  if (state.narrow !== narrow || (!compact && !narrow && state.expanded)) setState({ expanded: false, narrow });
+  return [state.expanded, () => setState({ expanded: true, narrow })] as const;
 }
 
 function ComposerContext({ usage, session, onCompact, busy, sending, compacting }: ComposerProps) {
@@ -94,7 +94,7 @@ export function Composer(props: ComposerProps) {
   // Reported up by the environment strip, which already polls the project's git state.
   const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
   const { root, row, narrow } = useComposerFit();
-  const [expanded, expand] = useExpanded(compact || narrow);
+  const [expanded, expand] = useExpanded(compact, narrow);
   const [resuming, setResuming] = useState(false);
   const startResume = useCallback(() => setResuming(true), []);
   const token = useId();
@@ -126,8 +126,7 @@ export function Composer(props: ComposerProps) {
 
   const addFiles = (files: File[]) => onAttach([...attachments, ...files].slice(0, MAX_ATTACHMENTS));
   const drop = useDropTarget(editor, addFiles);
-  // Focus and typing keep it compact; only what the compact card cannot show opens the full one.
-  const compactNow = (compact || narrow) && !expanded && !fresh && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
+  const compactNow = ((compact && !fresh) || narrow) && !expanded && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
   const pills = (session || (fresh && driver)) && (
     <ComposerPills
       {...props}
