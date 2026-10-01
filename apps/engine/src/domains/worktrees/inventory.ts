@@ -278,9 +278,7 @@ async function collectDrafts(deps: InventoryDeps, input: InventoryInput, roots: 
     }
   }
   for (const draft of drafts.values()) {
-    // A recorded or registered checkout outside the scanned roots — one cut
-    // before the root moved and never migrated. It still exists and still costs
-    // disk, so it is asked about directly rather than left off the list.
+    // A recorded checkout outside the scanned roots was cut before the root moved; it still costs disk.
     if (!draft.onDisk && input.rootsReadable) draft.onDisk = fs.existsSync(draft.path);
   }
   return { drafts, bases, partial };
@@ -322,8 +320,11 @@ export async function buildInventory(deps: InventoryDeps, input: InventoryInput)
   let partial = collected.partial;
   let measuring = false;
 
+  const ownRoots = new Set(roots.map(canonical));
   const rows: WorktreeRow[] = [];
   for (const draft of collected.drafts.values()) {
+    // git lists every worktree of the project, including another Telar home's; only ours are rows.
+    if (!draft.session && !ownRoots.has(canonical(path.dirname(draft.path))) && draft.registration?.isMainCheckout !== true) continue;
     const project = draft.project;
     const readable = input.rootsReadable && (project?.available ?? true);
     const branch = draft.session?.branch ?? draft.registration?.branch;

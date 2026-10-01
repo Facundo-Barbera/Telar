@@ -179,3 +179,26 @@ test("the summary counts the checkout where it lives, and offers to move it to t
   expect(summary.locations[1]!.move).toMatchObject({ movable: { count: 1 }, staying: { busy: 0, dirty: 0, unowned: 0, detached: 0 } });
   expect(summary.states.find((entry) => entry.state === "in-use")!.worktrees.count).toBe(1);
 });
+
+test("a worktree another Telar home made on the same project is never counted, released or moved", async () => {
+  const { store, engineRoot, projectRoot } = await withCheckout("session_ours");
+  const otherHome = tmp("telar-movestore-other-home-");
+  const other = new EngineStore(otherHome, () => Date.now());
+  other.projectRegistry.register({ id: "project_one", name: "One", root: projectRoot });
+  other.lifecycle.createSession({ id: "session_theirs", projectId: "project_one", envMode: "worktree" });
+  expect(await until(() => Boolean(pathOf(other, "session_theirs")) && fs.existsSync(pathOf(other, "session_theirs")!))).toBe(true);
+  const theirs = pathOf(other, "session_theirs")!;
+
+  const summary = await store.worktrees.summary({ refresh: true });
+  expect(summary.locations.map((location) => location.folder)).not.toContain(path.dirname(theirs));
+  expect((await store.worktrees.inventory()).rows.map((row) => row.path)).not.toContain(theirs);
+
+  for (const state of ["orphaned", "archived", "unchanged", "idle"] as const) await store.worktrees.releaseState(state);
+  expect(await store.worktrees.reclaim([{ path: theirs, confirm: path.basename(theirs) }])).toEqual([{ path: theirs, ok: false, refusal: "not-found" }]);
+  const destination = path.join(tmp("telar-movestore-dest-"), "checkouts");
+  writeWorktreesRoot(engineRoot, destination);
+  expect(await store.worktrees.move(destination, path.dirname(theirs))).toEqual({ moved: [], skipped: [] });
+
+  expect(fs.existsSync(theirs)).toBe(true);
+  expect(pathOf(other, "session_theirs")).toBe(theirs);
+});

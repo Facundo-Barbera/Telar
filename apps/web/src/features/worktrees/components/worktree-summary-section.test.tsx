@@ -16,9 +16,10 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
 const GB = 1024 ** 3;
 const tally = (count: number, gb: number) => ({ count, bytes: gb * GB, unmeasured: 0 });
 
-const CURRENT: WorktreeLocation = { folder: "/Volumes/Taller/worktrees", volume: "Taller", present: true, current: true, worktrees: tally(8, 3) };
+const CURRENT: WorktreeLocation = { folder: "/Volumes/Taller/worktrees", label: "Taller", volume: "Taller", present: true, current: true, worktrees: tally(8, 3) };
 const OLD: WorktreeLocation = {
   folder: "/Volumes/Focaltec HD/live/Telar",
+  label: "Focaltec HD",
   volume: "Focaltec HD",
   present: true,
   current: false,
@@ -111,24 +112,27 @@ async function mount() {
 }
 
 describe("Settings ▸ Storage ▸ where worktrees live", () => {
-  test("each location shows its count and size, the current one marked, with when it was checked", async () => {
+  test("each location is labelled and counted, the current one marked, with when it was checked; paths stay in tooltips", async () => {
     const view = await mount();
-    expect(view.text()).toContain("/Volumes/Taller/worktrees — 8 worktrees · 3.0 GB");
-    expect(view.text()).toContain("/Volumes/Focaltec HD/live/Telar — 150 worktrees · 40 GB");
-    expect(view.text()).toContain("current");
+    expect(view.text()).toContain("Tallercurrent8 worktrees · 3.0 GB");
+    expect(view.text()).toContain("Focaltec HD150 worktrees · 40 GB");
     expect(view.text()).toContain("Checked 2m ago.");
+    expect(view.text()).not.toContain("/Volumes/");
+    expect(view.host.querySelector('[title="/Volumes/Focaltec HD/live/Telar"]')?.textContent).toBe("Focaltec HD");
     view.unmount();
   });
 
-  test("the move button names the source, the destination, the count and the size", async () => {
+  test("the move button is short: count, size and the destination's label", async () => {
     const view = await mount();
-    expect(view.button("Move 143 worktrees (38 GB) from Focaltec HD to Taller")).toBeDefined();
+    const button = view.button("Move 143 worktrees · 38 GB to Taller");
+    expect(button?.getAttribute("title")).toBe("/Volumes/Focaltec HD/live/Telar → /Volumes/Taller/worktrees");
     view.unmount();
   });
 
-  test("before moving it says how many stay put and why; afterwards it shows the outcome in numbers", async () => {
+  test("before moving it shows the full paths and how many stay put; afterwards the outcome in numbers", async () => {
     const view = await mount();
-    await view.click(view.button("Move 143 worktrees (38 GB) from Focaltec HD to Taller")!);
+    await view.click(view.button("Move 143 worktrees · 38 GB to Taller")!);
+    expect(view.text()).toContain("Move 143 worktrees from /Volumes/Focaltec HD/live/Telar to /Volumes/Taller/worktrees?");
     expect(view.text()).toContain("7 will stay put: 5 have uncommitted changes, 1 has a turn running, 1 belongs to no session.");
     expect(calls.some((call) => call.url === "/api/worktrees-root/move")).toBe(false);
 
@@ -138,21 +142,20 @@ describe("Settings ▸ Storage ▸ where worktrees live", () => {
     view.unmount();
   });
 
-  test("with nothing movable the button is disabled and says why in one line", async () => {
+  test("with nothing movable there is no button, only a short line saying why", async () => {
     summary = summaryWith([CURRENT, { ...OLD, move: { movable: tally(0, 0), staying: { busy: 0, dirty: 2, unowned: 0, detached: 0 } } }]);
     const view = await mount();
-    const button = view.button("Move from Focaltec HD to Taller");
-    expect(button?.hasAttribute("disabled")).toBe(true);
+    expect(view.buttonStarting("Move")).toBeUndefined();
     expect(view.text()).toContain("Nothing here can move. 2 will stay put: 2 have uncommitted changes.");
     view.unmount();
   });
 
-  test("a drive that is not plugged in is shown as such and cannot be moved from", async () => {
+  test("a drive that is not plugged in is shown as such, with no move button", async () => {
     summary = summaryWith([CURRENT, { ...OLD, present: false, move: undefined } as WorktreeLocation]);
     const view = await mount();
     expect(view.text()).toContain("not connected");
-    expect(view.buttonStarting("Move")?.hasAttribute("disabled")).toBe(true);
-    expect(view.text()).toContain("The drive is not connected.");
+    expect(view.buttonStarting("Move")).toBeUndefined();
+    expect(view.text()).toContain("Plug the drive in to move these.");
     view.unmount();
   });
 });

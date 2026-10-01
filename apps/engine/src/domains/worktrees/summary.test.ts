@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { WorktreeRow } from "@telar/engine-client";
-import { summarizeWorktrees, volumeOf, type SessionFacts, type SummaryInput } from "./summary";
+import { labelOf, summarizeWorktrees, volumeOf, type SessionFacts, type SummaryInput } from "./summary";
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = 100 * DAY;
@@ -30,6 +30,7 @@ function summarize(rows: WorktreeRow[], options: { sessions?: Record<string, Par
     inventory: { rows, roots: [], partial: false, measuredAt: NOW - 5_000 },
     sessions,
     current: options.current ?? "/Volumes/New/wt",
+    defaultRoot: "/Users/me/.telar/engine/worktrees",
     idleDays: 7,
     now: NOW,
     exists: (folder) => present.has(folder),
@@ -109,7 +110,13 @@ test("sizes not measured yet are reported as such, never as zero", () => {
   expect(summary.locations.find((location) => location.folder === "/Users/me/wt")!.worktrees).toEqual({ count: 1, bytes: 0, unmeasured: 1 });
 });
 
-test("a drive's name comes from its mount point; this Mac's own disk has none", () => {
+test("a location is labelled Default, by its drive, or by its last two folders", () => {
+  expect(labelOf("/Users/me/.telar/engine/worktrees", "/Users/me/.telar/engine/worktrees")).toBe("Default");
+  expect(labelOf("/Volumes/Focaltec HD/live/Telar", "/Users/me/.telar/engine/worktrees")).toBe("Focaltec HD");
+  expect(labelOf("/Users/me/code/worktrees", "/Users/me/.telar/engine/worktrees")).toBe("code/worktrees");
+});
+
+test("a drive's name comes from its mount point; the host's own disk has none", () => {
   expect(volumeOf("/Volumes/Focaltec HD/live/Telar")).toBe("Focaltec HD");
   expect(volumeOf("/Users/me/Library/worktrees")).toBeUndefined();
 });

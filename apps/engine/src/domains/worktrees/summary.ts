@@ -11,6 +11,7 @@ export type SummaryInput = {
   sessions: ReadonlyMap<string, SessionFacts>;
   /** Where new worktrees are made; absent when the location cannot be used. */
   current?: string;
+  defaultRoot: string;
   idleDays: number;
   now: number;
   exists: (folder: string) => boolean;
@@ -26,10 +27,15 @@ export function stateOf(row: WorktreeRow, input: Pick<SummaryInput, "sessions" |
   return input.now - lastActiveAt > input.idleDays * DAY_MS ? "idle" : "recent";
 }
 
-/** A drive's name from its mount point; undefined for this Mac's own disk. */
+/** A drive's name from its mount point; undefined for the host's own disk. */
 export function volumeOf(folder: string): string | undefined {
   const parts = path.resolve(folder).split(path.sep);
   return parts[1] === "Volumes" && parts[2] ? parts[2] : undefined;
+}
+
+export function labelOf(folder: string, defaultRoot: string): string {
+  if (path.resolve(folder) === path.resolve(defaultRoot)) return "Default";
+  return volumeOf(folder) ?? path.resolve(folder).split(path.sep).filter(Boolean).slice(-2).join("/");
 }
 
 function driveMissing(folder: string, exists: SummaryInput["exists"]): boolean {
@@ -82,6 +88,7 @@ function locationsOf(rows: readonly WorktreeRow[], input: SummaryInput): Worktre
       const volume = volumeOf(folder);
       return {
         folder,
+        label: labelOf(folder, input.defaultRoot),
         ...(volume ? { volume } : {}),
         present,
         current: isCurrent,
