@@ -90,7 +90,7 @@ private struct SentImageThumbnail: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .task(id: attachment.id) {
             guard let source else { return }
-            image = await AttachmentCache.shared.image(host: source.host, session: source.session, attachmentId: attachment.id, fetch: source.fetch)
+            image = await AttachmentCache.shared.image(host: source.host, session: source.session, attachmentId: attachment.id, side: Thumbnail.tile, fetch: source.fetch)
         }
     }
 }
