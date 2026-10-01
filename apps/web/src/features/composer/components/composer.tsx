@@ -13,6 +13,7 @@ import { markComposerActive, type ComposerSubmit } from "../registry";
 import { hasUltrathink, toggleUltrathink } from "../model-options";
 import { useComposerCommandChoices } from "../hooks/use-composer-command-choices";
 import { useComposerCompletions } from "../hooks/use-composer-completions";
+import { useComposerFit } from "../hooks/use-composer-fit";
 import { composerKeyHandler, useEscArm } from "../hooks/use-composer-keys";
 import { useComposerRegistration } from "../hooks/use-composer-registration";
 import { MAX_ATTACHMENTS, useComposerStash } from "../hooks/use-composer-stash";
@@ -75,12 +76,25 @@ function useExpanded(compact: boolean) {
   return [expanded, () => setExpanded(true)] as const;
 }
 
+function ComposerContext({ usage, session, onCompact, busy, sending, compacting }: ComposerProps) {
+  return (
+    <ContextPill
+      {...(usage ? { usage } : {})}
+      {...(session ? { driver: session.driver } : {})}
+      {...(onCompact ? { onCompact } : {})}
+      compactDisabled={busy || sending || Boolean(compacting)}
+      compactReason={compactBlockedReason({ busy, ...(compacting ? { compacting } : {}) }) ?? "Sending…"}
+    />
+  );
+}
+
 export function Composer(props: ComposerProps) {
   const { draft, ready, compact = false, kind = "session", attachments, onAttach, fresh = false, driver, busy, sending, session, projectId, onDraftChange, onStop } = props;
   const editor = useRef<ComposerEditorHandle>(null);
   // Reported up by the environment strip, which already polls the project's git state.
   const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
   const [expanded, expand] = useExpanded(compact);
+  const { root, row, narrow } = useComposerFit();
   const [resuming, setResuming] = useState(false);
   const startResume = useCallback(() => setResuming(true), []);
   const token = useId();
@@ -114,6 +128,7 @@ export function Composer(props: ComposerProps) {
   const drop = useDropTarget(editor, addFiles);
   // Focus and typing keep it compact; only what the compact card cannot show opens the full one.
   const compactNow = compact && !expanded && !fresh && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
+  const oneLine = compactNow || narrow;
   const pills = (session || (fresh && driver)) && (
     <ComposerPills
       {...props}
@@ -146,6 +161,7 @@ export function Composer(props: ComposerProps) {
 
   return (
     <div
+      ref={root}
       className={cn(
         "@container/composer relative mx-auto flex w-full max-w-[50rem] shrink-0 flex-col gap-1.5 px-4 pt-2 pb-5",
         "transition-transform duration-500 ease-[cubic-bezier(.22,1,.36,1)] motion-reduce:transition-none",
@@ -178,7 +194,8 @@ export function Composer(props: ComposerProps) {
               text={question.boxText}
               placeholder={question.active ? "Type your own answer, or leave blank…" : placeholderFor(ready, busy)}
               ready={ready}
-              compact={compactNow}
+              compact={oneLine}
+              controlsRef={row}
               draft={draft}
               attachments={attachments}
               onAttach={onAttach}
@@ -188,39 +205,30 @@ export function Composer(props: ComposerProps) {
               onSelectionChange={() => !question.active && menu.retrigger(draft)}
               onKeyDown={onKeyDown}
               onFocus={() => markComposerActive(token)}
-              onExpand={() => {
-                expand();
-                editor.current?.focus();
-              }}
+              {...(compactNow && !narrow
+                ? {
+                    onExpand: () => {
+                      expand();
+                      editor.current?.focus();
+                    },
+                  }
+                : {})}
               stash={stash}
               menu={menu}
               pick={pick}
               drop={drop}
               pills={pills}
               trailing={
-                compactNow ? (
-                  <>
-                    <DictationButton dictation={dictation} />
-                    {send}
-                  </>
-                ) : (
-                  <>
-                    <ContextPill
-                      {...(props.usage ? { usage: props.usage } : {})}
-                      {...(session ? { driver: session.driver } : {})}
-                      {...(props.onCompact ? { onCompact: props.onCompact } : {})}
-                      compactDisabled={busy || sending || Boolean(props.compacting)}
-                      compactReason={compactBlockedReason({ busy, ...(props.compacting ? { compacting: props.compacting } : {}) }) ?? "Sending…"}
-                    />
-                    <DictationButton dictation={dictation} />
-                    {send}
-                  </>
-                )
+                <>
+                  {!compactNow && <ComposerContext {...props} />}
+                  <DictationButton dictation={dictation} />
+                  {send}
+                </>
               }
             />
           </DictationGlow>
         </form>
-        <ComposerFoot props={props} compact={compactNow} pills={pills} hidden={dictation.phase !== "idle"} onAvailability={setDriveAway} />
+        <ComposerFoot props={props} tray={oneLine} compact={compactNow} pills={pills} hidden={dictation.phase !== "idle"} onAvailability={setDriveAway} />
       </div>
     </div>
   );
