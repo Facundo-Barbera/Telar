@@ -93,6 +93,8 @@ const STOP_REAP_GRACE_MS = 3_000;
 
 export const UNATTENDED_BACKGROUND_WORK_MS = 30 * 60_000;
 
+export const IDLE_RUNTIME_MS = 30 * 60_000;
+
 type UnattendedStop = {
   sessionId: string;
   taskId: string;
@@ -107,20 +109,23 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
   private readonly liveBackgroundWork: (seed: Seed) => boolean;
   private readonly now: () => number;
   private readonly unattendedAfterMs: number;
+  private readonly idleAfterMs: number;
   private readonly onUnattended: ((stops: readonly UnattendedStop[]) => void) | undefined;
-  private unattendedTimer: ReturnType<typeof setTimeout> | undefined;
+  private sweepTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     options: {
       liveBackgroundWork?: (seed: Seed) => boolean;
       now?: () => number;
       unattendedAfterMs?: number;
+      idleAfterMs?: number;
       onUnattended?: (stops: readonly UnattendedStop[]) => void;
     } = {},
   ) {
     this.liveBackgroundWork = options.liveBackgroundWork ?? (() => false);
     this.now = options.now ?? Date.now;
     this.unattendedAfterMs = options.unattendedAfterMs ?? Infinity;
+    this.idleAfterMs = options.idleAfterMs ?? Infinity;
     this.onUnattended = options.onUnattended;
   }
 
@@ -128,40 +133,41 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     return [...runtime.tasks.known.values()].filter((seed) => this.liveBackgroundWork(seed));
   }
 
-  private armUnattendedSweep(): void {
-    if (this.unattendedTimer) clearTimeout(this.unattendedTimer);
-    this.unattendedTimer = undefined;
-    if (!Number.isFinite(this.unattendedAfterMs)) return;
-    let earliest: number | undefined;
-    for (const runtime of this.runtimes.values()) {
-      if (runtime.busy || runtime.wakeActive) continue;
-      if (this.liveWorkIn(runtime).length === 0) continue;
-      const due = runtime.lastUsedAt + this.unattendedAfterMs;
-      if (earliest === undefined || due < earliest) earliest = due;
-    }
-    if (earliest === undefined) return;
-    const timer = setTimeout(() => void this.sweepUnattended(), Math.max(0, earliest - this.now()));
-    timer.unref?.();
-    this.unattendedTimer = timer;
+  private dueAt(runtime: ClaudeSessionRuntime<T, Seed>): number | undefined {
+    if (runtime.busy || runtime.wakeActive) return undefined;
+    const afterMs = this.liveWorkIn(runtime).length > 0 ? this.unattendedAfterMs : this.idleAfterMs;
+    return Number.isFinite(afterMs) ? runtime.lastUsedAt + afterMs : undefined;
   }
 
-  async sweepUnattended(): Promise<UnattendedStop[]> {
+  private armSweep(): void {
+    if (this.sweepTimer) clearTimeout(this.sweepTimer);
+    this.sweepTimer = undefined;
+    let earliest: number | undefined;
+    for (const runtime of this.runtimes.values()) {
+      const due = this.dueAt(runtime);
+      if (due !== undefined && (earliest === undefined || due < earliest)) earliest = due;
+    }
+    if (earliest === undefined) return;
+    const timer = setTimeout(() => void this.sweep(), Math.max(0, earliest - this.now()));
+    timer.unref?.();
+    this.sweepTimer = timer;
+  }
+
+  async sweep(): Promise<UnattendedStop[]> {
     const stopped: UnattendedStop[] = [];
     const at = this.now();
     for (const runtime of [...this.runtimes.values()]) {
-      if (runtime.busy || runtime.wakeActive) continue;
+      const due = this.dueAt(runtime);
+      if (due === undefined || at < due) continue;
       const idleForMs = at - runtime.lastUsedAt;
-      if (idleForMs < this.unattendedAfterMs) continue;
-      const live = this.liveWorkIn(runtime);
-      if (live.length === 0) continue;
-      for (const seed of live) {
+      for (const seed of this.liveWorkIn(runtime)) {
         const took = seed.providerTaskId === undefined ? false : await this.stopTask(runtime.sessionId, seed.providerTaskId);
         stopped.push({ sessionId: runtime.sessionId, taskId: seed.id, providerTaskId: seed.providerTaskId, idleForMs, stopped: took });
       }
-      this.destroy(runtime.sessionId);
+      if (this.runtimes.get(runtime.sessionId) === runtime && this.dueAt(runtime) !== undefined) this.destroy(runtime.sessionId);
     }
     if (stopped.length > 0) this.onUnattended?.(stopped);
-    this.armUnattendedSweep();
+    this.armSweep();
     return stopped;
   }
 
@@ -213,7 +219,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.busy = true;
     runtime.wakeActive = false;
     runtime.lastUsedAt = this.now();
-    this.armUnattendedSweep();
+    this.armSweep();
     return runtime;
   }
 
@@ -231,7 +237,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.lastUsedAt = this.now();
     this.runtimes.set(runtime.sessionId, runtime);
     this.prune();
-    this.armUnattendedSweep();
+    this.armSweep();
   }
 
   async stopTask(sessionId: string, providerTaskId: string): Promise<boolean> {
@@ -248,7 +254,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.lastUsedAt = this.now();
     this.wakeIdle(sessionId);
     this.prune();
-    this.armUnattendedSweep();
+    this.armSweep();
   }
 
   setWakeActive(sessionId: string, active: boolean): void {
@@ -257,7 +263,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
     runtime.wakeActive = active;
     runtime.lastUsedAt = this.now();
     if (!active) this.prune();
-    this.armUnattendedSweep();
+    this.armSweep();
   }
 
   reapAfter(sessionId: string, graceMs: number = STOP_REAP_GRACE_MS): () => void {
@@ -278,13 +284,13 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
       runtime.destroy();
     } catch {
     }
-    this.armUnattendedSweep();
+    this.armSweep();
   }
 
   destroyAll(): void {
     for (const sessionId of this.runtimes.keys()) this.destroy(sessionId);
-    if (this.unattendedTimer) clearTimeout(this.unattendedTimer);
-    this.unattendedTimer = undefined;
+    if (this.sweepTimer) clearTimeout(this.sweepTimer);
+    this.sweepTimer = undefined;
   }
 
   get size(): number {

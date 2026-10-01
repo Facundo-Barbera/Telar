@@ -5,7 +5,7 @@ import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type TaskSeed }
 import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "../../domains/providers";
 import { pluginBriefings } from "../../domains/plugins";
 import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv } from "./identity";
-import { ClaudeRuntimeStore, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
+import { ClaudeRuntimeStore, IDLE_RUNTIME_MS, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
 import { framedSteerText } from "../../domains/turns";
 import { ProviderUnavailableError, requireCwd, type DriverResult, type DriverRun, type TurnDriver } from "../contract";
 import { claudeInitialContent, claudeNotificationOrigin, claudeNotificationContent, claudeStreamingInputEnabled, claudeMcpServers, claudeContextEnvForModel, claudeToolSearchEnv, SESSION_STATE_ENV, claudeWindowOf, selectedContextMaxFromModel, claudeEffort, type ClaudeTurnBindings, type ClaudeSdk } from "./sdk";
@@ -70,6 +70,7 @@ export function createClaudeDriver(
   const runtimes = new ClaudeRuntimeStore<ClaudeTurnBindings, TaskSeed>({
     liveBackgroundWork: (seed) => isBackgroundWork(seed) && !isTerminalTaskState(seed.state),
     unattendedAfterMs: options.unattendedBackgroundWorkMs ?? UNATTENDED_BACKGROUND_WORK_MS,
+    idleAfterMs: IDLE_RUNTIME_MS,
     onUnattended: (stops) => {
       for (const stop of stops) {
         console.error(
