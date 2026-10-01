@@ -273,7 +273,7 @@ test("and draws nothing of its own — no hairline, no after:bg-*", () => {
 
 test("but it is still a handle, and still reachable by keyboard", () => {
   const html = resizeHandle();
-  expect(html).toContain("w-4");
+  expect(html).toContain("w-[var(--app-island-inset)]");
   expect(html).toContain("cursor-col-resize");
   expect(html).toContain("focus-visible:ring-ring");
 });

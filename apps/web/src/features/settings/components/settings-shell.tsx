@@ -179,7 +179,7 @@ export function SettingsShell({
     <div
       data-surfaces
       ref={wrapperRef}
-      className="app-ground flex h-full min-h-0 bg-background text-foreground md:gap-2 md:bg-transparent"
+      className="app-ground flex h-full min-h-0 bg-background text-foreground md:bg-transparent"
       style={{ "--settings-nav-width": `${navWidth}px` } as CSSProperties}
     >
       <nav
@@ -234,7 +234,7 @@ export function SettingsShell({
           event.preventDefault();
           startDrag();
         }}
-        className="app-no-drag -mx-2 hidden w-4 shrink-0 cursor-col-resize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block"
+        className="app-no-drag hidden w-[var(--app-island-inset)] shrink-0 cursor-col-resize focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:block"
       />
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:rounded-xl md:bg-sidebar md:shadow-1 md:ring-1 md:ring-sidebar-border">
