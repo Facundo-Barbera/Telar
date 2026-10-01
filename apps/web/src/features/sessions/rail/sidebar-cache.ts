@@ -53,3 +53,39 @@ export function writeSidebarCache(cache: SidebarCache): void {
   } catch {
   }
 }
+
+const SETTLED_CACHE_KEY = "telar-settled-cache";
+
+/** Each host's settled shelf as last read, with the tag that lets the engine answer 304 for it. */
+export type SettledCache = Record<string, { etag: string; sessions: SidebarSession[] }>;
+
+function parseSettledCache(raw: string | null): SettledCache {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: SettledCache = {};
+    for (const [hostId, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      const { etag, sessions } = (entry ?? {}) as { etag?: unknown; sessions?: unknown };
+      if (typeof etag === "string" && Array.isArray(sessions)) out[hostId] = { etag, sessions: sessions as SidebarSession[] };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function readSettledCache(): SettledCache {
+  try {
+    return parseSettledCache(window.localStorage.getItem(SETTLED_CACHE_KEY));
+  } catch {
+    return {};
+  }
+}
+
+export function writeSettledCache(cache: SettledCache): void {
+  try {
+    window.localStorage.setItem(SETTLED_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+  }
+}

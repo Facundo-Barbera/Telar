@@ -1,4 +1,4 @@
-export { asEngineError, createEngineApi, EngineApiError, newRunId, refusedBy } from "./client";
+export { asEngineError, createEngineApi, EngineApiError, newRunId, refusedBy, type LiveSessionsPage } from "./client";
 export { isActiveTurn, isCompacting, isToolItem, itemLabel, itemText, toolOutput } from "./journal-items";
 export { hostPassiveArrivals } from "./journal-arrivals";
 export { createJournalProjector } from "./journal-projector";

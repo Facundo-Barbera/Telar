@@ -23,6 +23,13 @@ import type { Fetcher } from "./host-client";
 import type { LiveSessionsPage } from "./client";
 import { randomUuid } from "@/platform/random-uuid";
 
+/** `all` adds the settled rows to the list; `shelf` asks for them alone. */
+type LiveScope = { all?: boolean; shelf?: boolean };
+
+// An engine that predates `shelf` reads it as `all`, which still carries every settled row.
+const livePath = ({ all, shelf }: LiveScope): string =>
+  shelf ? "/api/sessions/live?all=1&shelf=1" : all ? "/api/sessions/live?all=1" : "/api/sessions/live";
+
 /** The cockpit's own sessions calls: the ones no package domain client covers yet. */
 export function sessionCalls(fetcher: Fetcher) {
   return {
@@ -51,8 +58,7 @@ export function sessionCalls(fetcher: Fetcher) {
       request<unknown>(fetcher, "POST", `/api/sessions/${encodeURIComponent(sessionId)}/plugins/${encodeURIComponent(plugin)}/${encodeURIComponent(verb)}`, input),
     updateMachinePlugins: (plugins: Record<string, { enabled: boolean; settings?: Record<string, unknown> } | null>) =>
       request<{ machine: ProjectPlugins }>(fetcher, "PATCH", "/api/plugins", { plugins }),
-    liveSessions: (options: { all?: boolean } = {}) =>
-      request<LiveSessionsPage>(fetcher, "GET", options.all ? "/api/sessions/live?all=1" : "/api/sessions/live"),
+    liveSessions: (options: LiveScope = {}) => request<LiveSessionsPage>(fetcher, "GET", livePath(options)),
     projectActivity: () =>
       request<{ projects: Array<{ projectId: string; updatedAt: number }> }>(fetcher, "GET", "/api/sessions/activity"),
     liveSessionsSince: (since: number) =>
@@ -62,9 +68,9 @@ export function sessionCalls(fetcher: Fetcher) {
         `/api/sessions/live?since=${encodeURIComponent(String(since))}`,
       ),
     liveSessionsMatching: async (
-      options: { etag?: string; all?: boolean } = {},
+      options: LiveScope & { etag?: string } = {},
     ): Promise<{ notModified: true; etag: string } | (LiveSessionsPage & { notModified?: false; etag?: string })> => {
-      const pathname = options.all ? "/api/sessions/live?all=1" : "/api/sessions/live";
+      const pathname = livePath(options);
       await reads.take();
       let response: Response;
       try {

@@ -64,3 +64,87 @@ test("a project added while the rail is mid-read still shows up", async () => {
 
   expect(host.textContent).toBe("exoplanets");
 });
+
+type Data = ReturnType<typeof useRailData>;
+
+function Shelf({ into }: { into: { current?: Data } }) {
+  const data = useRailData();
+  into.current = data;
+  return <p>{data.sessions.map((session) => session.title).join(",")}</p>;
+}
+
+const at = Date.now();
+const row = (id: string, extra: Record<string, unknown> = {}) => ({ id, title: id, projectId: "p1", createdAt: at, updatedAt: at, state: "active", driver: "claude", workspace: { mode: "local" }, activity: "idle", ...extra });
+
+function stubShelf() {
+  const shelfReads: { ifNoneMatch?: string }[] = [];
+  const state = { hold: false, release: [] as (() => void)[] };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/api/hosts")) return Response.json({ hosts: [] });
+    const ifNoneMatch = (init?.headers as Record<string, string> | undefined)?.["if-none-match"];
+    if (url.includes("shelf=1")) {
+      shelfReads.push(ifNoneMatch ? { ifNoneMatch } : {});
+      const answer = () => Response.json({ projects: [], sessions: [row("settled one", { settledOverride: "settled" })] }, { headers: { etag: "shelf-1" } });
+      if (!state.hold) return answer();
+      return new Promise<Response>((resolve) => state.release.push(() => resolve(answer())));
+    }
+    if (url.includes("/api/sessions/live") && ifNoneMatch === "lean-1") return new Response(null, { status: 304, headers: { etag: "lean-1" } });
+    if (url.includes("/api/sessions/live")) return Response.json({ projects: [], sessions: [row("open one")], settledCount: 1 }, { headers: { etag: "lean-1" } });
+    return Response.json({});
+  }) as typeof fetch;
+  return { shelfReads, state };
+}
+
+async function mountShelf() {
+  const into: { current?: Data } = {};
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  await act(async () => root!.render(<Shelf into={into} />));
+  await flush();
+  return { host, into };
+}
+
+test("a shelf read before shows the moment it is reopened, while the engine is still being asked", async () => {
+  window.localStorage.clear();
+  const { shelfReads, state } = stubShelf();
+  const { host, into } = await mountShelf();
+  act(() => into.current!.toggleSettled());
+  await flush();
+  act(() => into.current!.toggleSettled());
+  state.hold = true;
+  act(() => into.current!.toggleSettled());
+  expect(host.textContent).toContain("settled one");
+  await flush();
+  expect(shelfReads.at(-1)).toEqual({ ifNoneMatch: "shelf-1" });
+  state.release.forEach((release) => release());
+  await flush();
+});
+
+test("the last launch's shelf shows before the first read of this one answers", async () => {
+  window.localStorage.clear();
+  window.localStorage.setItem("telar-settled-cache", JSON.stringify({ local: { etag: "shelf-1", sessions: [{ ...row("kept from before"), settledOverride: "settled" }] } }));
+  const { shelfReads, state } = stubShelf();
+  state.hold = true;
+  const { host, into } = await mountShelf();
+  act(() => into.current!.toggleSettled());
+  expect(host.textContent).toContain("kept from before");
+  await flush();
+  expect(shelfReads).toEqual([{ ifNoneMatch: "shelf-1" }]);
+  state.release.forEach((release) => release());
+  await flush();
+});
+
+test("a row change makes the next pass read the shelf again", async () => {
+  window.localStorage.clear();
+  const { shelfReads } = stubShelf();
+  const { into } = await mountShelf();
+  act(() => into.current!.toggleSettled());
+  await flush();
+  await act(async () => into.current!.loadAll());
+  expect(shelfReads).toHaveLength(1);
+  act(() => into.current!.onRowChanged({ removed: "settled one" }));
+  await act(async () => into.current!.loadAll());
+  expect(shelfReads).toHaveLength(2);
+});
