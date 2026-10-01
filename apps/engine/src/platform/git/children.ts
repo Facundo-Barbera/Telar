@@ -1,4 +1,4 @@
-export const DEFAULT_GIT_CHILDREN_CAP = 16;
+const DEFAULT_GIT_CHILDREN_CAP = 16;
 
 /** Every live git child the engine spawned, across all pools and the sync runner. */
 export type GitChildren = {
