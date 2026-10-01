@@ -72,3 +72,32 @@ test("the shell and the engine agree what a held lock exits with, and it is not 
   onEngineExit(storeWithLock(1), ENGINE_EXIT_LOCK_HELD, null);
   expect(electron.dialog.shown[0].title).toBe("Telar is already running");
 });
+
+describe("stopping a child on quit", () => {
+  const { spawn } = require("node:child_process");
+  const { once } = require("node:events");
+  const nodeChild = (script) => spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
+
+  test("a child that honours SIGTERM is waited for, not killed", async () => {
+    const { stopChild } = freshEngineChild();
+    const child = nodeChild("console.log('ready'); setInterval(() => {}, 1000);");
+    await once(child.stdout, "data");
+    await stopChild(child, 60_000);
+    expect(child.signalCode).toBe("SIGTERM");
+  });
+
+  test("a child that ignores SIGTERM is SIGKILLed after the grace", async () => {
+    const { stopChild } = freshEngineChild();
+    const child = nodeChild("process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);");
+    await once(child.stdout, "data");
+    await stopChild(child, 50);
+    expect(child.signalCode).toBe("SIGKILL");
+  });
+
+  test("a child that already exited resolves at once", async () => {
+    const { stopChild } = freshEngineChild();
+    const child = nodeChild("");
+    await once(child, "exit");
+    await stopChild(child, 60_000);
+  });
+});

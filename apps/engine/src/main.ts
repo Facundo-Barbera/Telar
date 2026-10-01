@@ -72,9 +72,15 @@ process.stdout.write(
     `${daemon.worker ? ` with embedded worker ${daemon.worker.workerId}` : " (no embedded worker)"}\n`,
 );
 
-const stop = async () => {
-  await daemon.close();
-  process.exit(0);
+const STOP_DEADLINE_MS = 3_000;
+let stopping: Promise<void> | undefined;
+const stop = () => {
+  stopping ??= (async () => {
+    setTimeout(() => process.exit(0), STOP_DEADLINE_MS).unref();
+    await daemon.close();
+    process.exit(0);
+  })();
 };
-process.once("SIGINT", stop);
-process.once("SIGTERM", stop);
+process.on("SIGINT", stop);
+process.on("SIGTERM", stop);
+process.on("disconnect", stop);

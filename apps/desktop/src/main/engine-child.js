@@ -88,13 +88,32 @@ function startEngineChild(home, env) {
   return engineChild;
 }
 
+const ENGINE_STOP_GRACE_MS = 5_000;
+
+function stopChild(child, graceMs = ENGINE_STOP_GRACE_MS) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const force = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+      }
+    }, graceMs);
+    child.once("exit", () => {
+      clearTimeout(force);
+      resolve();
+    });
+    try {
+      child.kill("SIGTERM");
+    } catch {
+    }
+  });
+}
+
 function stopEngineChild() {
-  if (!engineChild || engineChild.killed) return;
-  try {
-    engineChild.kill("SIGTERM");
-  } catch {
-  }
+  const child = engineChild;
   engineChild = null;
+  return stopChild(child);
 }
 
 function engineDiscoveryFile(home) {
@@ -211,6 +230,7 @@ module.exports = {
   rememberEngine,
   reportStartupFailure,
   startEngineChild,
+  stopChild,
   stopEngineChild,
   waitForEngine,
 };

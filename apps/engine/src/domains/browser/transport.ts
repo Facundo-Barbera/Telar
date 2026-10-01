@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { OWN_GROUP, signalGroup } from "../../platform/process/group";
 import { browserErrorText, textOf } from "./helpers";
 import { BrowserToolResult } from "./tools";
 
@@ -22,7 +23,7 @@ export type BrowserProcess = {
 export type SpawnBrowserProcess = (command: string, args: readonly string[]) => BrowserProcess;
 
 const spawnBrowserProcess: SpawnBrowserProcess = (command, args) => {
-  const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"], detached: OWN_GROUP });
   return {
     write: (frame) => {
       child.stdin.write(frame);
@@ -35,9 +36,7 @@ const spawnBrowserProcess: SpawnBrowserProcess = (command, args) => {
         listener(signal ? `killed by ${signal}` : code ? `exited with code ${code}` : null),
       );
     },
-    kill: (signal) => {
-      child.kill(signal);
-    },
+    kill: (signal) => signalGroup(child, signal),
   };
 };
 
