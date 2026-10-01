@@ -1,10 +1,13 @@
 import path from "node:path";
+import { RELEASABLE_STATES, type ReleasableState } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
 import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { describeReclaim } from "./inventory";
 import { clearWorktreesRoot, defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker, writeWorktreesRoot } from "./location";
 import { describeOutcome } from "./move";
+
+const isReleasable = (value: unknown): value is ReleasableState => (RELEASABLE_STATES as readonly unknown[]).includes(value);
 
 const settledChoice = (value: unknown): { settled?: "archive" | "release" } => (value === "archive" || value === "release" ? { settled: value } : {});
 
@@ -33,6 +36,7 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
             throw new HttpError(400, "invalid_request", cause instanceof Error ? cause.message : "that folder could not be used for session checkouts");
           }
         } else throw new HttpError(400, "invalid_request", "a worktrees root must be an absolute path, or null for the default");
+        store.worktrees.forgetSummary();
         checkoutsChanged();
         return rootAnswer();
       },
@@ -41,13 +45,15 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
       method: "POST",
       path: "/v2/worktrees-root/move",
       auth: "engine",
-      async handle() {
+      async handle({ body }) {
+        if (typeof body.from !== "string" || !path.isAbsolute(body.from)) throw new HttpError(400, "invalid_request", "from must be the absolute folder to move worktrees out of");
         const state = readWorktreesRoot(store.paths.root);
         const destination = rootOf(state);
         if (!destination) throw new HttpError(409, "conflict", worktreesRootBlocker(state) ?? "Telar does not know where session checkouts belong.");
+        if (path.resolve(body.from) === path.resolve(destination)) throw new HttpError(409, "conflict", "those worktrees are already at the current location");
         let outcome;
         try {
-          outcome = await store.worktrees.move(destination);
+          outcome = await store.worktrees.move(destination, body.from);
         } catch (cause) {
           throw new HttpError(409, "conflict", cause instanceof Error ? cause.message : "the checkouts could not be moved");
         }
@@ -58,11 +64,22 @@ export function worktreesRoutes(store: EngineStore, checkoutsChanged: () => void
     // Never cached: every verdict here is acted on, and each can change by the second.
     { method: "GET", path: "/v2/worktrees", auth: "engine", handle: async () => ok({ inventory: await store.worktrees.inventory() }) },
     {
+      method: "GET",
+      path: "/v2/worktrees/summary",
+      auth: "engine",
+      handle: async ({ query }) => ok({ summary: await store.worktrees.summary({ refresh: query.get("refresh") === "1" }) }),
+    },
+    {
       method: "POST",
       path: "/v2/worktrees/reclaim",
       auth: "engine",
       // Archives the sessions that held them; a partial outcome is still a 200 with the refusals in it.
       async handle({ body }) {
+        if (isReleasable(body.state)) {
+          const results = await store.worktrees.releaseState(body.state);
+          checkoutsChanged();
+          return ok({ reclaim: { results, summary: describeReclaim(results) } });
+        }
         if (!Array.isArray(body.items)) throw new HttpError(400, "invalid_request", "items must be an array of checkouts to give back");
         const items = body.items.map((entry) => {
           const item = entry as { path?: unknown; confirm?: unknown; settled?: unknown };

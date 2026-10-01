@@ -2,24 +2,23 @@
 
 import { CopyIcon, HardDriveIcon, TrashIcon } from "lucide-react";
 import { formatBytes } from "@/ui/format";
-import { progressLabel, REMOVABLE_DRIVE_WARNING, useStoreStatus } from "../desktop-store";
+import { REMOVABLE_DRIVE_WARNING, useStoreStatus } from "../desktop-store";
 import { useStoreActions } from "../hooks/use-store-actions";
 import { Row, SettingsGroup } from "@/features/settings";
 import { Button } from "@/ui/button";
 
 export function StoreSection() {
   const { status, supported, refresh } = useStoreStatus();
-  const { progress, busy, failure, moved, copying, copied, copyStore, move, removeOld, keepOld } = useStoreActions(refresh);
+  const { busy, failure, copying, copied, copyStore, removeOld, keepOld } = useStoreActions(refresh);
 
   if (!supported) {
     return (
       <SettingsGroup title="Store">
-        <Row icon={HardDriveIcon} label="Desktop app only" hint="This browser tab has no store of its own to move." />
+        <Row icon={HardDriveIcon} label="Desktop app only" hint="This browser tab has no store of its own." />
       </SettingsGroup>
     );
   }
 
-  const onVolume = Boolean(status?.volume);
   const where = status?.volume?.label ? `${status.volume.label} · ${status.path}` : status?.path;
 
   return (
@@ -27,26 +26,9 @@ export function StoreSection() {
       <Row
         icon={HardDriveIcon}
         label="Location"
-        hint={
-          status?.pinnedByEnvironment
-            ? `${status.path} (pinned by TELAR_HOME).`
-            : moved
-              ? "Moved. Takes effect on the next start; the old store stays on disk."
-              : onVolume
-                ? `${where} — on a drive. ${REMOVABLE_DRIVE_WARNING}`
-                : where
-        }
+        hint={status?.pinnedByEnvironment ? `${status.path} (pinned by TELAR_HOME).` : where}
+        {...(status?.volume ? { info: REMOVABLE_DRIVE_WARNING } : {})}
         {...(failure ? { error: failure } : {})}
-        control={
-          status?.pinnedByEnvironment ? null : (
-            <span className="flex items-center gap-2">
-              {busy ? <span className="text-xs text-muted-foreground">{progressLabel(progress) ?? "Working…"}</span> : null}
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void move()}>
-                Move…
-              </Button>
-            </span>
-          )
-        }
       />
       <Row
         icon={CopyIcon}

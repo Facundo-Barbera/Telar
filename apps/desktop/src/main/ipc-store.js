@@ -2,10 +2,9 @@ const { ipcMain, shell, BrowserWindow, dialog, app } = require("electron");
 const { openersWithIcons, bundleIcon, discoverOpeners, openWith } = require("./workspace-openers");
 const path = require("node:path");
 const fs = require("node:fs");
-const { readMarker, setPending, clearPending, adoptStore, clearRetired } = require("../store/store-location");
+const { readMarker, clearRetired } = require("../store/store-location");
 const { DEV_BUILD } = require("./flags");
-const { volumeIdentityFor } = require("./volumes");
-const { retiredSubtrees, preflight: preflightMove, migrateStore, deleteRetiredSubtrees } = require("../store/store-migrate");
+const { retiredSubtrees, deleteRetiredSubtrees } = require("../store/store-retired");
 
 function registerWorkspaceAndStoreIpc(main) {
   const { telarHome } = main;
@@ -72,43 +71,6 @@ function registerWorkspaceAndStoreIpc(main) {
   }
 
   ipcMain.handle("telar:store:status", () => storeStatus());
-
-  ipcMain.handle("telar:store:preflight", (_event, input) => {
-    const target = typeof input?.path === "string" ? input.path.trim() : "";
-    if (!target) return { ok: false, message: "Choose a folder." };
-    return preflightMove({ source: telarHome(), target });
-  });
-
-  ipcMain.handle("telar:store:move", async (event, input) => {
-    const target = typeof input?.path === "string" ? input.path.trim() : "";
-    if (!target) return { ok: false, message: "Choose a folder." };
-    const source = telarHome();
-    const userData = app.getPath("userData");
-    const { marker } = readMarker(userData);
-    if (!marker?.active) return { ok: false, message: "Telar has not settled on a store yet." };
-
-    setPending(userData, { path: target });
-    const outcome = await migrateStore({
-      source,
-      target,
-      onProgress: (progress) => {
-        if (!event.sender.isDestroyed()) event.sender.send("telar:store:progress", progress);
-      },
-    });
-    if (!outcome.ok) {
-      clearPending(userData);
-      return outcome;
-    }
-
-    adoptStore(userData, {
-      path: target,
-      storeId: outcome.storeId,
-      volume: volumeIdentityFor(target),
-      retired: { source, stamp: outcome.stamp },
-    });
-    clearPending(userData);
-    return { ok: true, restartRequired: true, bytes: outcome.bytes, path: target };
-  });
 
   ipcMain.handle("telar:store:remove-old", () => {
     const userData = app.getPath("userData");

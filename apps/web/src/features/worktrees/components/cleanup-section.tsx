@@ -7,8 +7,8 @@ import { createEngineApi } from "@/platform/engine";
 import { fmtAgo, formatBytes } from "@/ui/format";
 import { Button } from "@/ui/button";
 import { Dropdown, Row, SettingsGroup, ToggleRow } from "@/features/settings";
-import { WorktreeListSection } from "./worktree-list-section";
-import { WorktreesRootRows } from "./worktrees-root-section";
+import { WorktreeSummarySection } from "./worktree-summary-section";
+import { WorktreesRootRow } from "./worktrees-root-section";
 
 const api = createEngineApi();
 
@@ -83,7 +83,7 @@ export function CleanupSection() {
   const [running, setRunning] = useState(false);
   const [ran, setRan] = useState(false);
   const [error, setError] = useState<{ key: keyof CleanupPolicy | "run"; message: string }>();
-  const [showList, setShowList] = useState(false);
+  const [rootVersion, setRootVersion] = useState(0);
 
   useEffect(() => {
     const task = window.setTimeout(() => {
@@ -124,14 +124,7 @@ export function CleanupSection() {
 
   return (
     <>
-      <SettingsGroup
-        title="Worktrees"
-        action={
-          <Button size="sm" variant="ghost" aria-expanded={showList} onClick={() => setShowList((open) => !open)}>
-            {showList ? "Hide worktrees" : "Show worktrees"}
-          </Button>
-        }
-      >
+      <SettingsGroup title="Worktrees">
         <Row
           icon={ClockIcon}
           label="Delete inactive worktrees"
@@ -165,10 +158,10 @@ export function CleanupSection() {
           onCheckedChange={(archived) => void save({ archived })}
           {...errorFor("archived")}
         />
-        <WorktreesRootRows />
+        <WorktreesRootRow onChanged={() => setRootVersion((version) => version + 1)} />
       </SettingsGroup>
 
-      {showList ? <WorktreeListSection /> : null}
+      <WorktreeSummarySection version={rootVersion} />
 
       <SettingsGroup title="Logs">
         <Row

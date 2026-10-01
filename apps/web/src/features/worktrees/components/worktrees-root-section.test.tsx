@@ -1,27 +1,10 @@
-/**
- * WHERE SESSION CHECKOUTS GO — issue #642 part 2.
- *
- * The claims here are all about what the row SAYS, because every one of them is
- * a promise the setting has to keep:
- *
- *   IT DOES NOT PROMISE A RESTART, because none is needed. Inheriting #630's
- *   `restartRequired` out of symmetry would cost a person a restart for nothing.
- *
- *   IT DOES NOT PROMISE A MOVE. Changing the root affects the next cut; a row
- *   that let somebody believe their 12 GB had just relocated would be the
- *   setting lying about what it did.
- *
- *   IT NAMES THE DRIVE WHEN THE DRIVE IS AWAY, from the label recorded when it
- *   was chosen — the moment that sentence is needed is the moment the disk is
- *   not there to be asked.
- */
 import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorktreesRoot } from "@telar/engine-client";
 import { SettingsGroup } from "@/features/settings/components/settings-shell";
-import { WorktreesRootRows, worktreesRootHint } from "./worktrees-root-section";
+import { WorktreesRootRow, worktreesRootHint } from "./worktrees-root-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -58,7 +41,7 @@ async function mount() {
   await act(async () => {
     root.render(
       <SettingsGroup title="Worktrees">
-        <WorktreesRootRows />
+        <WorktreesRootRow />
       </SettingsGroup>,
     );
     await settle();
@@ -84,20 +67,21 @@ describe("Settings ▸ Storage ▸ Worktrees ▸ Location", () => {
     view.unmount();
   });
 
-  test("it says the worktrees already made stay where they are", async () => {
-    // Otherwise the row reads as a promise that 12 GB just moved.
+  test("the row is one sentence with the path; the drive caveats sit behind its ⓘ", async () => {
     answer = { kind: "configured", root: "/Volumes/TelarVR/checkouts", default: DEFAULT_ROOT, label: "TelarVR" };
     const view = await mount();
-    expect(view.host.textContent).toContain("Existing worktrees stay where they are");
+    expect(view.host.textContent).toContain("New worktrees are made in /Volumes/TelarVR/checkouts.");
+    expect(view.host.textContent).not.toContain("Eject before unplugging");
+    const info = view.host.querySelector("[data-info]")?.getAttribute("data-info") ?? "";
+    expect(info).toContain("Eject before unplugging");
+    expect(info).toContain("moves nothing already made");
     view.unmount();
   });
 
-  test("the reproducibility asymmetry is behind the row's ⓘ, not only in the commit message", async () => {
+  test("a folder on this Mac's own disk has no drive caveat behind its ⓘ", async () => {
+    answer = { kind: "configured", root: "/Users/someone/checkouts", default: DEFAULT_ROOT };
     const view = await mount();
-    const info = view.host.querySelector("[data-info]")?.getAttribute("data-info") ?? "";
-    expect(info).toContain("can be recreated");
-    // The sentence that makes this the safe half of #630 to relocate.
-    expect(info).toContain("the store itself cannot live there");
+    expect(view.host.querySelector("[data-info]")?.getAttribute("data-info") ?? "").not.toContain("Eject");
     view.unmount();
   });
 
@@ -161,96 +145,13 @@ describe("Settings ▸ Storage ▸ Worktrees ▸ Location", () => {
   });
 });
 
-describe("moving the checkouts already cut", () => {
-  test("the button is absent until there is somewhere to move them to", async () => {
-    const onDefault = await mount();
-    expect(onDefault.button("Move")).toBeUndefined();
-    onDefault.unmount();
-
-    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
-    const moved = await mount();
-    expect(moved.button("Move")).toBeDefined();
-    moved.unmount();
-  });
-
-  test("it says what it will not do BEFORE the press, not after", async () => {
-    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
-    const view = await mount();
-    const text = view.host.textContent ?? "";
-    // Under-promising is the point: git refuses a checkout holding
-    // uncommitted work and this never forces it, so a person is told that
-    // while they are still deciding.
-    expect(text).toContain("uncommitted changes stays put");
-    expect(text).toContain("until committed");
-    view.unmount();
-  });
-
-  test("afterwards it reports per reason, because they lead different places", async () => {
-    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
-    const view = await mount();
-    globalThis.fetch = (async () =>
-      new Response(
-        JSON.stringify({
-          move: {
-            moved: [{ sessionId: "a", from: "/old/a", to: "/new/a" }],
-            skipped: [{ sessionId: "b", path: "/old/b", reason: "dirty" }],
-            summary: "Moved 1 checkout. 1 has uncommitted changes and stayed put — commit them and run this again.",
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      )) as unknown as typeof fetch;
-
-    await act(async () => {
-      view.button("Move")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      await settle();
-    });
-
-    expect(view.host.textContent).toContain("Moved 1 checkout.");
-    expect(view.host.textContent).toContain("commit them and run this again");
-    view.unmount();
-  });
-
-  test("a refusal is the engine's own sentence, not one invented here", async () => {
-    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
-    const view = await mount();
-    globalThis.fetch = (async () =>
-      new Response(JSON.stringify({ error: { code: "conflict", message: "One session is still working in its checkout." } }), {
-        status: 409,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch;
-
-    await act(async () => {
-      view.button("Move")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
-      await settle();
-    });
-
-    expect(view.host.textContent).toContain("still working");
-    view.unmount();
-  });
-
-  test("nothing on this section deletes, forces or cleans up", async () => {
-    answer = { kind: "configured", root: "/elsewhere/checkouts", default: DEFAULT_ROOT };
-    const view = await mount();
-    const labels = [...view.host.querySelectorAll("button")].map((button) => button.textContent?.trim().toLowerCase() ?? "");
-    for (const forbidden of ["delete", "remove", "force", "clean up"]) expect(labels).not.toContain(forbidden);
-    view.unmount();
-  });
-});
-
 describe("the row's sentence, per state", () => {
-  test("the default says where that is, in relation to the store", () => {
-    expect(worktreesRootHint({ kind: "default", root: DEFAULT_ROOT, default: DEFAULT_ROOT })).toContain("beside the store");
+  test("a usable location names the folder", () => {
+    expect(worktreesRootHint({ kind: "default", root: DEFAULT_ROOT, default: DEFAULT_ROOT })).toBe(`New worktrees are made in ${DEFAULT_ROOT}.`);
   });
 
-  test("a drive carries the durability warning #630 already wrote", () => {
-    // The same sentence, not a second one: two warnings about the same risk
-    // drift apart the first time one of them is edited.
-    const hint = worktreesRootHint({ kind: "configured", root: "/Volumes/TelarVR/cuts", default: DEFAULT_ROOT, label: "TelarVR" });
-    expect(hint).toContain("Eject before unplugging");
-  });
-
-  test("a folder on this machine's own disk gets no drive warning", () => {
-    const hint = worktreesRootHint({ kind: "configured", root: "/Users/someone/checkouts", default: DEFAULT_ROOT });
-    expect(hint).not.toContain("Eject before unplugging");
+  test("an absent drive without a blocker still names the folder and says it is not connected", () => {
+    const hint = worktreesRootHint({ kind: "absent", root: "/Volumes/TelarVR/cuts", default: DEFAULT_ROOT, label: "TelarVR" });
+    expect(hint).toBe("/Volumes/TelarVR/cuts is on a drive that is not connected.");
   });
 });

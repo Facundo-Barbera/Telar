@@ -1,26 +1,13 @@
 import { engineClient, engineRoute } from "@/platform/engine/server";
-import type { WorktreeReclaimItem } from "@telar/engine-client";
+import { RELEASABLE_STATES, type ReleasableState, type WorktreeReclaimItem } from "@telar/engine-client";
 
-/**
- * Give checkouts back — issue #671, and the second destructive thing on the
- * Storage pane.
- *
- * IT ARCHIVES SESSIONS, and that is the fact the UI must lead with. A checkout
- * held by a settled session is released by putting that session down: settling
- * deliberately does not release one ("a settled session's checkout is still the
- * thing it would resume into") and nothing re-cuts a missing worktree, so
- * deleting the directory under a live record would trade invisible orphans for
- * invisible broken sessions. A checkout nothing claims has no session to end,
- * so the directory goes.
- *
- * REFUSALS ARE THE PAYLOAD, NOT AN ERROR STATUS. A press over six checkouts
- * where one has since been claimed by a working session is five successes and
- * one honest refusal; a 409 would discard the five.
- */
+/** Refusals are the payload, not an error status: one refused checkout must not discard the others' outcomes. */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 export const POST = engineRoute(async (request: Request) => {
-  const body = (await request.json()) as { items?: WorktreeReclaimItem[] };
-  return Response.json(await (await engineClient()).reclaimWorktrees(body.items ?? []));
+  const body = (await request.json()) as { items?: WorktreeReclaimItem[]; state?: string };
+  const client = await engineClient();
+  if ((RELEASABLE_STATES as readonly string[]).includes(body.state ?? "")) return Response.json(await client.releaseWorktreeState(body.state as ReleasableState));
+  return Response.json(await client.reclaimWorktrees(body.items ?? []));
 });

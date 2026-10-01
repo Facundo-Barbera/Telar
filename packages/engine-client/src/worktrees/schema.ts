@@ -13,7 +13,7 @@ export type WorktreesRoot = {
 export type WorktreeMoveSkip = {
   sessionId: string;
   path: string;
-  reason: "dirty" | "branch-gone" | "detached" | "failed";
+  reason: "busy" | "dirty" | "branch-gone" | "detached" | "failed";
   /** Git's own words: diagnostic, never UI copy. */
   detail?: string;
 };
@@ -66,6 +66,39 @@ export type WorktreeInventory = {
   partial: boolean;
   measuring?: boolean;
   measuredAt: number;
+};
+
+export type WorktreeTally = { count: number; bytes: number; unmeasured: number };
+
+export type WorktreeState = "in-use" | "archived" | "orphaned" | "unchanged" | "idle" | "recent";
+
+export const RELEASABLE_STATES = ["archived", "orphaned", "unchanged", "idle"] as const satisfies readonly WorktreeState[];
+export type ReleasableState = (typeof RELEASABLE_STATES)[number];
+
+export type WorktreeLocationMove = {
+  movable: WorktreeTally;
+  staying: { busy: number; dirty: number; unowned: number; detached: number };
+};
+
+export type WorktreeLocation = {
+  folder: string;
+  volume?: string;
+  present: boolean;
+  current: boolean;
+  worktrees: WorktreeTally;
+  move?: WorktreeLocationMove;
+};
+
+export type WorktreeStateSummary = { state: WorktreeState; worktrees: WorktreeTally; releasable: WorktreeTally };
+
+export type WorktreeSummary = {
+  locations: WorktreeLocation[];
+  states: WorktreeStateSummary[];
+  idleDays: number;
+  checkedAt: number;
+  measuring: boolean;
+  partial: boolean;
+  blocker?: string;
 };
 
 export type WorktreeReclaimItem = { path: string; confirm?: string; settled?: "release" | "archive" };

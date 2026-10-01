@@ -1,19 +1,10 @@
 import { engineClient, engineRoute } from "@/platform/engine/server";
 
-/**
- * Move the checkouts already cut to the configured root.
- *
- * THE ONE DESTRUCTIVE THING ON THE STORAGE PANE, and it is arranged so that it
- * cannot lose work: each checkout is RE-CUT from its own branch rather than
- * copied, `git worktree remove` is never forced, and the branch is verified to
- * still exist before anything is removed. A checkout git refuses is reported
- * and left exactly where it was.
- *
- * SLOW — one pair of git commands per checkout — and partial by design.
- */
+/** Re-cuts each worktree under `from` at the current location; git is never forced, so a refused one stays where it was. */
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export const POST = engineRoute(async () => {
-  return Response.json(await (await engineClient()).moveWorktrees());
+export const POST = engineRoute(async (request: Request) => {
+  const body = (await request.json()) as { from?: string };
+  return Response.json(await (await engineClient()).moveWorktrees(body.from ?? ""));
 });

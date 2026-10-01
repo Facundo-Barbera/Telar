@@ -359,15 +359,9 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
             icon: ArchiveIcon,
           },
           {
-            title: "Move existing worktrees",
-            hint: "Moves worktrees already on disk to the new location as well.",
-            keywords: ["move", "relocate", "worktree folder", "location"],
-            icon: FolderGitIcon,
-          },
-          {
             title: "Location",
-            hint: "Where new worktrees are made, and how to put them on another drive without moving your history.",
-            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "relocate"],
+            hint: "Where new worktrees are made; the summary below moves the ones already made.",
+            keywords: ["worktree", "checkout", "external", "drive", "move", "space", "disk", "relocate", "worktree folder", "how many", "size"],
             icon: FolderGitIcon,
           },
         ],
@@ -394,8 +388,8 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
         rows: [
           {
             title: "Location",
-            hint: "Where Telar keeps everything, and how to move it to another drive.",
-            keywords: ["move", "external", "volume", "drive", "relocate", "where", "path", "ssd"],
+            hint: "Where Telar keeps everything.",
+            keywords: ["external", "volume", "drive", "where", "path", "ssd"],
             icon: HardDriveIcon,
           },
           {

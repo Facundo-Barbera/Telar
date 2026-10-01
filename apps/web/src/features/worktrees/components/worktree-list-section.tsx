@@ -12,6 +12,17 @@ import { Spinner } from "@/ui/spinner";
 import { SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
+const PAGE = 50;
+
+export type ListSort = "size" | "age";
+
+export function visibleRows(rows: readonly WorktreeRow[], query: string, sort: ListSort): WorktreeRow[] {
+  const needle = query.trim().toLowerCase();
+  const matched = needle
+    ? rows.filter((row) => [row.basename, row.branch, row.projectName, row.path].some((field) => field?.toLowerCase().includes(needle)))
+    : [...rows];
+  return matched.sort((left, right) => (sort === "size" ? (right.bytes ?? -1) - (left.bytes ?? -1) : (left.updatedAt ?? Infinity) - (right.updatedAt ?? Infinity)));
+}
 
 const LOCK_TEXT: Record<string, string> = {
   unreadable: "On a drive that is not connected. Nothing was read, so nothing is claimed about it.",
@@ -220,7 +231,52 @@ function WorktreeRowItem({
   );
 }
 
-export function WorktreeListSection() {
+function listDescription(rows: readonly WorktreeRow[], busy: boolean, inventory: WorktreeInventory | undefined): string {
+  const reclaimable = rows.filter((row) => row.verdict.kind === "reclaimable");
+  const total = reclaimable.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+  return [
+    rows.length === 0 && !busy ? "No checkouts yet." : `${rows.length} checkout${rows.length === 1 ? "" : "s"}, each checked for merged, clean, and still in use.`,
+    reclaimable.length > 0 ? `${reclaimable.length} can go, ${formatBytes(total)}.` : undefined,
+    inventory?.partial ? "Something under the checkouts could not be read, so these sizes are a floor." : undefined,
+    inventory?.measuring ? "Some sizes are still being measured." : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function ListControls({ query, sort, onQuery, onSort }: { query: string; sort: ListSort; onQuery: (next: string) => void; onSort: (next: ListSort) => void }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 py-2.5">
+      <Input
+        value={query}
+        aria-label="Search worktrees"
+        placeholder="Search by name, branch or project"
+        className="h-7 min-w-48 flex-1 text-xs"
+        onChange={(event) => onQuery(event.target.value)}
+      />
+      {(["size", "age"] as const).map((key) => (
+        <Button key={key} size="sm" variant={sort === key ? "secondary" : "ghost"} aria-pressed={sort === key} onClick={() => onSort(key)}>
+          {key === "size" ? "Largest" : "Oldest"}
+        </Button>
+      ))}
+    </div>
+  );
+}
+
+function MoreRows({ shown, total, onMore }: { shown: number; total: number; onMore: () => void }) {
+  return (
+    <div className="flex items-center justify-between py-2.5 text-xs text-muted-foreground">
+      <span>
+        Showing {shown} of {total}
+      </span>
+      <Button size="sm" variant="ghost" onClick={onMore}>
+        Show {Math.min(PAGE, total - shown)} more
+      </Button>
+    </div>
+  );
+}
+
+export function WorktreeListSection({ onChanged }: { onChanged?: () => void }) {
   const [inventory, setInventory] = useState<WorktreeInventory>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
@@ -230,6 +286,9 @@ export function WorktreeListSection() {
   const [archiveSettled, setArchiveSettled] = useState(false);
   const [results, setResults] = useState<WorktreeReclaimResult[]>();
   const [summary, setSummary] = useState<string>();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<ListSort>("size");
+  const [shown, setShown] = useState(PAGE);
 
   const inFlight = useRef<AbortController | undefined>(undefined);
   const load = useCallback(async () => {
@@ -284,6 +343,7 @@ export function WorktreeListSection() {
       setConfirming(false);
       setTyped({});
       setCleared(new Set());
+      onChanged?.();
       await load();
     } catch {
       setFailure("Telar could not give those checkouts back — the engine did not answer.");
@@ -302,22 +362,11 @@ export function WorktreeListSection() {
     );
   }
 
-  const reclaimable = rows.filter((row) => row.verdict.kind === "reclaimable");
-  const total = reclaimable.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
+  const visible = visibleRows(rows, query, sort);
 
   return (
     <SettingsGroup
-      title="Checkouts"
-      description={[
-        rows.length === 0 && !busy
-          ? "No checkouts yet."
-          : `${rows.length} checkout${rows.length === 1 ? "" : "s"}, each checked for merged, clean, and still in use.`,
-        reclaimable.length > 0 ? `${reclaimable.length} can go, ${formatBytes(total)}.` : undefined,
-        inventory?.partial ? "Something under the checkouts could not be read, so these sizes are a floor." : undefined,
-        inventory?.measuring ? "Some sizes are still being measured." : undefined,
-      ]
-        .filter(Boolean)
-        .join(" ")}
+      description={listDescription(rows, busy, inventory)}
       action={
         <span className="flex items-center gap-2">
           {busy ? <Spinner className="size-3.5" /> : null}
@@ -347,7 +396,17 @@ export function WorktreeListSection() {
         />
       ) : null}
 
-      {rows.map((row) => (
+      <ListControls
+        query={query}
+        sort={sort}
+        onQuery={(next) => {
+          setQuery(next);
+          setShown(PAGE);
+        }}
+        onSort={setSort}
+      />
+
+      {visible.slice(0, shown).map((row) => (
         <WorktreeRowItem
           key={row.path}
           row={row}
@@ -357,6 +416,8 @@ export function WorktreeListSection() {
           onType={(value) => setTyped((current) => ({ ...current, [row.path]: value }))}
         />
       ))}
+
+      {visible.length > shown ? <MoreRows shown={shown} total={visible.length} onMore={() => setShown((count) => count + PAGE)} /> : null}
     </SettingsGroup>
   );
 }

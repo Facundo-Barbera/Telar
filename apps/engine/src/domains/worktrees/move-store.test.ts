@@ -109,7 +109,7 @@ test("a checkout with uncommitted work is left where it is, and the session stil
   expect(pathOf(store, sessionId)).toBe(where);
 });
 
-test("a session still working refuses the whole move, before anything is touched", async () => {
+test("a session still working stays put, and its recorded path is unchanged", async () => {
   const { store, engineRoot, sessionId, path: where } = await withCheckout("session_busy");
   // A queued turn is enough: the session is no longer idle, which is what
   // "something is happening in that directory" means here.
@@ -117,9 +117,8 @@ test("a session still working refuses the whole move, before anything is touched
   const destination = path.join(tmp("telar-movestore-dest-"), "checkouts");
   writeWorktreesRoot(engineRoot, destination);
 
-  // "A half-migrated worktrees root loses uncommitted work in every open
-  // session" — a turn in flight is holding that directory right now.
-  await expect(store.worktrees.move(destination)).rejects.toThrow(/still working/);
+  const outcome = await store.worktrees.move(destination);
+  expect(outcome.skipped.map((entry) => entry.reason)).toEqual(["busy"]);
   expect(fs.existsSync(where)).toBe(true);
   expect(pathOf(store, sessionId)).toBe(where);
 });
@@ -153,4 +152,30 @@ test("moving twice is harmless — the second run has nothing left to do", async
   const second = await store.worktrees.move(destination);
   expect(second.moved).toEqual([]);
   expect(second.skipped).toEqual([]);
+});
+
+test("a move from one folder leaves checkouts in other folders alone", async () => {
+  const { store, engineRoot, sessionId, path: where } = await withCheckout("session_elsewhere");
+  const destination = path.join(tmp("telar-movestore-dest-"), "checkouts");
+  writeWorktreesRoot(engineRoot, destination);
+
+  const outcome = await store.worktrees.move(destination, tmp("telar-movestore-other-"));
+
+  expect(outcome).toEqual({ moved: [], skipped: [] });
+  expect(pathOf(store, sessionId)).toBe(where);
+});
+
+test("the summary counts the checkout where it lives, and offers to move it to the current location", async () => {
+  const { store, engineRoot, path: where } = await withCheckout("session_summary");
+  const destination = path.join(tmp("telar-movestore-dest-"), "checkouts");
+  writeWorktreesRoot(engineRoot, destination);
+
+  const summary = await store.worktrees.summary();
+
+  expect(summary.locations.map(({ folder, current, present, worktrees }) => ({ folder, current, present, count: worktrees.count }))).toEqual([
+    { folder: path.resolve(destination), current: true, present: true, count: 0 },
+    { folder: path.dirname(where), current: false, present: true, count: 1 },
+  ]);
+  expect(summary.locations[1]!.move).toMatchObject({ movable: { count: 1 }, staying: { busy: 0, dirty: 0, unowned: 0, detached: 0 } });
+  expect(summary.states.find((entry) => entry.state === "in-use")!.worktrees.count).toBe(1);
 });

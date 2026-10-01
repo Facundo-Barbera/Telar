@@ -144,16 +144,11 @@ describe("Settings ▸ Storage ▸ automatic cleanup", () => {
     view.unmount();
   });
 
-  test("the worktree list is collapsed, and not fetched, until asked for", async () => {
+  test("the page asks for the summary, never the full worktree list", async () => {
     const view = await mount();
+    expect(calls.some((call) => call.url === "/api/worktrees/summary")).toBe(true);
     expect(calls.some((call) => call.url.startsWith("/api/worktrees?") || call.url === "/api/worktrees")).toBe(false);
-    expect(calls.some((call) => call.url.startsWith("/api/storage") && !call.url.startsWith("/api/storage/retention"))).toBe(false);
-    await view.click(view.button("Show worktrees")!);
-    // The list asks on a zero timeout after it mounts.
-    await act(async () => {
-      await settle();
-    });
-    expect(calls.some((call) => call.url === "/api/worktrees")).toBe(true);
+    expect(view.button("Show worktrees")).toBeUndefined();
     view.unmount();
   });
 

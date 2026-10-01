@@ -110,11 +110,8 @@ contextBridge.exposeInMainWorld("telarDesktop", {
 
   store: {
     status: () => ipcRenderer.invoke("telar:store:status"),
-    preflight: (path) => ipcRenderer.invoke("telar:store:preflight", { path }),
-    move: (path) => ipcRenderer.invoke("telar:store:move", { path }),
     removeOld: () => ipcRenderer.invoke("telar:store:remove-old"),
     keepOld: () => ipcRenderer.invoke("telar:store:keep-old"),
-    onProgress: (listener) => on("telar:store:progress", listener),
   },
 
   workspace: {

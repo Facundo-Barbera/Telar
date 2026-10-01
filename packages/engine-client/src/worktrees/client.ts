@@ -1,6 +1,6 @@
 import type { Session } from "../protocol/entities";
 import type { EngineTransport } from "../platform/transport";
-import type { WorktreeInventory, WorktreeMoveResult, WorktreeReclaimItem, WorktreeReclaimOutcome, WorktreesRoot } from "./schema";
+import type { ReleasableState, WorktreeInventory, WorktreeMoveResult, WorktreeReclaimItem, WorktreeReclaimOutcome, WorktreesRoot, WorktreeSummary } from "./schema";
 
 const sessionPath = (sessionId: string) => `/v2/sessions/${encodeURIComponent(sessionId)}`;
 
@@ -13,8 +13,16 @@ export const worktreesClient = {
     return this.request("PUT", "/v2/worktrees-root", { root });
   },
 
-  moveWorktrees(this: EngineTransport): Promise<{ move: WorktreeMoveResult }> {
-    return this.request("POST", "/v2/worktrees-root/move", {});
+  moveWorktrees(this: EngineTransport, from: string): Promise<{ move: WorktreeMoveResult }> {
+    return this.request("POST", "/v2/worktrees-root/move", { from });
+  },
+
+  worktreeSummary(this: EngineTransport, options: { refresh?: boolean } = {}): Promise<{ summary: WorktreeSummary }> {
+    return this.request("GET", `/v2/worktrees/summary${options.refresh ? "?refresh=1" : ""}`);
+  },
+
+  releaseWorktreeState(this: EngineTransport, state: ReleasableState): Promise<{ reclaim: WorktreeReclaimOutcome }> {
+    return this.request("POST", "/v2/worktrees/reclaim", { state });
   },
 
   worktrees(this: EngineTransport, options: { signal?: AbortSignal } = {}): Promise<{ inventory: WorktreeInventory }> {

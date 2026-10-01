@@ -33,20 +33,4 @@ function findVolumeMount(uuid) {
   return undefined;
 }
 
-function volumeIdentityFor(target) {
-  if (process.platform !== "darwin") return undefined;
-  const prefix = "/Volumes/";
-  if (!target.startsWith(prefix)) return undefined;
-  const [name] = target.slice(prefix.length).split(path.sep);
-  if (!name) return undefined;
-  const mount = path.join("/Volumes", name);
-  try {
-    if (fs.statSync(mount).dev === fs.statSync("/Volumes").dev) return undefined;
-    const uuid = volumeUuid(mount);
-    return { mount, label: name, ...(uuid ? { uuid } : {}) };
-  } catch {
-    return { mount, label: name };
-  }
-}
-
-module.exports = { findVolumeMount, volumeIdentityFor };
+module.exports = { findVolumeMount };
