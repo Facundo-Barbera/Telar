@@ -3,11 +3,6 @@
  * (registered in-process via `toSdkTools`) and hands Codex and OpenCode a
  * lease on the socket (`collectTelarWall`); both come from `telarWall`, so the
  * advertised names must be the same set on all three.
- *
- * The regressions this pins: Claude lost `prompt_*` (the worker never passed
- * prompts to the driver), Codex and OpenCode lost `display_*` (the socket's
- * copy of the parts list had no display entry), and Codex and OpenCode saw
- * `sessions_*` twice (once on `telar`, once on a per-run `telar-sessions`).
  */
 import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";

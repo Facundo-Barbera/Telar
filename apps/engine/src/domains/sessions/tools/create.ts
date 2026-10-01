@@ -56,7 +56,7 @@ export function createTool(tool: ToolFactory, capability: SessionsCapability): u
       wait: WAIT,
       tasks: z
         .array(
-          z.object({
+          z.strictObject({
             title: z.string().min(1),
             task: z.string().min(1).describe("Its own self-contained brief."),
             model: z.string().min(1).optional(),

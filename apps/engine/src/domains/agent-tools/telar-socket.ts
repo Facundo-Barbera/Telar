@@ -3,7 +3,9 @@ import http from "node:http";
 import { TELAR_MCP_SERVER } from "@telar/engine-client";
 import { bearerIsValid } from "../../platform/http/auth";
 import { collectTools, handleSocketMessage, readSocketBody, type SocketTool } from "./mcp-socket";
-import type { ToolFactory } from "./tool-kit";
+import { z } from "zod";
+import { checkArgs } from "./strict-args";
+import { err, type ToolFactory } from "./tool-kit";
 import { displayTools } from "./display-tools";
 import { notesTools } from "../notes";
 import { pluginToolModules } from "../plugins";
@@ -81,10 +83,16 @@ function delegatingCapability<T extends object>(get: () => T | undefined): T {
   });
 }
 
+/** The SDK strips undeclared keys before a handler sees them, so it is handed a loose object and the handler refuses them. */
 export function toSdkTools(parts: readonly TelarWallPart[], tool: ToolFactory): unknown[] {
+  const strict: ToolFactory = (name, description, shape, handler) =>
+    tool(name, description, z.looseObject(shape as Record<string, z.ZodType>) as never, async (args, context) => {
+      const checked = checkArgs(name, shape, args);
+      return checked.ok ? handler(checked.args, context) : err(checked.message);
+    });
   return parts
     .filter((part) => part.capability() !== undefined)
-    .flatMap((part) => part.build(tool, delegatingCapability(part.capability as () => object | undefined) as never));
+    .flatMap((part) => part.build(strict, delegatingCapability(part.capability as () => object | undefined) as never));
 }
 
 export class TelarToolSocket {
