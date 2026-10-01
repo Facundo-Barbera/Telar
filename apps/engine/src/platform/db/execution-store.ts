@@ -181,6 +181,9 @@ export class ExecutionStore {
   liveSessionRows(): tables.SessionIndexRow[] { return tables.liveSessionRows(this); }
   unsettledSessionIds(): string[] { return tables.unsettledSessionIds(this); }
   unfinishedSessionIds(): string[] { return tables.unfinishedSessionIds(this); }
+  liveQueueIds(): string[] | undefined { return tables.liveQueueIds(this); }
+  markLiveQueue(sessionId: string, live: boolean): void { tables.markLiveQueue(this, sessionId, live); }
+  markLiveQueuesIndexed(): void { tables.markLiveQueuesIndexed(this); }
   sessionIdsWithTurnsEndedSince(at: number): string[] { return tables.sessionIdsWithTurnsEndedSince(this, at); }
   dueSnoozeWakes(): tables.SessionIndexRow[] { return tables.dueSnoozeWakes(this); }
   sessionRow(sessionId: string): tables.SessionIndexRow | undefined { return tables.sessionRow(this, sessionId); }
@@ -258,7 +261,7 @@ export class ExecutionStore {
       this.statement("DELETE FROM items WHERE session_id=?").run(sessionId);
       for (const prefix of [
         COMPACT_WATERMARK_PREFIX, USAGE_WATERMARK_PREFIX, SLIM_WATERMARK_PREFIX, REQUEST_PRUNE_WATERMARK_PREFIX,
-        TERMINAL_HIGH_PREFIX, tables.ITEMS_ROWS_PREFIX, JOURNAL_FLOOR_PREFIX,
+        TERMINAL_HIGH_PREFIX, tables.ITEMS_ROWS_PREFIX, tables.LIVE_QUEUE_PREFIX, JOURNAL_FLOOR_PREFIX,
       ]) this.statement("DELETE FROM metadata WHERE key=?").run(`${prefix}${sessionId}`);
       this.cursors.delete(sessionId);
     });

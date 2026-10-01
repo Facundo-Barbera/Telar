@@ -302,3 +302,38 @@ test("the scan cache keeps live queues and only the most recently scanned idle o
   expect(queueParses(store, () => { for (const id of ids.slice(-32)) queues.scan(id); })).toBe(0);
   expect(queueParses(store, () => queues.scan("session_1"))).toBe(1);
 });
+
+test("a cold live-queue build reads the live queues only, however long the history", () => {
+  const directory = root();
+  const store = seeded(open(directory), 1);
+  const ids = ["session_one"];
+  for (let n = 0; n < 60; n += 1) {
+    const id = `session_done_${n}`;
+    ids.push(id);
+    seeded(store, 1, id);
+  }
+  store.lifecycle.createSession({ id: "session_queued", projectId: "project_one" });
+  store.intake.submitTurn("session_queued", { runId: "run_queued", input: "hello" });
+  store.lifecycle.createSession({ id: "session_stopped", projectId: "project_one" });
+  store.intake.submitTurn("session_stopped", { runId: "run_stopped", input: "hello" });
+  store.claims.claimTurn("session_stopped", "worker_one");
+  store.turnLifecycle.stopTurn("session_stopped", "run_stopped");
+  ids.push("session_queued", "session_stopped");
+  const queues = (on: EngineStore) => new SessionQueues(on.kernel, { sessionIds: () => ids, itemsForRuns: () => [], afterWrite: () => {} });
+
+  let first: Set<string> = new Set();
+  expect(queueParses(store, () => { first = queues(store).liveSessionIds(); })).toBe(ids.length);
+  expect([...first].sort()).toEqual(["session_queued", "session_stopped"]);
+  store.kernel.executionStore.close();
+  stores.splice(stores.indexOf(store), 1);
+
+  const reopened = open(directory);
+  let cold: Set<string> = new Set();
+  expect(queueParses(reopened, () => { cold = queues(reopened).liveSessionIds(); })).toBeLessThanOrEqual(2);
+  expect([...cold].sort()).toEqual(["session_queued", "session_stopped"]);
+
+  const token = reopened.claims.claimTurn("session_queued", "worker_two")!.claim!.token;
+  reopened.turnLifecycle.markRunning("session_queued", "run_queued", token);
+  reopened.turnLifecycle.completeTurn("session_queued", "run_queued", token, { text: "done" });
+  expect([...queues(reopened).liveSessionIds()]).toEqual(["session_stopped"]);
+});
