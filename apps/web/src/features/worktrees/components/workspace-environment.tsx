@@ -463,8 +463,8 @@ export async function readWorkspaceGit(engine: typeof api, projectId: string, wo
   if (!worktreeSessionId) return git;
   const rest = { ...git };
   delete rest.dirtyFiles;
-  const own = await engine.sessionDiff(worktreeSessionId, { base: null }).catch(() => undefined);
-  return own?.diff.repository ? { ...rest, dirtyFiles: own.diff.files.length } : rest;
+  const own = await engine.sessionDirtyFiles(worktreeSessionId).catch(() => undefined);
+  return own?.dirtyFiles === undefined ? rest : { ...rest, dirtyFiles: own.dirtyFiles };
 }
 
 export function WorkspaceEnvironment({

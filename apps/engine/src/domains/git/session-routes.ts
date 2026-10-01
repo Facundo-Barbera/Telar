@@ -5,6 +5,7 @@ import type { EngineStore } from "../../state";
 /** A refusal is a 200 with a reason: it is an answer about the repository, not a failed request. */
 export function sessionGitRoutes(store: EngineStore): Route[] {
   return [
+    { method: "GET", path: sessionRoute("/git/status"), auth: "engine", handle: async ({ params: [sessionId] }) => ok(await store.workspaceReads.sessionDirty(sessionId!)) },
     {
       method: "POST",
       path: sessionRoute("/git/commit"),

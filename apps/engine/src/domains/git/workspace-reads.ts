@@ -5,7 +5,7 @@ import type { AsyncGitRunner } from "../../platform/git/runner";
 import { EngineStateError } from "../../platform/kernel";
 import { listWorkspaceFilesAsync } from "../files";
 import { workspaceRootOf } from "../sessions";
-import { gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "./session";
+import { dirtyCountAsync, gitOverviewAsync, sessionDiffAsync, sessionFilePatchAsync } from "./session";
 
 const MAX_CACHED_READS = 64;
 const CACHED_READ_MS = 2_000;
@@ -116,6 +116,11 @@ export class WorkspaceReads {
       this.projectOf(session),
       // Outside the cache: two local sessions on one checkout share that entry.
     ).then((value) => sharedCheckout(value, session));
+  }
+
+  sessionDirty(sessionId: string): Promise<{ dirtyFiles?: number }> {
+    const cwd = workspaceRootOf(this.host.getSession(sessionId));
+    return this.cached(`dirty:${cwd}`, () => dirtyCountAsync(this.git, cwd));
   }
 
   projectFilePatch(projectId: string, target: string, options: FilePatchOptions = {}): Promise<GitFilePatch> {

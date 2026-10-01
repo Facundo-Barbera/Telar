@@ -244,6 +244,11 @@ export async function defaultRemoteBaseAsync(git: AsyncGitRunner, projectRoot: s
   return undefined;
 }
 
+export async function dirtyCountAsync(git: AsyncGitRunner, cwd: string): Promise<{ dirtyFiles?: number }> {
+  const status = await git(cwd, ["status", "--porcelain"]);
+  return status.status === 0 && !status.timedOut ? { dirtyFiles: countDirty(status.stdout) } : {};
+}
+
 export async function gitOverviewAsync(git: AsyncGitRunner, projectRoot: string): Promise<GitOverview> {
   const inside = await git(projectRoot, ["rev-parse", "--is-inside-work-tree"]);
   refuseTimedOutProbe(inside, "Git overview");
