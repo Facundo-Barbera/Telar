@@ -1,10 +1,10 @@
 // Release drops a session's checkout but keeps its branch; the re-cut is `worktree add <path> <branch>`, never -B.
 // Never released: dirty or unprovable trees, unpushed branches, a process's cwd, anything outside the root.
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { lockSessionWorktree, WORKTREE_ADD_TIMEOUT_MS, WorktreeError } from "./checkout";
 import { type AsyncGitRunner } from "../../platform/git/runner";
+import { lsof } from "../../platform/process/lsof";
 
 export type ReleaseRefusal = "dirty" | "unpushed" | "process" | "not-telars" | "not-found";
 
@@ -19,7 +19,7 @@ export async function checkoutsWithProcesses(
   deps: { platform?: NodeJS.Platform; lsof?: () => Promise<string | undefined> } = {},
 ): Promise<Set<string> | undefined> {
   if ((deps.platform ?? process.platform) === "win32") return undefined;
-  const listing = await (deps.lsof ?? readCwds)();
+  const listing = await (deps.lsof ?? (() => lsof(["-n", "-P", "-w", "-d", "cwd", "-F", "n"])))();
   if (listing === undefined) return undefined;
   const cwds = listing
     .split("\n")
@@ -31,30 +31,6 @@ export async function checkoutsWithProcesses(
     if (cwds.some((cwd) => cwd === root || inside(root, cwd))) busy.add(checkout);
   }
   return busy;
-}
-
-function readCwds(): Promise<string | undefined> {
-  return new Promise((resolve) => {
-    let out = "";
-    let child;
-    try {
-      child = spawn("lsof", ["-n", "-P", "-w", "-d", "cwd", "-F", "n"], { stdio: ["ignore", "pipe", "ignore"] });
-    } catch {
-      resolve(undefined);
-      return;
-    }
-    const timer = setTimeout(() => child.kill("SIGKILL"), 30_000);
-    child.stdout.on("data", (chunk: Buffer) => (out += chunk.toString("utf8")));
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve(undefined);
-    });
-    // lsof exits 1 when some process could not be read; the rest is still an answer.
-    child.on("close", (status) => {
-      clearTimeout(timer);
-      resolve(status === 0 || status === 1 ? out : undefined);
-    });
-  });
 }
 
 // `strict` (the automatic sweep) refuses when `processes` is undefined.
