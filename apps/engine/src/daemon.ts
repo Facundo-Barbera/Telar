@@ -44,6 +44,7 @@ import { acquireDaemonLock } from "./platform/process/daemon-lock";
 import { startEmbeddedWorker, type EmbeddedDoorbell, type EmbeddedWorkerConfig } from "./worker/embedded";
 import { createExecutionPort } from "./worker/execution-port";
 import { createWorkerRegistry } from "./worker/registry";
+import { gitChildren } from "./platform/git/children";
 
 /** Every field is a seam for tests or `main.ts`; absent means the real thing, or off where the real thing would touch this Mac. */
 export type EngineDaemonOptions = {
@@ -303,6 +304,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     startedAt,
     worker: workers.health(),
     ...(pluginStatuses.length > 0 ? { plugins: plugins.host.statuses() } : {}),
+    git: { liveChildren: gitChildren.live(), cap: gitChildren.cap },
   });
   let port = 0;
   const sessionsDoor = sessionsSocketDoor(store, () => port);
