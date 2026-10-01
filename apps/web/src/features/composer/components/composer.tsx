@@ -93,8 +93,8 @@ export function Composer(props: ComposerProps) {
   const editor = useRef<ComposerEditorHandle>(null);
   // Reported up by the environment strip, which already polls the project's git state.
   const [driveAway, setDriveAway] = useState<Exclude<ProjectAvailability, "available">>();
-  const [expanded, expand] = useExpanded(compact);
   const { root, row, narrow } = useComposerFit();
+  const [expanded, expand] = useExpanded(compact || narrow);
   const [resuming, setResuming] = useState(false);
   const startResume = useCallback(() => setResuming(true), []);
   const token = useId();
@@ -127,8 +127,7 @@ export function Composer(props: ComposerProps) {
   const addFiles = (files: File[]) => onAttach([...attachments, ...files].slice(0, MAX_ATTACHMENTS));
   const drop = useDropTarget(editor, addFiles);
   // Focus and typing keep it compact; only what the compact card cannot show opens the full one.
-  const compactNow = compact && !expanded && !fresh && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
-  const oneLine = compactNow || narrow;
+  const compactNow = (compact || narrow) && !expanded && !fresh && !question.active && !drop.dropping && !stash.open && !esc.armed && !driveAway && attachments.length === 0;
   const pills = (session || (fresh && driver)) && (
     <ComposerPills
       {...props}
@@ -194,7 +193,7 @@ export function Composer(props: ComposerProps) {
               text={question.boxText}
               placeholder={question.active ? "Type your own answer, or leave blank…" : placeholderFor(ready, busy)}
               ready={ready}
-              compact={oneLine}
+              compact={compactNow}
               controlsRef={row}
               draft={draft}
               attachments={attachments}
@@ -205,19 +204,15 @@ export function Composer(props: ComposerProps) {
               onSelectionChange={() => !question.active && menu.retrigger(draft)}
               onKeyDown={onKeyDown}
               onFocus={() => markComposerActive(token)}
-              {...(compactNow && !narrow
-                ? {
-                    onExpand: () => {
-                      expand();
-                      editor.current?.focus();
-                    },
-                  }
-                : {})}
+              onExpand={() => {
+                expand();
+                editor.current?.focus();
+              }}
               stash={stash}
               menu={menu}
               pick={pick}
               drop={drop}
-              pills={pills}
+              pills={!narrow && pills}
               trailing={
                 <>
                   {!compactNow && <ComposerContext {...props} />}
@@ -228,7 +223,7 @@ export function Composer(props: ComposerProps) {
             />
           </DictationGlow>
         </form>
-        <ComposerFoot props={props} tray={oneLine} compact={compactNow} pills={pills} hidden={dictation.phase !== "idle"} onAvailability={setDriveAway} />
+        <ComposerFoot props={props} tray={compactNow || narrow} compact={compactNow} pills={pills} hidden={dictation.phase !== "idle"} onAvailability={setDriveAway} />
       </div>
     </div>
   );
