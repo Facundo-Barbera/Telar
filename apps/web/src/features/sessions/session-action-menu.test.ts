@@ -388,7 +388,7 @@ describe("gating: disabled with a reason beats failing later", () => {
 
   test("project settings are local-only, because there is no per-host route", () => {
     const items = build({ session: target({ hostId: "host_mini" }), capabilities: { remote: true } });
-    expect(byId(items, "project-settings").disabled).toBe("Project settings open on the Mac that owns the project.");
+    expect(byId(items, "project-settings").disabled).toBe("Project settings open on the computer that owns the project.");
     // The rest of the menu still works on another Mac's session.
     expect(byId(items, "new-session").disabled).toBeFalsy();
     expect(byId(items, "delete").disabled).toBeFalsy();

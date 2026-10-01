@@ -74,7 +74,7 @@ test("a globally disabled plugin is refused at EVERY door, not just hidden", asy
   for (const call of [client.latex("session_one", "status", {}), client.plugin("session_one", "latex", "status", {})]) {
     const refused = await call.catch((error: EngineClientError) => error);
     expect((refused as EngineClientError).status).toBe(400);
-    expect((refused as EngineClientError).message).toContain("this Mac");
+    expect((refused as EngineClientError).message).toContain("this computer");
   }
 });
 

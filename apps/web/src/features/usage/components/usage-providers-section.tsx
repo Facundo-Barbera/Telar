@@ -243,7 +243,7 @@ export function UsageProvidersSection() {
           <Row
             icon={ServerIcon}
             label="No hubs configured"
-            hint="Without one, Usage reports what this Mac spent and nothing about how much of a pooled plan is left."
+            hint="Without one, Usage reports what this computer spent and nothing about how much of a pooled plan is left."
           />
         ) : (
           sources.map((source) => <HubRow key={source.id} source={source} onChange={() => void load()} />)

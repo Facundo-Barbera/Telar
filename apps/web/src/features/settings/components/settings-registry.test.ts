@@ -37,7 +37,7 @@ test("every indexed row is declared on the pane that actually renders it", () =>
     "Remembered logins": "integrations",
     "Browser profiles": "integrations",
     "Add a server": "tools",
-    "Add a Mac": "remote",
+    "Add a computer": "remote",
     "Settle quiet sessions": "general",
     "Add a login": "providers",
   };

@@ -226,10 +226,10 @@ describe("the mic button on a composer", () => {
       expect(answer).toBeDefined();
       expect(noticeIn(host)).toContain("The connection to the transcription service failed");
       await act(async () => {
-        answer?.(Response.json({ fault: "elsewhere", reason: "Deepgram accepted a connection from this Mac just now." }));
+        answer?.(Response.json({ fault: "elsewhere", reason: "Deepgram accepted a connection from this computer just now." }));
         await new Promise((settle) => setTimeout(settle, 0));
       });
-      expect(noticeIn(host)).toContain("accepted a connection from this Mac");
+      expect(noticeIn(host)).toContain("accepted a connection from this computer");
     });
   });
 
@@ -238,7 +238,7 @@ describe("the mic button on a composer", () => {
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(typeof input === "object" && "url" in input ? input.url : input);
       if (!url.includes("/api/dictation/token")) return settings(input, init);
-      return Response.json({ error: { code: "conflict", message: "No Deepgram key is configured on this Mac, so dictation cannot start." } }, { status: 409 });
+      return Response.json({ error: { code: "conflict", message: "No Deepgram key is configured on this computer, so dictation cannot start." } }, { status: 409 });
     }) as typeof fetch;
     const host = await mounted(<Box kind="session" />);
     await press(micIn(host));

@@ -78,7 +78,7 @@ struct AutomaticActivityTests {
     @Test func theCardNamesTheMacWithoutItsDomain() {
         #expect(HostLabel.short("mini-fbarbera.snakebird-cardassia.ts.net") == "mini-fbarbera")
         #expect(HostLabel.short("Studio") == "Studio")
-        #expect(HostLabel.short(nil) == "Mac")
+        #expect(HostLabel.short(nil) == "Computer")
     }
 
     @Test func thePhoneStartsACardOnlyForAWorkingMacWithoutOneThatCannotPushIt() {

@@ -74,7 +74,7 @@ test("a Mac that cannot reach Deepgram at all says that, and does not blame a ke
 test("an accepted handshake is an answer: the fault is between the device and Deepgram", async () => {
   const said = await ask(new Response(null, { status: 200 }));
   expect(said.fault).toBe("elsewhere");
-  expect(said.reason).toContain("accepted a connection from this Mac");
+  expect(said.reason).toContain("accepted a connection from this computer");
 });
 
 test("a refusal with no words in it still says what it does know", async () => {

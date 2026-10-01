@@ -25,7 +25,7 @@ async function answerScoped(store: EngineStore, host: PluginHost, input: ScopedI
   }
   const { route, params } = matched;
   if (!input.legacy) {
-    if (!machineAllows(store.toolchains.machine(), input.pluginId)) throw new EngineStateError("invalid_request", `${input.pluginId} is turned off for this Mac`);
+    if (!machineAllows(store.toolchains.machine(), input.pluginId)) throw new EngineStateError("invalid_request", `${input.pluginId} is turned off for this computer`);
     if (input.projectId !== undefined) {
       const project = store.projectRegistry.get(input.projectId);
       if (route.beforeEnable !== true && !store.toolchains.runs(project, input.pluginId)) {

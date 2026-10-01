@@ -99,14 +99,14 @@ export class PluginToolchains {
   }
 
   private dataScienceOutcome(session: Session): { pythonPath: string } | { refusal: string } {
-    if (!machineAllows(this.machine(), "data-science")) return { refusal: "data science is turned off for this Mac" };
+    if (!machineAllows(this.machine(), "data-science")) return { refusal: "data science is turned off for this computer" };
     const project = this.projectOf(session);
     const config = project && dataScienceBlock(project);
     if (!config?.enabled) return { refusal: "data science is not enabled for this session's project" };
     const machineDefault = DataScienceMachineSettingsSchema.safeParse(machineSettings(this.machine(), "data-science"));
     const chosen = config.python?.path ?? (machineDefault.success ? machineDefault.data.python : undefined);
     if (!chosen) {
-      return { refusal: "data science has no Python interpreter: choose one in the project's settings, or set a default Python for this Mac under Settings → Plugins" };
+      return { refusal: "data science has no Python interpreter: choose one in the project's settings, or set a default Python for this computer under Settings → Plugins" };
     }
     const pythonPath = resolvePythonPath(workspaceRootOf(session), chosen);
     if (!fs.existsSync(pythonPath)) return { refusal: `data science's Python interpreter is not on disk: ${pythonPath}` };

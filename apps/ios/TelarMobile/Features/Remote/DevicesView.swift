@@ -19,7 +19,7 @@ struct DevicesView: View {
                         SettingsCard {
                             StatusBanner(
                                 icon: "lock.open", color: Theme.statusAmber,
-                                title: "Pairing is off on the Mac.",
+                                title: "Pairing is off on the computer.",
                                 detail: "Anything that can reach the cockpit has full control. These credentials matter again when it's turned on."
                             )
                         }
@@ -56,7 +56,7 @@ struct DevicesView: View {
                                 StatusBanner(
                                     icon: "antenna.radiowaves.left.and.right", color: Theme.textMuted,
                                     title: mine.isEmpty ? "No devices are paired." : "No other devices are paired.",
-                                    detail: "Devices appear here as they pair from the Mac's Remote access panel."
+                                    detail: "Devices appear here as they pair from the computer's Remote access panel."
                                 )
                             }
                             ForEach(Array(others.enumerated()), id: \.element.id) { index, device in

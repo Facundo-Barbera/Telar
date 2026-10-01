@@ -41,14 +41,14 @@ function diagnosis(answer: ListenAnswer): DictationDiagnosis {
     return {
       fault: "elsewhere",
       reason:
-        "Deepgram accepted a connection from this Mac just now, with the same settings — so the service is reachable and this Mac's key is good. The dictation failed somewhere between the device that was listening and Deepgram: a network on the way, or something in front of it that does not pass WebSocket connections.",
+        "Deepgram accepted a connection from this computer just now, with the same settings — so the service is reachable and this computer's key is good. The dictation failed somewhere between the device that was listening and Deepgram: a network on the way, or something in front of it that does not pass WebSocket connections.",
     };
   }
 
   if (answer.status === 0) {
     return {
       fault: "unreachable",
-      reason: `This Mac could not reach Deepgram at all${answer.unreachable ? `: ${answer.unreachable}` : "."} Check that it is online, then try again.`,
+      reason: `This computer could not reach Deepgram at all${answer.unreachable ? `: ${answer.unreachable}` : "."} Check that it is online, then try again.`,
     };
   }
 
@@ -58,7 +58,7 @@ function diagnosis(answer: ListenAnswer): DictationDiagnosis {
   if (EDGE_HTML.test(answer.body)) {
     return {
       fault: "refused",
-      reason: `Deepgram's edge refused the request before reading the credential (HTTP ${answer.status}) — the query was too long. That is the glossary: it is bounded on this Mac, so this is worth reporting.`,
+      reason: `Deepgram's edge refused the request before reading the credential (HTTP ${answer.status}) — the query was too long. That is the glossary: it is bounded on this computer, so this is worth reporting.`,
     };
   }
 

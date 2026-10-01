@@ -1,7 +1,7 @@
 import Foundation
 
 enum HostLabel {
-    static let unknown = "Mac"
+    static let unknown = "Computer"
 
     static func name(_ raw: String?) -> String {
         guard let raw, !raw.trimmingCharacters(in: .whitespaces).isEmpty else { return unknown }

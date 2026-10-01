@@ -289,17 +289,17 @@ function InfoTip({
 export type SettingsScope = "mac" | "project" | "browser" | "host";
 
 const SCOPE_LABEL: Record<SettingsScope, string> = {
-  mac: "This Mac",
+  mac: "This computer",
   project: "This project",
   browser: "This browser",
   host: "This host",
 };
 
 const SCOPE_INFO: Record<SettingsScope, string> = {
-  mac: "Kept by Telar on this Mac, so every window and paired device that uses it sees the same value.",
+  mac: "Kept by Telar on this computer, so every window and paired device that uses it sees the same value.",
   project: "Kept with the selected project. Other projects keep their own.",
   browser: "Kept in this window's own storage. Another browser, or a phone, keeps its own.",
-  host: "Kept by the Mac this window is connected to, not the one in front of you.",
+  host: "Kept by the computer this window is connected to, not the one in front of you.",
 };
 
 function ScopeBadge({ scope }: { scope: SettingsScope }) {

@@ -116,7 +116,7 @@ async function send<T>(fetcher: Fetcher, method: string, pathname: string, body?
     const host = answeringHost(fetcher);
     throw new EngineApiError(
       "engine_unavailable",
-      host ? `The cockpit cannot reach ${host.name ?? "that Mac"}.` : "The cockpit cannot reach its local adapter.",
+      host ? `The cockpit cannot reach ${host.name ?? "that computer"}.` : "The cockpit cannot reach its local adapter.",
       undefined,
       host,
     );

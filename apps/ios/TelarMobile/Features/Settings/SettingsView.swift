@@ -48,11 +48,11 @@ struct SettingsView: View {
                             ) { pushTarget = .host(host.id) }
                         }
                         if !settings.hosts.isEmpty { CardDivider() }
-                        CardNavRow(icon: "plus.circle.fill", title: "Add a Mac…", subtitle: "Scan a pairing code or connect by address") {
+                        CardNavRow(icon: "plus.circle.fill", title: "Add a computer…", subtitle: "Scan a pairing code or connect by address") {
                             pushTarget = .addMac
                         }
                     }
-                    SettingsFootnote("Every Mac pairs with its own key. Sessions from all of them share the inbox; the desktop icon in the top bar filters.")
+                    SettingsFootnote("Every computer pairs with its own key. Sessions from all of them share the inbox; the desktop icon in the top bar filters.")
                 }
             }
             .padding(.horizontal, 20)
@@ -97,12 +97,12 @@ struct HostSettingsView: View {
                 VStack(spacing: 0) {
                     SettingsSectionLabel("Name")
                     SettingsCard {
-                        CardField(label: "Shown on inbox rows and menus", placeholder: host?.baseURL?.host() ?? "My Mac", text: $nameDraft)
+                        CardField(label: "Shown on inbox rows and menus", placeholder: host?.baseURL?.host() ?? "My computer", text: $nameDraft)
                     }
                 }
 
                 VStack(spacing: 0) {
-                    SettingsSectionLabel("This Mac")
+                    SettingsSectionLabel("This computer")
                     SettingsCard {
                         CardNavRow(
                             icon: "server.rack",
@@ -114,7 +114,7 @@ struct HostSettingsView: View {
                             CardNavRow(
                                 icon: "iphone.radiowaves.left.and.right",
                                 title: "Devices",
-                                subtitle: "Who may reach this Mac"
+                                subtitle: "Who may reach this computer"
                             ) { pushDevices = true }
                             CardDivider()
                             CardNavRow(
@@ -131,11 +131,11 @@ struct HostSettingsView: View {
                         Button {
                             confirmRemove = true
                         } label: {
-                            CardRow(icon: "trash", iconColor: Theme.statusRed, title: "Remove this Mac", titleColor: Theme.statusRed) { EmptyView() }
+                            CardRow(icon: "trash", iconColor: Theme.statusRed, title: "Remove this computer", titleColor: Theme.statusRed) { EmptyView() }
                         }
                         .buttonStyle(.plain)
                     }
-                    SettingsFootnote("Removes the pairing credential and drafts from this phone. The Mac keeps running; revoke this phone from its Remote access panel to kill the credential everywhere.")
+                    SettingsFootnote("Removes the pairing credential and drafts from this phone. The computer keeps running; revoke this phone from its Remote access panel to kill the credential everywhere.")
                 }
             }
             .padding(.horizontal, 20)
@@ -143,7 +143,7 @@ struct HostSettingsView: View {
             .padding(.bottom, 32)
         }
         .background(Theme.sheet)
-        .navigationTitle(host?.name ?? "Mac")
+        .navigationTitle(host?.name ?? "Computer")
         .navigationBarTitleDisplayMode(.inline)
         .navigationDestination(isPresented: $pushConnect) {
             ConnectView(settings: settings, target: .existing(hostId))
@@ -163,7 +163,7 @@ struct HostSettingsView: View {
             guard host != nil else { return }
             settings.rename(hostId, to: nameDraft)
         }
-        .confirmationDialog("Remove \(host?.name ?? "this Mac")?", isPresented: $confirmRemove, titleVisibility: .visible) {
+        .confirmationDialog("Remove \(host?.name ?? "this computer")?", isPresented: $confirmRemove, titleVisibility: .visible) {
             Button("Remove", role: .destructive) {
                 settings.remove(hostId)
                 dismiss()

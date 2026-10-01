@@ -42,8 +42,8 @@ export function NotificationSoundsRow() {
     <Row
       label="Notification sounds"
       icon={Volume2Icon}
-      hint="The sound this Mac's alerts play."
-      info={`Your iPhone has its own choice, in its notification settings.${test ? " Test sends a real notification, so Focus and your Mac's sound settings apply." : ""}`}
+      hint="The sound this computer's alerts play."
+      info={`Your iPhone has its own choice, in its notification settings.${test ? " Test sends a real notification, so Focus and your computer's sound settings apply." : ""}`}
       {...(error ? { error } : {})}
       {...(sounds === DEFAULT_NOTIFICATION_SOUNDS ? {} : { onRevert: () => void save(DEFAULT_NOTIFICATION_SOUNDS) })}
       control={

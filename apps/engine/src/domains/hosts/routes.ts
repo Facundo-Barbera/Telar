@@ -19,7 +19,7 @@ async function exchange(baseUrl: string, code: string, deviceName: string, fetch
     });
     const payload = (await answer.json().catch(() => null)) as { deviceToken?: unknown; error?: { message?: string } } | null;
     if (!answer.ok || typeof payload?.deviceToken !== "string") {
-      return { refused: payload?.error?.message ?? `The other Mac refused the pairing (status ${answer.status}).` };
+      return { refused: payload?.error?.message ?? `The other computer refused the pairing (status ${answer.status}).` };
     }
     deviceToken = payload.deviceToken;
   } catch {
@@ -57,11 +57,11 @@ export function hostsRoutes(store: HostsStore, fetcher: typeof fetch = fetch): R
       async handle({ body }) {
         const parsed = typeof body.pairingUrl === "string" ? parsePairingUrl(body.pairingUrl) : undefined;
         if (!parsed) {
-          return fail(400, "invalid_request", "Paste the pairing link from the other Mac's Settings → Remote access (it ends in #token= and the eight-digit code).");
+          return fail(400, "invalid_request", "Paste the pairing link from the other computer's Settings → Remote access (it ends in #token= and the eight-digit code).");
         }
         const deviceName = typeof body.deviceName === "string" && body.deviceName.trim() ? body.deviceName.trim() : os.hostname();
         const paired = await exchange(parsed.baseUrl, parsed.token, deviceName, fetcher);
-        if (!paired) return fail(503, "engine_unavailable", "The other Mac did not answer. Check that it is reachable from here and that Remote access is on.");
+        if (!paired) return fail(503, "engine_unavailable", "The other computer did not answer. Check that it is reachable from here and that Remote access is on.");
         if ("refused" in paired) return fail(502, "cockpit_pairing_refused", paired.refused);
         const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : paired.name;
         const host = store.add({ baseUrl: parsed.baseUrl, deviceToken: paired.deviceToken, ...(name ? { name } : {}), ...(paired.daemonId ? { daemonId: paired.daemonId } : {}) });

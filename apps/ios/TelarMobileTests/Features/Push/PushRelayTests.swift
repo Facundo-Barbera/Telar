@@ -55,7 +55,7 @@ import Testing
 
     @Test func severalUnreachableMacsAreCountedRatherThanRepeated() {
         let two = PushReadiness(notSending: [], unreachable: [macA, macB])
-        #expect(two.statusLine(enabled: true, allowed: true).contains("2 Macs"))
+        #expect(two.statusLine(enabled: true, allowed: true).contains("2 computers"))
     }
 
     @Test func withNothingWrongItIsTheOrdinaryStatusLine() {

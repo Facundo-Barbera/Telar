@@ -17,7 +17,7 @@ const PROVIDERS: { id: DictationProviderId; label: string }[] = [
 ];
 
 const PROVIDER_INFO: Partial<Record<DictationProviderId, string>> = {
-  deepgram: "Audio goes from the device straight to Deepgram; it does not pass through this Mac.",
+  deepgram: "Audio goes from the device straight to Deepgram; it does not pass through this computer.",
 };
 
 export function DictationSection() {
@@ -80,7 +80,7 @@ export function DictationSection() {
               label="Deepgram key"
               icon={KeyRoundIcon}
               {...(configured ? { status: "set" } : {})}
-              info="The key stays on this Mac. Browsers and phones get a five-minute token instead."
+              info="The key stays on this computer. Browsers and phones get a five-minute token instead."
               control={
                 <div className="flex items-center gap-2">
                   <Input

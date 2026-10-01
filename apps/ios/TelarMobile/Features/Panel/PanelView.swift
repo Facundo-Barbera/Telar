@@ -100,7 +100,7 @@ struct PanelView: View {
     }
 
     private var unavailable: some View {
-        ContentUnavailableView("Not available here", systemImage: "wifi.slash", description: Text("This surface needs a paired Mac."))
+        ContentUnavailableView("Not available here", systemImage: "wifi.slash", description: Text("This surface needs a paired computer."))
     }
 }
 

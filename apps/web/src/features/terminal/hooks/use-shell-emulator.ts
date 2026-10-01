@@ -17,7 +17,7 @@ export type Phase =
   | { kind: "unavailable"; why: string };
 
 const NO_BRIDGE =
-  "A terminal needs Telar's desktop shell — and one on this Mac. A session on another host would otherwise get a shell on this computer while claiming to be that one.";
+  "A terminal needs Telar's desktop shell — and one on this computer. A session on another host would otherwise get a shell on this computer while claiming to be that one.";
 
 type Mount = {
   element: HTMLElement;

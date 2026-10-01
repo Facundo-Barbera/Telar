@@ -24,8 +24,8 @@ async function mountPane(status: PushRelayStatus, notifyOn: NotifyOn = "both", s
 describe("Notify on", () => {
   test("offers exactly the server's three answers, in the owner's words, default first", () => {
     expect(Object.keys(NOTIFY_ON_LABELS)).toEqual([...NOTIFY_ON_VALUES]);
-    expect(Object.values(NOTIFY_ON_LABELS)).toEqual(["This Mac when active", "iPhone only", "Both"]);
-    expect(NOTIFY_ON_LABELS[DEFAULT_NOTIFY_ON]).toBe("This Mac when active");
+    expect(Object.values(NOTIFY_ON_LABELS)).toEqual(["This computer when active", "iPhone only", "Both"]);
+    expect(NOTIFY_ON_LABELS[DEFAULT_NOTIFY_ON]).toBe("This computer when active");
   });
 
   test("the row shows the stored choice where search points, and reverting writes the default", async () => {
@@ -36,7 +36,7 @@ describe("Notify on", () => {
       await click(host.querySelector('[aria-label="Revert to the default"]')!);
       expect(calls.filter((call) => call.route.startsWith("PUT")).map((call) => call.body)).toEqual([{ notifyOn: "mac" }]);
       // A refused write shows the stored value again, and says so.
-      expect(host.textContent).toContain(saves ? "This Mac when active" : "Couldn't save. Try again.");
+      expect(host.textContent).toContain(saves ? "This computer when active" : "Couldn't save. Try again.");
       expect(host.textContent?.includes("Both")).toBe(!saves);
       unmount();
     }

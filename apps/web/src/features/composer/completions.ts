@@ -289,7 +289,7 @@ export function rankCommands(commands: readonly Completion[], query: string): Co
 
 const SOURCE_LABEL: Record<ProviderSkillSource, string> = {
   project: "This project",
-  user: "This Mac",
+  user: "This computer",
   plugin: "Plugin",
   provider: "Provider",
 };

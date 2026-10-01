@@ -75,7 +75,7 @@ test("an accepted handshake sends the reader to the network, not to the vendor's
   await client.setDictation({ provider: "deepgram", apiKey: "dg-secret-key" });
   const said = await client.dictationDiagnosis();
   expect(said.fault).toBe("elsewhere");
-  expect(said.reason).toContain("accepted a connection from this Mac");
+  expect(said.reason).toContain("accepted a connection from this computer");
 });
 
 test("it asks with the model and language a client would have opened with", async () => {

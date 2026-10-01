@@ -26,8 +26,8 @@ struct PushReadiness: Equatable {
         if !unreachable.isEmpty {
             let count = unreachable.count
             return count == 1
-                ? "One Mac did not answer. Check that it is awake and this phone can reach it."
-                : "\(count) Macs did not answer. Check that they are awake and this phone can reach them."
+                ? "One computer did not answer. Check that it is awake and this phone can reach it."
+                : "\(count) computers did not answer. Check that they are awake and this phone can reach them."
         }
         if !enabled { return "Notifications are off" }
         if !allowed { return "Notifications are disabled in system Settings" }

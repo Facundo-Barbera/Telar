@@ -5,7 +5,7 @@
  */
 export function microphoneUnavailable(facts: { secure: boolean; canRecord: boolean }): string | undefined {
   if (!facts.secure) {
-    return "This page is not a secure context, so the browser will not grant a microphone here at all — no setting on either end changes that. Reach Telar over https, or on 127.0.0.1: a tunnel to this Mac counts as local and needs no certificate.";
+    return "This page is not a secure context, so the browser will not grant a microphone here at all — no setting on either end changes that. Reach Telar over https, or on 127.0.0.1: a tunnel to this computer counts as local and needs no certificate.";
   }
   if (!facts.canRecord) {
     return "This browser cannot record audio — it has no MediaRecorder, or this page is embedded somewhere that is not allowed a microphone.";

@@ -17,7 +17,7 @@ const api = createEngineApi();
 export function machineOffReason(label: string): ReactNode {
   return (
     <>
-      {label} is off for every project on this Mac.{" "}
+      {label} is off for every project on this computer.{" "}
       <a href="/settings?section=plugins" className="underline underline-offset-2">
         Turn it on in Plugins
       </a>

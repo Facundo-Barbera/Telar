@@ -88,7 +88,7 @@ extension HTTPEngineAPI: PluginsAPI {
             do {
                 return try JSONDecoder().decode(T.self, from: data)
             } catch {
-                throw EngineAPIError.engine(code: "unexpected_answer", message: "The Mac answered \(door)/\(method) in a shape this app cannot read.", status: status)
+                throw EngineAPIError.engine(code: "unexpected_answer", message: "The computer answered \(door)/\(method) in a shape this app cannot read.", status: status)
             }
         }.value
     }

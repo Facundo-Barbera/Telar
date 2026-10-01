@@ -232,7 +232,7 @@ describe("what the pane shows before anybody has chosen", () => {
     expect(host.textContent).not.toContain("rewritten in place until Deepgram settles them");
     // THE CAPTION SAID WHAT THE PROVIDER ROW'S HINT SAYS, live, of whichever
     // value is chosen — the doubling #357 is about.
-    expect(host.textContent).not.toContain("Off by default: this Mac");
+    expect(host.textContent).not.toContain("Off by default: this computer");
     // AND THE HINT THAT TOLD YOU TO USE THE CONTROL IT SAT UNDER.
     expect(host.textContent).not.toContain("Narrow it below");
 
@@ -250,7 +250,7 @@ describe("what the pane shows before anybody has chosen", () => {
 
     // Where the audio goes, which no control on this pane states — behind
     // the ⓘ, not under the row: the label and the control say the rest.
-    expect(infos(host)).toContain("does not pass through this Mac");
+    expect(infos(host)).toContain("does not pass through this computer");
     // What the key is actually spent on.
     expect(infos(host)).toContain("five-minute token");
     // What the vocabulary box does not need to be told.

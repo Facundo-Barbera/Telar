@@ -132,7 +132,7 @@ const ROWS: { field: ModeField; label: string; icon: ComponentType<{ className?:
     label: "Environment",
     icon: VariableIcon,
     hint: "Exported to the setup command.",
-    info: "Merges by key: this Mac < the repo's .telar/workspace.json < this project.",
+    info: "Merges by key: this computer < the repo's .telar/workspace.json < this project.",
   },
   { field: "ports", label: "Ports", icon: NetworkIcon, hint: "One stable port per name, exported under that name." },
   {
@@ -395,9 +395,9 @@ function inheritedFrom(view: ProjectWorkspaceView, field: WorkspaceRowField, sou
   if (field === "env") {
     const mac = Object.keys(view.machine.env ?? {}).length > 0;
     const repo = Object.keys(view.proposal.config?.env ?? {}).length > 0;
-    if (mac && repo) return `From this Mac and ${REPO_FILE}`;
+    if (mac && repo) return `From this computer and ${REPO_FILE}`;
   }
-  return source === "proposed" ? `From ${REPO_FILE}` : "From this Mac's defaults";
+  return source === "proposed" ? `From ${REPO_FILE}` : "From this computer's defaults";
 }
 
 function Inherited({ caption, text }: { caption: string; text: string }) {

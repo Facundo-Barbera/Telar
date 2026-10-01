@@ -92,10 +92,10 @@ test("off for this Mac refuses every generic scope; the old paths stay ungated",
 
   const machine = await call("GET", "/v2/plugins/latex/managed");
   expect(machine.status).toBe(400);
-  expect(machine.body.error).toEqual({ code: "invalid_request", message: "latex is turned off for this Mac" });
+  expect(machine.body.error).toEqual({ code: "invalid_request", message: "latex is turned off for this computer" });
   // Even a verb that answers before a project turns LaTeX on.
   const choosing = await call("GET", "/v2/projects/project_one/plugins/latex/distributions");
-  expect(choosing.body.error?.message).toBe("latex is turned off for this Mac");
+  expect(choosing.body.error?.message).toBe("latex is turned off for this computer");
 
   // The alias keeps the behaviour a released client relies on.
   expect((await call("GET", "/v2/latex/managed")).status).toBe(200);

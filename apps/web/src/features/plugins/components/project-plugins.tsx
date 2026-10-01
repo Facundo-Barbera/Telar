@@ -74,7 +74,7 @@ export function ProjectPluginList({
     const reason = !project
       ? `Select a project to turn ${name} on for it.`
       : project.hostId
-        ? `Registered on ${project.hostName ?? "another Mac"}. Change it in that Mac's own settings.`
+        ? `Registered on ${project.hostName ?? "another computer"}. Change it in that computer's own settings.`
         : failed
           ? (status.error ?? "This plugin did not start, so turning it on would do nothing.")
           : !machineAllows(machine, id)
@@ -106,7 +106,7 @@ export function ProjectPluginList({
       key={project?.id}
       title="Plugins"
       param="plugin"
-      description="Which of this Mac's plugins this project has opted into."
+      description="Which of this computer's plugins this project has opted into."
       items={items}
       empty={<Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}
       footer={error && <Row icon={CircleAlertIcon} label="Could not save" hint={error} control={<Badge variant="outline">Error</Badge>} />}

@@ -99,7 +99,7 @@ test("every project row is name · place · ⌘digit, and a paired Mac's same-na
     "TTelarLocal · /Users/someone/code/telar⌘1",
     "NNotesLocal · /Users/someone/code/notes⌘2",
     "TTelarmini⌘3",
-    "Add a project…A folder on this Mac, or a repository to clone",
+    "Add a project…A folder on this computer, or a repository to clone",
   ]);
   expect(document.querySelector('[role="listbox"]')?.getAttribute("aria-label")).toBe("Projects");
 });

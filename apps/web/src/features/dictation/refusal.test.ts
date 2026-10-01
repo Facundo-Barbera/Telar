@@ -62,8 +62,8 @@ describe("why one attempt at the microphone failed", () => {
 
   test("and something else keeps the words whoever threw it wrote", () => {
     // Engine and provider refusals are already written for a reader.
-    expect(microphoneRefusal(new Error("No Deepgram key is configured on this Mac, so dictation cannot start."))).toBe(
-      "No Deepgram key is configured on this Mac, so dictation cannot start.",
+    expect(microphoneRefusal(new Error("No Deepgram key is configured on this computer, so dictation cannot start."))).toBe(
+      "No Deepgram key is configured on this computer, so dictation cannot start.",
     );
     expect(microphoneRefusal("oh no")).toBe("Dictation could not start.");
     expect(microphoneRefusal(new Error(""))).toBe("Dictation could not start.");

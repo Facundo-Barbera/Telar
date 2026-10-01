@@ -296,7 +296,7 @@ export const APP_PAGES: SettingsPageSpec[] = [
         rows: [
           {
             title: "Provider",
-            hint: "Who transcribes, or nobody. Off by default: no mic button anywhere, and this Mac's own dictation keeps working in the message box.",
+            hint: "Who transcribes, or nobody. Off by default: no mic button anywhere, and this computer's own dictation keeps working in the message box.",
             keywords: [
               "dictation",
               "dictate",
@@ -324,7 +324,7 @@ export const APP_PAGES: SettingsPageSpec[] = [
           },
           {
             title: "Deepgram key",
-            hint: "The credential this Mac spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
+            hint: "The credential this computer spends on transcription. Stored with its engine state; the browser and the phone only ever get a token that expires in minutes.",
             keywords: ["dictation", "dictate", "microphone", "mic", "voice", "speech", "transcribe", "transcription", "deepgram", "key", "api key", "credential"],
             icon: KeyRoundIcon,
           },
@@ -354,7 +354,7 @@ export const APP_PAGES: SettingsPageSpec[] = [
         rows: [
           {
             title: "Input",
-            hint: "Which microphone dictation records from. Kept in this browser alone, so a phone or another Mac keeps its own.",
+            hint: "Which microphone dictation records from. Kept in this browser alone, so a phone or another computer keeps its own.",
             keywords: ["input", "device", "which microphone", "choose microphone", "headset", "airpods", "usb", "interface", "built-in", "default input", "wrong microphone"],
             icon: MicIcon,
           },
@@ -486,7 +486,7 @@ export const APP_PAGES: SettingsPageSpec[] = [
           {
             navigateOnly: true,
             title: "Plugins",
-            hint: "Which plugins are registered with the engine, whether each is on for this Mac, and the defaults a project inherits.",
+            hint: "Which plugins are registered with the engine, whether each is on for this computer, and the defaults a project inherits.",
             keywords: [
               "latex",
               "data science",
@@ -515,7 +515,7 @@ export const APP_PAGES: SettingsPageSpec[] = [
           {
             id: "plugins-latex-managed",
             title: "Telar (managed)",
-            hint: "A TeX engine Telar downloads itself, so LaTeX works on a Mac with no TeX installed.",
+            hint: "A TeX engine Telar downloads itself, so LaTeX works on a computer with no TeX installed.",
             keywords: ["tectonic", "latex", "install", "tex", "download"],
             icon: DownloadIcon,
           },

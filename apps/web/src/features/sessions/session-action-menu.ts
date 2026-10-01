@@ -83,7 +83,7 @@ const ARCHIVED = "This conversation is over.";
 const WAITING = "Something here is waiting on you.";
 const RUNNING_DELETE = "A turn is running. Stop it before deleting.";
 const WAITING_DELETE = "A request here is waiting on you. Answer or stop it first.";
-const REMOTE_SETTINGS = "Project settings open on the Mac that owns the project.";
+const REMOTE_SETTINGS = "Project settings open on the computer that owns the project.";
 const ALREADY_OPEN = "You are already reading this one.";
 
 function titleItems(session: SessionActionTarget, actions: SessionActionHandlers): SessionActionItem[] {

@@ -41,7 +41,7 @@ struct ConnectView: View {
                         CardDivider()
                         CardField(label: "Port", placeholder: "3000", text: $port, keyboard: .numberPad)
                     }
-                    SettingsFootnote("The Mac must run the cockpit bound to its tailnet address (TELAR_WEB_HOST), and this phone must be on the same tailnet.")
+                    SettingsFootnote("The computer must run the cockpit bound to its tailnet address (TELAR_WEB_HOST), and this phone must be on the same tailnet.")
                 }
 
                 VStack(spacing: 0) {
@@ -50,7 +50,7 @@ struct ConnectView: View {
                         if targetToken != nil {
                             StatusBanner(
                                 icon: "checkmark.seal.fill", color: Theme.statusEmerald,
-                                title: "This phone is paired with \(targetHost?.name ?? "this Mac").",
+                                title: "This phone is paired with \(targetHost?.name ?? "this computer").",
                                 detail: "Pasting a new link replaces the credential."
                             )
                             CardDivider()
@@ -95,7 +95,7 @@ struct ConnectView: View {
                     }
                     SettingsFootnote(targetToken == nil
                         ? "When the cockpit requires pairing: Settings → Remote access → show the code, then copy the link under the QR."
-                        : "Forget removes the credential from this phone only — revoke the device on the Mac to kill it everywhere.")
+                        : "Forget removes the credential from this phone only — revoke the device on the computer to kill it everywhere.")
                 }
 
                 VStack(spacing: 12) {
@@ -188,7 +188,7 @@ struct ConnectView: View {
             }
             switch error {
             case .engine(let code, _, _) where code == "engine_unavailable":
-                probeResult = .failed("Cockpit answered, but the engine on the Mac is down.")
+                probeResult = .failed("Cockpit answered, but the engine on the computer is down.")
             case .transport:
                 probeResult = .failed("No answer. Is the cockpit running and bound to the tailnet IP (TELAR_WEB_HOST)? Is this phone on the tailnet?")
             default:

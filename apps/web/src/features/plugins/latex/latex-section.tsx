@@ -266,7 +266,7 @@ function DistributionsGroup({
         {data && (
           <DistributionCard
             name={inheritedDistribution(machine, data.toolchain)}
-            detail="This Mac's default, set on the Plugins pane."
+            detail="This computer's default, set on the Plugins pane."
             inUse={enabled && !config?.toolchain}
             saving={saving}
             onUse={() => onSave({ enabled: true, ...(config?.mainFile ? { mainFile: config.mainFile } : {}) })}

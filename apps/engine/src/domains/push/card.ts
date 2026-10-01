@@ -67,7 +67,7 @@ export function cardRows(sessions: SessionSignal[], now: number, previews: boole
 }
 
 function cardHostName(name: string | undefined): string {
-  return name?.trim().split(".")[0] || "Mac";
+  return name?.trim().split(".")[0] || "Computer";
 }
 
 export function cardAlert(record: MobileRegistration, blocked: SessionSignal[]): CardAlert {

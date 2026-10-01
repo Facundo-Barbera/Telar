@@ -42,7 +42,7 @@ const helloMeta: PluginMeta = {
   eventKinds: ["greeted"],
   settings: [
     { id: "hello", scope: "project", label: "Hello", blurb: "The proof plugin's settings for this project." },
-    { id: "defaults", scope: "machine", label: "Hello", blurb: "What every project inherits on this Mac." },
+    { id: "defaults", scope: "machine", label: "Hello", blurb: "What every project inherits on this computer." },
   ],
 };
 

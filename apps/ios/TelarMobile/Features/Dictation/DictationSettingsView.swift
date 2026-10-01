@@ -69,7 +69,7 @@ struct DictationSettingsView: View {
                         SettingsSectionLabel("Deepgram")
                         SettingsCard {
                             CardField(
-                                label: configured ? "A key is saved on that Mac" : "Paste a Deepgram API key",
+                                label: configured ? "A key is saved on that computer" : "Paste a Deepgram API key",
                                 placeholder: configured ? "Replace it" : "Paste a key",
                                 text: $keyDraft,
                                 mono: true,
@@ -91,7 +91,7 @@ struct DictationSettingsView: View {
                             }
                         }
                         SettingsFootnote(
-                            "The key stays on that Mac and is never shown again. Each dictation spends it once for a token that expires in five minutes, and that token is what this phone gets — the audio goes straight to Deepgram and never passes through the Mac."
+                            "The key stays on that computer and is never shown again. Each dictation spends it once for a token that expires in five minutes, and that token is what this phone gets — the audio goes straight to Deepgram and never passes through the computer."
                         )
                     }
 
@@ -172,11 +172,11 @@ struct DictationSettingsView: View {
     private var providerFootnote: String {
         switch provider {
         case DictationProvider.deepgram:
-            "A mic button on every message box, here and on that Mac."
+            "A mic button on every message box, here and on that computer."
         case DictationProvider.off:
             "No mic button anywhere. This phone’s own keyboard dictation keeps working in the message box exactly as it does now — Telar simply does not add one of its own."
         default:
-            "Chosen on that Mac, and not one this version of Telar knows how to use. Update the app, or pick another here."
+            "Chosen on that computer, and not one this version of Telar knows how to use. Update the app, or pick another here."
         }
     }
 

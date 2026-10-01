@@ -341,7 +341,7 @@ describe("the pane", () => {
     local = [project(), project({ id: "project_b", name: "Other" })];
     const view = await mount(<ProjectsPage />);
     expect(view.scope()).toBe("All projects");
-    expect(view.host.textContent).toContain("Which of this Mac's plugins this project has opted into.");
+    expect(view.host.textContent).toContain("Which of this computer's plugins this project has opted into.");
     expect(view.host.textContent).not.toContain("Tool servers only this project's sessions see.");
     await press(view.trigger());
     expect(options()).toEqual(["All projects", "Telar", "Other"]);
@@ -366,7 +366,7 @@ describe("the pane", () => {
     const text = view.host.textContent ?? "";
     expect(text).toContain("Tool servers only this project's sessions see.");
     expect(text).toContain("Remove project from Telar");
-    expect(text).toContain("Which of this Mac's plugins this project has opted into.");
+    expect(text).toContain("Which of this computer's plugins this project has opted into.");
     view.done();
   });
 
@@ -382,14 +382,14 @@ describe("the pane", () => {
     hosts = [{ id: "host_mini", name: "mini" }];
     remote = [project({ id: "project_far", name: "Far" })];
     const view = await mount(<ProjectsPage />);
-    expect(view.button("This Mac")).toBeDefined();
+    expect(view.button("This computer")).toBeDefined();
     expect(calls.some((call) => call.url.startsWith("/api/hosts/host_mini"))).toBe(false);
 
     await press(view.button("mini"));
     expect(calls.some((call) => call.url === "/api/hosts/host_mini/projects")).toBe(true);
     expect(view.scope()).toBe("Far");
     expect(view.host.textContent).toContain("Registered on mini");
-    expect(view.host.textContent).toContain("Which of this Mac's plugins this project has opted into.");
+    expect(view.host.textContent).toContain("Which of this computer's plugins this project has opted into.");
     expect(view.host.textContent).not.toContain("Tool servers only this project's sessions see.");
 
     await rename(view.host.querySelector<HTMLInputElement>('[aria-label="Project name"]')!, "Near");
