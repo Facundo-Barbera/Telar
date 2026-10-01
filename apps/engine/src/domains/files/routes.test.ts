@@ -49,6 +49,38 @@ test("a missing path is a 404, or its nearest folder when asked", () => {
   expect((ask(`?nearest=1&path=${gone}`, home).body as DirectoryListing).path).toBe(home);
 });
 
+test("each mounted volume is a root, and a path on one is browsable", () => {
+  const home = scratch("telar-fs-home-");
+  const volumes = scratch("telar-fs-volumes-");
+  const drive = path.join(volumes, "Taller");
+  fs.mkdirSync(path.join(drive, "projects", "life"), { recursive: true });
+  fs.mkdirSync(path.join(volumes, ".hidden-volume"));
+  const stat = (target: string) => {
+    const real = fs.statSync(target);
+    return target.startsWith(drive) ? Object.assign(Object.create(real), { dev: real.dev + 1 }) : real;
+  };
+  const { route, params } = matchRoute(filesRoutes({ home, mounts: [volumes], stat }), "GET", "/v2/fs")!;
+  const get = (query: string) =>
+    route.handle({ body: {}, params, query: new URLSearchParams(query), request: {} as http.IncomingMessage, response: {} as http.ServerResponse }) as RouteAnswer;
+
+  expect((get("").body as DirectoryListing).roots).toEqual([
+    { name: "Home", path: home },
+    { name: "Taller", path: drive },
+  ]);
+  const listed = get(`?path=${encodeURIComponent(path.join(drive, "projects"))}`);
+  expect(listed.status).toBe(200);
+  expect((listed.body as DirectoryListing).dirs.map((entry) => entry.path)).toEqual([path.join(drive, "projects", "life")]);
+});
+
+test("a file is refused as a folder, with a sentence the phone can show", () => {
+  const home = scratch("telar-fs-home-");
+  fs.writeFileSync(path.join(home, "notes.txt"), "not a folder");
+  expect(ask(`?path=${encodeURIComponent(path.join(home, "notes.txt"))}`, home)).toMatchObject({
+    status: 400,
+    body: { error: { code: "invalid_request", message: "That is a file, not a folder." } },
+  });
+});
+
 test("the engine serves it behind its token and refuses paths outside home and the mounts", async () => {
   const daemon = await startEngine({ models: stubModels, engineRoot: scratch("telar-fs-engine-") });
   daemons.push(daemon);
