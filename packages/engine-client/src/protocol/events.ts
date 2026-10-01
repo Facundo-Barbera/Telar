@@ -228,6 +228,20 @@ export const EngineDiscovery = z.object({
 });
 export type EngineDiscovery = z.infer<typeof EngineDiscovery>;
 
+export const EventLoopStall = z.object({
+  at: Timestamp,
+  lagMs: z.number().int().nonnegative(),
+  operation: z.string(),
+});
+export type EventLoopStall = z.infer<typeof EventLoopStall>;
+
+export const EventLoopHealth = z.object({
+  thresholdMs: z.number().int().positive(),
+  maxLagMs: z.number().int().nonnegative(),
+  stalls: z.array(EventLoopStall),
+});
+export type EventLoopHealth = z.infer<typeof EventLoopHealth>;
+
 export const EngineHealth = z.object({
   version: z.literal(2),
   daemonId: Id,
@@ -241,6 +255,7 @@ export const EngineHealth = z.object({
   browser: z.object({ provider: BrowserProvider }).optional(),
   plugins: z.array(PluginStatus).optional(),
   git: z.object({ liveChildren: z.number().int().nonnegative(), cap: z.number().int().positive() }).optional(),
+  eventLoop: EventLoopHealth.optional(),
 });
 export type EngineHealth = z.infer<typeof EngineHealth>;
 
