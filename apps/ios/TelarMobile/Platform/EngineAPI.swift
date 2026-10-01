@@ -17,14 +17,14 @@ enum EngineAPIError: Error, LocalizedError {
         case .engine(let code, let message, _):
             switch code {
             case "cockpit_unauthorized": "This phone is not paired with the cockpit — get a pairing code from Settings → Remote access."
-            case "cockpit_forbidden": "This phone is paired for viewing only — give it full access from Remote access on the Mac."
-            case "engine_unavailable": "The Mac's engine is down — the cockpit is up but can't reach it."
-            case "worker_unavailable": "No worker is running on the Mac to take the turn."
+            case "cockpit_forbidden": "This phone is paired for viewing only — give it full access from Remote access on the computer."
+            case "engine_unavailable": "The computer's engine is down — the cockpit is up but can't reach it."
+            case "worker_unavailable": "No worker is running on the computer to take the turn."
             case "not_found": "That no longer exists on the engine."
             default: message
             }
         case .badResponse(let status): "Unexpected response (\(status)) — is the base URL a Telar cockpit?"
-        case .incompatible: "The Mac and this app are on very different versions — update whichever is older."
+        case .incompatible: "The computer and this app are on very different versions — update whichever is older."
         case .transport(let error): error.localizedDescription
         }
     }

@@ -39,9 +39,9 @@ test("Inherit shows the inherited value and where it comes from", () => {
   expect(html).toContain("From the repo&#x27;s .telar/workspace.json");
   expect(html).toContain("install command");
   expect(html).toContain("Holds the first turn until it finishes.");
-  expect(html).toContain("From this Mac&#x27;s defaults");
+  expect(html).toContain("From this computer&#x27;s defaults");
   expect(html).toContain("PORT");
-  expect(html).toContain("From this Mac and the repo&#x27;s .telar/workspace.json");
+  expect(html).toContain("From this computer and the repo&#x27;s .telar/workspace.json");
   expect(html).toContain("A=1\nB=2");
   // Nothing anywhere for the rest.
   expect(html).toContain("Nothing to inherit.");
@@ -76,7 +76,7 @@ test("Custom opens the editor on the project's own value", () => {
   expect(html).toContain("KEY=value");
   expect(html).toContain("out =&gt; build command");
   // The merge rule is behind the ⓘ, not in the hint.
-  expect(html).toContain("Merges by key: this Mac &lt; the repo&#x27;s .telar/workspace.json &lt; this project.");
+  expect(html).toContain("Merges by key: this computer &lt; the repo&#x27;s .telar/workspace.json &lt; this project.");
 });
 
 test("Dependencies shows the project's choice, or what it inherits, with the side effect behind the ⓘ", () => {

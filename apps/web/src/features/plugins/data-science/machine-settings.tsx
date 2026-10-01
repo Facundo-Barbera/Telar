@@ -63,7 +63,7 @@ export function DataSciencePackagesRow({
             placeholder="pandas, matplotlib, numpy"
             spellCheck={false}
             className="h-8 w-64 text-xs"
-            aria-label="Default packages for new environments on this Mac"
+            aria-label="Default packages for new environments on this computer"
           />
           <Button size="sm" variant="outline" disabled={busy || !dirty} onClick={() => void save(parsePackages(packages))}>
             Save

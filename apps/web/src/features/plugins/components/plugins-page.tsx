@@ -149,7 +149,7 @@ export function PluginsPage() {
         disabled={busy === status.meta.id || failed}
         onCheckedChange={(next: boolean) => void toggle(status.meta.id, next)}
         title="Each project keeps its own setting, and running work finishes before anything is released."
-        aria-label={`${status.meta.name} enabled on this Mac`}
+        aria-label={`${status.meta.name} enabled on this computer`}
       />
     );
     const Icon = pluginIcon(status.meta.icon);
@@ -183,7 +183,7 @@ export function PluginsPage() {
     <MasterDetail
       title="Plugins"
       param="plugin"
-      description="Turning one off here makes it unavailable in every project on this Mac."
+      description="Turning one off here makes it unavailable in every project on this computer."
       items={items}
       empty={<Row icon={BlocksIcon} label="No plugins registered" control={<Badge variant="outline">None</Badge>} />}
       footer={<AddPluginRow notice={notice} disabled={busy !== undefined} onAdd={(mode) => void add(mode)} />}
@@ -225,7 +225,7 @@ function MachinePluginPage({ status, remove, settings }: { status: PluginStatus;
         </SettingsGroup>
       )}
       {settings ?? (
-        <NothingToConfigure hint={hasMachineSettings(status) ? "Its Mac-wide defaults show once it is on." : "This plugin has no Mac-wide settings."} />
+        <NothingToConfigure hint={hasMachineSettings(status) ? "Its defaults for this computer show once it is on." : "This plugin has no settings for this computer."} />
       )}
     </>
   );

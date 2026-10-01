@@ -68,7 +68,7 @@ const bothMacs = [
 describe("a group that spans two Macs", () => {
   test("is one header wearing both Macs' badges", () => {
     const html = renderRail(bothMacs);
-    expect(html).toContain("On This Mac");
+    expect(html).toContain("On this computer");
     expect(html).toContain("On mini");
     // One group, one name — not the same word twice down the rail.
     expect(html.match(/>Telar</g)?.length).toBe(1);
@@ -80,13 +80,13 @@ describe("a group that spans two Macs", () => {
     // reader never chose.
     const html = renderRail(bothMacs);
     expect(html).not.toContain("sessions/new");
-    expect(html).toContain("asks which Mac");
+    expect(html).toContain("asks which computer");
   });
 
   test("one Mac's group is unchanged: no badge, and a plain link to its canvas", () => {
     const html = renderRail([session("only", { projectId: "project_here", projectRemote: REMOTE })]);
     expect(html).toContain('href="/projects/project_here/sessions/new"');
-    expect(html).not.toContain("On This Mac");
+    expect(html).not.toContain("On this computer");
   });
 
   test("a group that lives only on a paired Mac still links to that Mac's canvas", () => {

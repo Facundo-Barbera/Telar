@@ -57,7 +57,7 @@ import Foundation
 
             guard DictationProvider.canDictateHere(minted.provider) else {
                 throw DictationFailure.audio(
-                    "This version of Telar cannot dictate with \(minted.provider). Update the app, or choose another provider in that Mac's Dictation settings."
+                    "This version of Telar cannot dictate with \(minted.provider). Update the app, or choose another provider in that computer's Dictation settings."
                 )
             }
             guard try await allowedToRecord() else {

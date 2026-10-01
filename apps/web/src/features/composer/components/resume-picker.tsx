@@ -120,7 +120,7 @@ function ConversationList({
 
         {conversations?.length === 0 && (
           <p className="px-1 py-6 text-sm text-muted-foreground">
-            No Claude Code conversations on this Mac for this login — or every one of them is already open in Telar.
+            No Claude Code conversations on this computer for this login — or every one of them is already open in Telar.
           </p>
         )}
 

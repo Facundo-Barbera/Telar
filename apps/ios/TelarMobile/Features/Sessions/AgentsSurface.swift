@@ -243,7 +243,7 @@ struct AgentsSurface: View {
                 "No other conversation is involved",
                 systemImage: "person.2",
                 description: Text(failed
-                    ? "The Mac did not answer — retrying."
+                    ? "The computer did not answer — retrying."
                     : "Conversations this one hands work to appear here, with what they were asked for and how it went.")
             )
             .padding(.top, 24)

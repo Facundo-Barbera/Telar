@@ -141,7 +141,7 @@ struct SessionSidebar: View {
             .navigationTitle("Telar")
 
             .navigationBarTitleDisplayMode(.large)
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, Macs")
+            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search sessions, projects, computers")
 
             .toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -150,11 +150,11 @@ struct SessionSidebar: View {
                 }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
-                        Picker("Mac", selection: Bindable(inbox).filter) {
-                            Text("All Macs").tag(nil as HostID?)
+                        Picker("Computer", selection: Bindable(inbox).filter) {
+                            Text("All computers").tag(nil as HostID?)
                             ForEach(settings.hosts) { Text($0.name).tag(Optional($0.id)) }
                         }
-                    } label: { Label(inbox.filter.map(hostName) ?? "All Macs", systemImage: "line.3.horizontal.decrease") }
+                    } label: { Label(inbox.filter.map(hostName) ?? "All computers", systemImage: "line.3.horizontal.decrease") }
                 }
             }
     }
@@ -773,7 +773,7 @@ struct SessionSidebar: View {
             layoutError = nil
         } catch {
             inbox.applyLayout(host, previous)
-            layoutError = "Couldn't save conversation order. Try again when the Mac is connected."
+            layoutError = "Couldn't save conversation order. Try again when the computer is connected."
         }
     }
 
@@ -789,7 +789,7 @@ struct SessionSidebar: View {
             layoutError = nil
         } catch {
             inbox.applyLayout(host, previous)
-            layoutError = "Couldn't save project order. Try again when the Mac is connected."
+            layoutError = "Couldn't save project order. Try again when the computer is connected."
         }
     }
 }

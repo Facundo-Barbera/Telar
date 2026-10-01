@@ -104,7 +104,7 @@ export class PluginDoors {
     if (!resolved) {
       throw new EngineStateError(
         "invalid_request",
-        machineAllows(this.host.machinePlugins(), "latex") ? "LaTeX is not enabled for this session's project" : "LaTeX is turned off for this Mac",
+        machineAllows(this.host.machinePlugins(), "latex") ? "LaTeX is not enabled for this session's project" : "LaTeX is turned off for this computer",
       );
     }
     return storeLatexCapability({

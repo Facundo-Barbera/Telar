@@ -95,7 +95,7 @@ describe("sub-sessions on the card", () => {
     const header = (hostName?: string) => (automaticActivityDelivery({ ...record(), hostName }, [orchestrator], "b".repeat(64), now, now, "start").payload.aps.attributes as { hostName: string }).hostName;
     expect(header("mini-fbarbera.snakebird-cardassia.ts.net")).toBe("mini-fbarbera");
     expect(header("Studio")).toBe("Studio");
-    expect(header(undefined)).toBe("Mac");
+    expect(header(undefined)).toBe("Computer");
   });
 
   test("a child whose parent is not on the card's list stands as its own row", () => {

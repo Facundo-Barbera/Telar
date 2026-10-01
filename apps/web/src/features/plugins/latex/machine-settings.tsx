@@ -106,7 +106,7 @@ export function LatexDistributionSettings({
     <>
       <SettingsGroup
         title="TeX distribution"
-        description="What this Mac compiles with when a project has not chosen its own."
+        description="What this computer compiles with when a project has not chosen its own."
       >
         {managed && (
           <ManagedTectonicRow
@@ -173,8 +173,8 @@ function ManagedTectonicRow({
       }
       hint={
         managed.installed
-          ? `Tectonic ${managed.version}, downloaded by Telar — a project opened on any Mac compiles with it, with no TeX installed.`
-          : `Tectonic ${managed.version}, about 20 MB. Telar keeps it in its own folder, so LaTeX works on a Mac with no TeX on it.`
+          ? `Tectonic ${managed.version}, downloaded by Telar — a project opened on any computer compiles with it, with no TeX installed.`
+          : `Tectonic ${managed.version}, about 20 MB. Telar keeps it in its own folder, so LaTeX works on a computer with no TeX on it.`
       }
       {...(managed.supported ? {} : { unavailable: { reason: "Telar has no managed Tectonic for this platform yet." } })}
       {...(managed.error ? { error: managed.error } : {})}

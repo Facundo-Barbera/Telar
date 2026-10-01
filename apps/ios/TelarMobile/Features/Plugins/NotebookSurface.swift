@@ -587,7 +587,7 @@ struct ReadOnlyNotebookView: View {
     private var kernelNote: some View {
         HStack(spacing: 8) {
             Image(systemName: "eye").font(.system(Theme.caption)).foregroundStyle(Theme.textMuted)
-            Text("Read-only — running cells needs Data Science turned on for this project, on the Mac.")
+            Text("Read-only — running cells needs Data Science turned on for this project, on the computer.")
                 .font(.system(Theme.caption))
                 .foregroundStyle(Theme.textMuted)
             Spacer(minLength: 0)

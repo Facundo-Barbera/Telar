@@ -15,7 +15,7 @@ struct NewConversationPicker: View {
         NavigationStack {
             List {
                 if sections.isEmpty {
-                    Text(model.loading ? "Loading projects…" : model.targets.isEmpty ? "No Mac reported a project." : "No project matches that.")
+                    Text(model.loading ? "Loading projects…" : model.targets.isEmpty ? "No computer reported a project." : "No project matches that.")
                         .foregroundStyle(Theme.textMuted)
                 }
                 ForEach(sections) { section in

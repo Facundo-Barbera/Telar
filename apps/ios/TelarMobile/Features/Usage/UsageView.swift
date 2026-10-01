@@ -40,7 +40,7 @@ struct UsageView: View {
 
                 if settings.hosts.count > 1 {
                     VStack(spacing: 0) {
-                        SettingsSectionLabel("Mac")
+                        SettingsSectionLabel("Computer")
                         SettingsCard {
                             ForEach(Array(settings.hosts.enumerated()), id: \.element.id) { index, mac in
                                 if index > 0 { CardDivider() }
@@ -55,7 +55,7 @@ struct UsageView: View {
                                 .buttonStyle(.plain)
                             }
                         }
-                        SettingsFootnote("Each Mac counts what it ran, by reading its own provider transcripts. There is no combined figure.")
+                        SettingsFootnote("Each computer counts what it ran, by reading its own provider transcripts. There is no combined figure.")
                     }
                 }
 
@@ -64,7 +64,7 @@ struct UsageView: View {
                 } else if let fold {
                     if fold.total.turns == 0 {
                         ContentUnavailableView("No activity in this window", systemImage: "chart.bar",
-                                               description: Text("Nothing this Mac ran was counted between then and now."))
+                                               description: Text("Nothing this computer ran was counted between then and now."))
                     } else {
                         headline(fold)
                         providers(fold)
@@ -180,7 +180,7 @@ struct UsageView: View {
 
     private func load(force: Bool) async {
         guard let host, let api = settings.api(for: host) else {
-            error = "This Mac is not paired."
+            error = "This computer is not paired."
             return
         }
         guard force || loaded?.window != window else { return }

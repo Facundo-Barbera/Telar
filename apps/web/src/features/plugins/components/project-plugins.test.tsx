@@ -126,7 +126,7 @@ test("without a project, or on another Mac, the switches are inert and nothing o
 test("a plugin off for the whole Mac is inert in the list and on its page, and says where to turn it on", () => {
   const machine = { version: 1, entries: { latex: { enabled: false } } };
   const html = renderToStaticMarkup(<ProjectPluginList project={project({}, "latex")} plugins={[LATEX]} machine={machine} onChange={() => {}} />);
-  expect(html.match(/LaTeX is off for every project on this Mac\./g)).toHaveLength(3);
+  expect(html.match(/LaTeX is off for every project on this computer\./g)).toHaveLength(3);
   expect(html).toContain('href="/settings?section=plugins"');
   expect(html).not.toContain('aria-label="Enable LaTeX for this project"');
   expect(renderToStaticMarkup(<ProjectPluginList project={project({}, "latex")} plugins={[LATEX]} onChange={() => {}} />)).not.toContain("off for every project");

@@ -27,9 +27,9 @@ export class DictationError extends Error {
 }
 
 export const NO_KEY_CONFIGURED =
-  "No Deepgram key is configured on this Mac, so dictation cannot start. Paste one in Settings → Dictation.";
+  "No Deepgram key is configured on this computer, so dictation cannot start. Paste one in Settings → Dictation.";
 
-export const DICTATION_OFF = "Dictation is switched off on this Mac. Choose a provider in Settings → Dictation to turn it on.";
+export const DICTATION_OFF = "Dictation is switched off on this computer. Choose a provider in Settings → Dictation to turn it on.";
 
 export async function grantDictationToken(input: {
   key: string | undefined;

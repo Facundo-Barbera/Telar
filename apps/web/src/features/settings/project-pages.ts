@@ -72,9 +72,9 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
         rows: [
           {
             navigateOnly: true,
-            title: "Mac",
-            hint: "Projects are registered per Mac. A paired one's registry is read from that Mac.",
-            keywords: ["host", "paired", "remote", "other mac", "machine"],
+            title: "Computer",
+            hint: "Projects are registered per computer. A paired one's registry is read from that computer.",
+            keywords: ["host", "paired", "remote", "other mac", "machine", "computer"],
             icon: MonitorIcon,
           },
           {
@@ -215,7 +215,7 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
           },
           {
             title: "Python",
-            hint: "Interpreters installed on this Mac, and one more to install.",
+            hint: "Interpreters installed on this computer, and one more to install.",
             keywords: ["interpreter", "version", "install python"],
             icon: FlaskConicalIcon,
           },
@@ -301,7 +301,7 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
           {
             navigateOnly: true,
             title: "Push notifications",
-            hint: "Whether this Mac's alerts reach your phone.",
+            hint: "Whether this computer's alerts reach your phone.",
             keywords: ["notifications", "apns", "alerts", "push", "relay", "phone", "not working", "test notification"],
             icon: BellIcon,
           },
@@ -313,19 +313,19 @@ export const PROJECT_PAGES: SettingsPageSpec[] = [
           },
           {
             title: "Notification sounds",
-            hint: "The sound this Mac's alerts play.",
+            hint: "The sound this computer's alerts play.",
             keywords: ["sound", "chime", "audio", "mute", "silent", "hilo", "armonico", "felt"],
             icon: Volume2Icon,
           },
         ],
       },
       {
-        title: "Other Macs",
+        title: "Other computers",
         rows: [
           {
-            title: "Add a Mac",
+            title: "Add a computer",
             hint: "Another Telar's conversations, in this rail, from its pairing link.",
-            keywords: ["host", "pair", "second machine", "remote"],
+            keywords: ["host", "pair", "second machine", "remote", "mac", "computer"],
             icon: MonitorIcon,
           },
         ],

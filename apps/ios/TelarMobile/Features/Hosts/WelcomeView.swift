@@ -72,7 +72,7 @@ struct WelcomeView: View {
                 }
             }
 
-            Text("The code lives on the Mac: Settings → Remote access.")
+            Text("The code lives on the computer: Settings → Remote access.")
                 .font(.system(Theme.footnote))
                 .foregroundStyle(Theme.textMuted)
                 .padding(.top, 8)
@@ -97,7 +97,7 @@ struct WelcomeView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Copy it from under the QR in the Mac's Remote access panel.")
+            Text("Copy it from under the QR in the computer's Remote access panel.")
         }
         .navigationDestination(isPresented: $manual) {
             ConnectView(settings: settings)

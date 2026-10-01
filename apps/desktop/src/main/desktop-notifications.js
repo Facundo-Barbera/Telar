@@ -117,7 +117,7 @@ function createDesktopNotifier({ Notification, send, context, open, chime }) {
     test(sounds) {
       const sound = `telar-${sounds}-done`;
       if (!SOUND.test(sound)) return { ok: false };
-      const banner = new Notification({ title: "Telar", body: "This is how your alerts sound on this Mac.", ...chime.options(sound) });
+      const banner = new Notification({ title: "Telar", body: "This is how your alerts sound on this computer.", ...chime.options(sound) });
       banner.on("show", () => chime.shown(sound));
       banner.show();
       return { ok: true };

@@ -58,7 +58,7 @@ function ProjectMatches({
         onHover={() => onHover(matches.length)}
         glyph={<FolderPlusIcon className="size-4 text-muted-foreground" />}
         title="Add a project…"
-        hint="A folder on this Mac, or a repository to clone"
+        hint="A folder on this computer, or a repository to clone"
       />
     </>
   );

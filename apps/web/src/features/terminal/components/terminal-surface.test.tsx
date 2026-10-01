@@ -213,7 +213,7 @@ describe("without the desktop shell", () => {
     const host = await mount();
     // A blank black box would read as a shell that has not printed yet.
     expect(host.textContent).toContain("desktop shell");
-    expect(host.textContent).toContain("this Mac");
+    expect(host.textContent).toContain("this computer");
   });
 });
 

@@ -60,7 +60,7 @@ function BrowserStartPageContent({ scopeKey, onOpen }: Props) {
           </section>
         ) : null}
         {data?.servers.length ? (
-          <section className="space-y-2" aria-label="Local servers on this Mac">
+          <section className="space-y-2" aria-label="Local servers on this computer">
             <h3 className="flex items-center gap-2 text-xs font-medium text-muted-foreground"><RadioTowerIcon className="size-3.5" /> Local servers</h3>
             <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
               {data.servers.map(({ url, port }) => <button type="button" key={url} className="block w-full px-3 py-2.5 text-left text-sm hover:bg-muted focus-visible:outline focus-visible:outline-ring" onClick={() => onOpen(url)}>localhost:{port}</button>)}

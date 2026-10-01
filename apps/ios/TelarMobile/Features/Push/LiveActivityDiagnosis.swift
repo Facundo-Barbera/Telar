@@ -23,7 +23,7 @@ enum LiveActivityDiagnosis {
         if !toggle { return ["Automatic Live Activities are off."] }
         var lines: [String] = []
         if startTokenRejected { lines.append("Apple no longer accepts the start token iOS gave Telar. \(freshTokenHint)") }
-        else if !hasStartToken { lines.append("iOS has not given Telar a push-to-start token, so a card starts only while Telar is open. Once started, your Macs keep it up to date.") }
+        else if !hasStartToken { lines.append("iOS has not given Telar a push-to-start token, so a card starts only while Telar is open. Once started, your computers keep it up to date.") }
         for mac in macs { lines.append("\(mac.name): \(line(mac.report, currentToken: currentToken, now: now))") }
         return lines
     }
@@ -40,7 +40,7 @@ enum LiveActivityDiagnosis {
     }
 
     static func line(_ report: ActivityReport?, currentToken: String? = nil, now: Date) -> String {
-        guard let report else { return "no report (an older Telar on that Mac, or it did not answer)." }
+        guard let report else { return "no report (an older Telar on that computer, or it did not answer)." }
         if report.card { return "card running." }
         switch report.blocker {
         case "off": return "sees Live Activities as off on this phone."

@@ -61,12 +61,12 @@ export function ProjectGroupBadges({ group, badges }: { group: Group; badges: re
         </span>
       ) : null}
       {badges.map((place) => {
-        const label = place.hostName ?? (place.hostId ? "another Mac" : "This Mac");
+        const label = place.hostName ?? (place.hostId ? "another computer" : "This computer");
         return (
           <span
             key={`${place.hostId ?? "local"}:${place.projectId}`}
             className="inline-flex shrink-0 items-center gap-1 rounded-sm bg-sidebar-accent px-1 text-3xs text-sidebar-foreground/60"
-            title={`On ${label}`}
+            title={place.hostName || place.hostId ? `On ${label}` : "On this computer"}
           >
             <MonitorIcon className="size-2.5" />
             <span className="max-w-16 truncate">{label}</span>
@@ -111,7 +111,7 @@ export function ProjectGroupMenu({
             {at.map((place) => (
               <ContextMenuItem key={`${place.hostId ?? "local"}:${place.projectId}`} onClick={() => onNewConversation(place)}>
                 <MonitorIcon />
-                {place.hostName ?? "This Mac"}
+                {place.hostName ?? "This computer"}
               </ContextMenuItem>
             ))}
           </ContextMenuSubContent>
@@ -126,7 +126,7 @@ export function ProjectGroupMenu({
       <ContextMenuSeparator />
       <ContextMenuItem
         disabled={!onProjectSettings}
-        title={onProjectSettings ? undefined : "Project settings open on the Mac that owns the project."}
+        title={onProjectSettings ? undefined : "Project settings open on the computer that owns the project."}
         {...(onProjectSettings ? { onClick: onProjectSettings } : {})}
       >
         <SlidersHorizontalIcon />
@@ -185,7 +185,7 @@ export function NewConversationButton({
     <DropdownMenu onOpenChange={setPickingHost}>
       <DropdownMenuTrigger
         aria-label={`New conversation in ${group.name}`}
-        title={`New conversation in ${group.name} — asks which Mac`}
+        title={`New conversation in ${group.name} — asks which computer`}
         className={cn(
           "flex size-6 shrink-0 items-center justify-center rounded text-sidebar-foreground/45 opacity-0 transition-opacity hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:opacity-100 group-hover/project:opacity-100",
           pickingHost && "opacity-100",
@@ -199,7 +199,7 @@ export function NewConversationButton({
           {at.map((place) => (
             <DropdownMenuItem key={`${place.hostId ?? "local"}:${place.projectId}`} onClick={() => onNewConversation(place)}>
               <MonitorIcon />
-              {place.hostName ?? "This Mac"}
+              {place.hostName ?? "This computer"}
             </DropdownMenuItem>
           ))}
         </DropdownMenuGroup>

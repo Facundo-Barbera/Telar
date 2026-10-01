@@ -86,7 +86,7 @@ function plannedPackages(stack: readonly string[], machineDefaults: readonly str
   const bad = machineDefaults.map((spec) => spec.trim()).filter((spec) => spec.length > 0 && !validSpec(spec));
   if (bad.length) {
     throw new Error(
-      `this Mac's default packages include something that is not a package requirement: ${bad.join(", ")} — fix it in Settings › Plugins`,
+      `this computer's default packages include something that is not a package requirement: ${bad.join(", ")} — fix it in Settings › Plugins`,
     );
   }
   const packages = [...stack];

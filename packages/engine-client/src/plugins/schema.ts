@@ -376,7 +376,7 @@ const dataScienceMachineFields = {
   python: z.string().min(1).optional().meta({
     title: "Default Python",
     description: "The interpreter a project with none of its own runs its kernel on.",
-    info: "An absolute path: a Mac-wide default cannot be relative to a checkout.",
+    info: "An absolute path: a default for the computer cannot be relative to a checkout.",
     widget: "path",
     icon: "flask-conical",
   }),

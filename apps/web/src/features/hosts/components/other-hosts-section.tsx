@@ -11,7 +11,7 @@ import { Row, SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
 
-export function OtherMacsSection() {
+export function OtherHostsSection() {
   const [hosts, setHosts] = useState<PublicHost[] | null>(null);
   const [link, setLink] = useState("");
   const [busy, setBusy] = useState(false);
@@ -40,7 +40,7 @@ export function OtherMacsSection() {
       setLink("");
       await load();
     } catch (cause) {
-      setError(cause instanceof EngineApiError ? cause.message : "Could not pair with that Mac.");
+      setError(cause instanceof EngineApiError ? cause.message : "Could not pair with that computer.");
     } finally {
       setBusy(false);
     }
@@ -65,12 +65,12 @@ export function OtherMacsSection() {
   };
 
   return (
-    <SettingsGroup title="Other Macs" description="Another Telar's conversations, in this rail.">
+    <SettingsGroup title="Other computers" description="Another Telar's conversations, in this rail.">
       {hosts?.map((host) => (
         <HostRow key={host.id} host={host} onRename={(name) => void rename(host.id, name)} onRemove={() => void remove(host.id)} />
       ))}
       <Row
-        label="Add a Mac"
+        label="Add a computer"
         {...(error ? { error } : {})}
         control={
           <form
@@ -84,7 +84,7 @@ export function OtherMacsSection() {
               value={link}
               onChange={(event) => setLink(event.target.value)}
               placeholder="http://mini.tail:3000/pair#token=…"
-              aria-label="Pairing link from the other Mac"
+              aria-label="Pairing link from the other computer"
               className="h-8 w-72 font-mono text-xs"
               disabled={busy}
             />
@@ -140,9 +140,9 @@ function HostRow({ host, onRename, onRemove }: { host: PublicHost; onRename: (na
           </button>
         )
       }
-      hint={`${host.baseUrl} — forgetting it drops its conversations from this rail. That Mac keeps the access until it revokes this one.`}
+      hint={`${host.baseUrl} — forgetting it drops its conversations from this rail. That computer keeps the access until it revokes this one.`}
       control={
-        <Button variant="ghost" size="icon-sm" aria-label={`Forget ${host.name}`} title="Forget this Mac (its own Devices list keeps the access until revoked there)" onClick={onRemove}>
+        <Button variant="ghost" size="icon-sm" aria-label={`Forget ${host.name}`} title="Forget this computer (its own Devices list keeps the access until revoked there)" onClick={onRemove}>
           <XIcon className="size-3.5" />
         </Button>
       }

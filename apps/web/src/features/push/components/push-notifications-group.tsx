@@ -97,7 +97,7 @@ export function detailLines(status: PushRelayStatus, now = Date.now()): Array<{ 
 }
 
 export const NOTIFY_ON_LABELS: Record<NotifyOn, string> = {
-  mac: "This Mac when active",
+  mac: "This computer when active",
   iphone: "iPhone only",
   both: "Both",
 };
@@ -136,7 +136,7 @@ export function PushNotificationsGroup() {
   return (
     <SettingsGroup
       title="Push notifications"
-      description="Whether this Mac's alerts reach your phone."
+      description="Whether this computer's alerts reach your phone."
       action={<Badge variant={headline.ok ? "outline" : "destructive"}>{headline.label}</Badge>}
     >
       {notifyOn && (
@@ -144,7 +144,7 @@ export function PushNotificationsGroup() {
           label="Notify on"
           icon={BellIcon}
           hint="Which device each alert goes to."
-          info="Each alert goes to one device: this Mac while you're using it, your iPhone once you step away. A session you're looking at alerts neither."
+          info="Each alert goes to one device: this computer while you're using it, your iPhone once you step away. A session you're looking at alerts neither."
           {...(notifyError ? { error: notifyError } : {})}
           {...(notifyOn === "mac" ? {} : { onRevert: () => void saveNotifyOn("mac") })}
           control={
@@ -164,7 +164,7 @@ export function PushNotificationsGroup() {
           label="No phone can be reached yet"
           icon={BellIcon}
           hint="Pair a phone and allow notifications when it asks."
-          info="There is nothing to set up on this Mac. The phone registers itself, and a test notification confirms it here."
+          info="There is nothing to set up on this computer. The phone registers itself, and a test notification confirms it here."
           control={null}
         />
       )}
@@ -173,7 +173,7 @@ export function PushNotificationsGroup() {
           label={pausedLine(status.pausedUntil)}
           icon={BellIcon}
           hint="Alerts resume on their own."
-          info="This Mac has spent the relay's daily budget, so nothing is sent until it resets. If it happens every day, something is sending far more than it should."
+          info="This computer has spent the relay's daily budget, so nothing is sent until it resets. If it happens every day, something is sending far more than it should."
           control={null}
         />
       )}

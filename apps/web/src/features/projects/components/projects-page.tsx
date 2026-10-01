@@ -40,7 +40,7 @@ type ProjectPatch = Parameters<typeof api.updateProject>[1];
 
 function blockedReason(project: ScopedProject | undefined, what: string): string | undefined {
   if (!project) return `Select a project to ${what}.`;
-  if (project.hostId) return `Registered on ${project.hostName ?? "another Mac"}. Change it in that Mac's own settings.`;
+  if (project.hostId) return `Registered on ${project.hostName ?? "another computer"}. Change it in that computer's own settings.`;
   return undefined;
 }
 
@@ -291,7 +291,7 @@ function ProjectScopePicker({
           value={hostId}
           onChange={onHost}
           options={[
-            { value: LOCAL_HOST_ID, label: "This Mac" },
+            { value: LOCAL_HOST_ID, label: "This computer" },
             ...hosts.map((host) => ({
               value: host.id,
               label: (

@@ -9,11 +9,11 @@ protocol DictationAPI: Sendable {
 
 extension DictationAPI {
     func dictationToken() async throws -> DictationTokenAnswer {
-        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+        throw EngineAPIError.engine(code: "conflict", message: "This computer cannot dictate.", status: 409)
     }
 
     func dictationDiagnosis() async throws -> DictationDiagnosisAnswer {
-        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot dictate.", status: 409)
+        throw EngineAPIError.engine(code: "conflict", message: "This computer cannot dictate.", status: 409)
     }
 
     func dictation() async throws -> DictationAnswer {
@@ -25,7 +25,7 @@ extension DictationAPI {
     }
 
     func setDictation(provider: String?, apiKey: String?, language: String?, vocabulary: [String]?) async throws -> DictationAnswer {
-        throw EngineAPIError.engine(code: "conflict", message: "This Mac cannot change dictation settings.", status: 409)
+        throw EngineAPIError.engine(code: "conflict", message: "This computer cannot change dictation settings.", status: 409)
     }
 }
 

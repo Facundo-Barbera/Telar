@@ -66,7 +66,7 @@ function relayRefusal(response: Response, reason?: string): DeliveryResult {
 export function relayTestDelivery(record: PushRecord): Delivery {
   return { token: record.token, topic: record.topic, sandbox: record.sandbox, kind: "alert",
     collapseId: crypto.createHash("sha256").update(`relay-test:${record.relay?.keyId ?? ""}`).digest("hex"),
-    payload: { aps: { alert: { title: "Telar", body: "Notifications from this Mac will arrive here." }, sound: "default" } } };
+    payload: { aps: { alert: { title: "Telar", body: "Notifications from this computer will arrive here." }, sound: "default" } } };
 }
 export function needsRelayTest(record: PushRecord): boolean {
   return record.relay !== undefined && record.enabled && record.relayTest?.keyId !== record.relay.keyId;

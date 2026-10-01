@@ -36,7 +36,7 @@ export function DictationMicrophoneSection() {
           : withheld
             ? { hint: "Names appear once a microphone has been allowed." }
             : {})}
-        info="Kept in this browser only. A paired phone or another Mac keeps its own."
+        info="Kept in this browser only. A paired phone or another computer keeps its own."
         control={
           <Dropdown<string>
             value={choice?.deviceId ?? ""}

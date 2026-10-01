@@ -183,7 +183,7 @@ export function InboxSection() {
       )}
       <Row
         label="Terminals settled sessions may keep open"
-        info="Counted across every project on this Mac, shells you opened included. Past it, the session settled longest ago has its terminals closed first, and its row says so. Settling one yourself closes its terminals at once; one settled automatically keeps them for 30 minutes."
+        info="Counted across every project on this computer, shells you opened included. Past it, the session settled longest ago has its terminals closed first, and its row says so. Settling one yourself closes its terminals at once; one settled automatically keeps them for 30 minutes."
         {...(terminalLimit === DEFAULT_SETTLED_TERMINAL_LIMIT
           ? {}
           : { onRevert: () => void save({ settledTerminalLimit: DEFAULT_SETTLED_TERMINAL_LIMIT }) })}

@@ -21,7 +21,7 @@ export function createEnginePlugins(store: EngineStore, { dir, daemonId, stateDi
     if (!session.projectId) throw new EngineStateError("invalid_request", `${pluginId} needs a project`);
     const project = store.projectRegistry.get(session.projectId);
     if (!store.toolchains.runs(project, pluginId)) {
-      const why = machineAllows(store.toolchains.machine(), pluginId) ? `${pluginId} is not enabled for this session's project` : `${pluginId} is turned off for this Mac`;
+      const why = machineAllows(store.toolchains.machine(), pluginId) ? `${pluginId} is not enabled for this session's project` : `${pluginId} is turned off for this computer`;
       throw new EngineStateError("invalid_request", why);
     }
     return { projectId: project.id, sessionId };
