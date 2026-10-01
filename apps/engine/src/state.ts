@@ -29,7 +29,7 @@ import { ConversationAdoption } from "./domains/providers";
 import { BUNDLED_MANIFEST, type ModelManifest, readModelCatalogue } from "./domains/providers";
 import { PluginDoors, JobRunner } from "./domains/plugins";
 import { ScheduleBook } from "./domains/schedules";
-import { derivedBranchFor, isLive, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, SETUP_STOP_GRACE_MS, WorktreeSetups } from "./domains/worktrees";
+import { derivedBranchFor, liveCheckouts, prepareSessionWorktree, WorktreeMaintenance, createWorktreeQueue, defaultWorktreeGitRunner, type WorktreeQueue, SETUP_STOP_GRACE_MS, WorktreeSetups } from "./domains/worktrees";
 import { defaultGitRunner, defaultAsyncGitRunner, type AsyncGitRunner, type GitRunner } from "./platform/git/runner";
 import { PrefetchedGit } from "./platform/git/prefetch";
 import { backfillTurnSummaries, CheckoutSizes, CleanupStore, migrateBareClaudeIds, migrateClaudeCompactionToLimits, migrateLegacyPluginFieldsOnOpen, type CheckoutSizesOptions } from "./domains/storage";
@@ -198,7 +198,7 @@ export class EngineStore {
     this.checkoutSizes = new CheckoutSizes({
       live: () => {
         const at = { now: this.now(), autoSettleAfterHours: this.settings.inbox().autoSettleAfterHours };
-        return new Set(this.records.read().flatMap((session) => (session.workspace.mode === "worktree" && isLive(session, at) ? [session.workspace.path] : [])));
+        return new Set(liveCheckouts(this.records.read(), at).map((checkout) => checkout.path));
       },
       ...options.checkoutSizing,
     });

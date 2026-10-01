@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { privateBytes } from "../../platform/fs/private-size";
-import { mountPointForRoot } from "../../platform/fs/volumes";
+import { VolumeGate } from "../../platform/fs/volume-gate";
 import { bytesOf, type CheckoutFigure } from "./measure";
 
 export type SizingStat = Pick<fs.Stats, "blocks" | "size" | "nlink" | "dev" | "ino" | "mtimeMs"> & { isDirectory(): boolean };
@@ -35,11 +35,6 @@ const nodeFs: SizingFs = {
 
 const LIVE_TTL_MS = 5_000;
 
-class VolumeTimeout extends Error {}
-
-function volumeOf(target: string): string {
-  return mountPointForRoot(target) ?? path.parse(target).root;
-}
 
 type Walk = { bytes: number; partial: boolean; dirs: string[]; pending: string[]; seen: Set<string>; stamp: number };
 type Settled = { bytes: number; partial: boolean; at: number; stamp: number; stale: boolean };
@@ -57,7 +52,7 @@ export class CheckoutSizes {
   private readonly opTimeoutMs: number;
   private readonly liveOf: (() => ReadonlySet<string>) | undefined;
   private live: { at: number; paths: ReadonlySet<string> } | undefined;
-  private readonly degraded = new Set<string>();
+  private gate = new VolumeGate();
 
   private readonly checkouts = new Map<string, Checkout>();
   private loose = { bytes: 0, partial: false };
@@ -99,7 +94,7 @@ export class CheckoutSizes {
     for (const [key, checkout] of counted) {
       const shown = checkout.settled ?? checkout.walk;
       bytes += shown?.bytes ?? 0;
-      partial ||= (shown?.partial ?? false) || this.degraded.has(volumeOf(key));
+      partial ||= (shown?.partial ?? false) || !this.gate.open(key);
       if (!this.due(checkout, key)) measured += 1;
     }
     const of = counted.length;
@@ -121,7 +116,7 @@ export class CheckoutSizes {
 
   invalidate(): void {
     for (const checkout of this.checkouts.values()) if (checkout.settled) checkout.settled.stale = true;
-    this.degraded.clear();
+    this.gate = new VolumeGate();
     this.relist();
   }
 
@@ -165,30 +160,22 @@ export class CheckoutSizes {
     return this.live.paths.has(key);
   }
 
-  private timed<T>(target: string, work: Promise<T>): Promise<T> {
-    const volume = volumeOf(target);
-    if (this.degraded.has(volume)) return Promise.reject(new VolumeTimeout(volume));
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const expired = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        this.degraded.add(volume);
-        reject(new VolumeTimeout(volume));
-      }, this.opTimeoutMs);
-      timer.unref?.();
-    });
-    return Promise.race([work, expired]).finally(() => clearTimeout(timer));
+  private async timed<T>(target: string, work: () => Promise<T>): Promise<T> {
+    const answer = await this.gate.run(target, () => work().then((value) => ({ value })), this.opTimeoutMs);
+    if (!answer) throw new Error(`no answer from ${target}`);
+    return answer.value;
   }
 
   private lstat(target: string): Promise<SizingStat> {
-    return this.timed(target, this.fs.lstat(target));
+    return this.timed(target, () => this.fs.lstat(target));
   }
 
   private readdir(target: string): Promise<string[]> {
-    return this.timed(target, this.fs.readdir(target));
+    return this.timed(target, () => this.fs.readdir(target));
   }
 
   private due(checkout: Checkout, key?: string): boolean {
-    if (key !== undefined && this.degraded.has(volumeOf(key))) return false;
+    if (key !== undefined && !this.gate.open(key)) return false;
     if (checkout.walk) return true;
     const settled = checkout.settled;
     if (!settled) return true;
@@ -239,8 +226,8 @@ export class CheckoutSizes {
       let names: string[];
       try {
         names = await this.readdir(root);
-      } catch (error) {
-        if (error instanceof VolumeTimeout) loose.partial = true;
+      } catch {
+        if (!this.gate.open(root)) loose.partial = true;
         continue;
       }
       try {

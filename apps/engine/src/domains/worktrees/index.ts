@@ -22,3 +22,4 @@ export { defaultWorktreesRoot, readWorktreesRoot, rootOf, writeWorktreesRoot } f
 export { pruneBuildOutputs } from "./dependencies";
 export { SETUP_STOP_GRACE_MS, WorktreeSetups } from "./setup";
 export { WorktreeMaintenance } from "./maintenance";
+export { liveCheckouts } from "./boot-pass";
