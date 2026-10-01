@@ -4,10 +4,10 @@ const { TerminalFate, unusableCwd } = require("./terminal-host");
 const { fakePty, hostWith } = require("../../test/terminal-host-fakes");
 
 describe("what the host will say about a terminal that is no longer running", () => {
-  test("`exited` comes ONLY from the pty's own exit event", () => {
+  test("`exited` comes ONLY from the pty's own exit event", async () => {
     const pty = fakePty(11);
     const { host, endings } = hostWith(pty);
-    const { id } = host.open({ shell: "/bin/zsh", env: {} });
+    const { id } = await host.open({ shell: "/bin/zsh", env: {} });
     expect(endings).toEqual([]);
     pty.emitExit({ exitCode: 3, signal: 0 });
     expect(endings).toHaveLength(1);
@@ -17,9 +17,9 @@ describe("what the host will say about a terminal that is no longer running", ()
     expect(endings[0][1].pid).toBe(11);
   });
 
-  test("a spawn that threw is `failed` — there is no process to be unsure about", () => {
+  test("a spawn that threw is `failed` — there is no process to be unsure about", async () => {
     const { host, endings } = hostWith(null, { throws: new Error("posix_spawnp failed.") });
-    const opened = host.open({ shell: "/bin/zsh", env: {} });
+    const opened = await host.open({ shell: "/bin/zsh", env: {} });
     expect(opened.pid).toBeUndefined();
     expect(opened.ending.fate).toBe(TerminalFate.FAILED);
     expect(opened.ending.error).toContain("posix_spawnp");
@@ -29,11 +29,11 @@ describe("what the host will say about a terminal that is no longer running", ()
   });
 
   describe("`unknown` is never rounded to `exited`", () => {
-    test("dispose ends a live terminal's group and invents no ending", () => {
+    test("dispose ends a live terminal's group and invents no ending", async () => {
       const killed = [];
       const pty = fakePty(77);
       const { host, endings } = hostWith(pty, { killTree: (pid, signal) => killed.push([pid, signal]) });
-      host.open({ shell: "/bin/zsh", env: {} });
+      await host.open({ shell: "/bin/zsh", env: {} });
       host.dispose();
       expect(killed).toEqual([
         [77, "SIGHUP"],
@@ -46,11 +46,11 @@ describe("what the host will say about a terminal that is no longer running", ()
       expect(endings[0][1].signal).toBe("15");
     });
 
-    test("dispose escalates to SIGKILL when the group outlives the grace", () => {
+    test("dispose escalates to SIGKILL when the group outlives the grace", async () => {
       const killed = [];
       const pty = fakePty(78);
       const { host, clock } = hostWith(pty, { killTree: (pid, signal) => killed.push([pid, signal]) });
-      host.open({ shell: "/bin/zsh", env: {} });
+      await host.open({ shell: "/bin/zsh", env: {} });
       host.dispose();
       clock.advance(999);
       expect(killed).toEqual([
@@ -65,34 +65,34 @@ describe("what the host will say about a terminal that is no longer running", ()
       ]);
     });
 
-    test("a kill we could not deliver leaves the terminal open and closable", () => {
+    test("a kill we could not deliver leaves the terminal open and closable", async () => {
       const pty = fakePty(79);
       const { host, endings } = hostWith(pty, {
         killTree: () => {
           throw Object.assign(new Error("EPERM"), { code: "EPERM" });
         },
       });
-      const { id } = host.open({ shell: "/bin/zsh", env: {} });
+      const { id } = await host.open({ shell: "/bin/zsh", env: {} });
       expect(host.kill(id)).toBe(false);
       expect(endings).toEqual([]);
       expect(host.describe(id, "renderer")?.id).toBe(id);
     });
 
-    test("a kill whose group is already empty counts as sent", () => {
+    test("a kill whose group is already empty counts as sent", async () => {
       const pty = fakePty(79);
       const { host } = hostWith(pty, {
         killTree: () => {
           throw Object.assign(new Error("ESRCH"), { code: "ESRCH" });
         },
       });
-      const { id } = host.open({ shell: "/bin/zsh", env: {} });
+      const { id } = await host.open({ shell: "/bin/zsh", env: {} });
       expect(host.kill(id)).toBe(true);
     });
 
-    test("a kill that was delivered and never reported an exit invents no ending", () => {
+    test("a kill that was delivered and never reported an exit invents no ending", async () => {
       const pty = fakePty(80);
       const { host, endings, clock } = hostWith(pty);
-      const { id } = host.open({ shell: "/bin/zsh", env: {} });
+      const { id } = await host.open({ shell: "/bin/zsh", env: {} });
       host.kill(id, "SIGTERM");
       clock.advance(60_000);
       expect(endings).toEqual([]);
@@ -102,7 +102,7 @@ describe("what the host will say about a terminal that is no longer running", ()
     test("a kill that DID land is an honest `exited` — code 0 WITH a signal", async () => {
       const pty = fakePty(81);
       const { host, endings } = hostWith(pty);
-      const { id } = host.open({ shell: "/bin/zsh", env: {} });
+      const { id } = await host.open({ shell: "/bin/zsh", env: {} });
       host.kill(id, "SIGKILL");
       pty.emitExit({ exitCode: 0, signal: 9 });
 
@@ -113,10 +113,10 @@ describe("what the host will say about a terminal that is no longer running", ()
       expect(endings[0][1].closed).toBeUndefined();
     });
 
-    test("a pty whose fd raised an error is not an ending — the exit that follows is", () => {
+    test("a pty whose fd raised an error is not an ending — the exit that follows is", async () => {
       const pty = fakePty(82);
       const { host, endings } = hostWith(pty);
-      const { id } = host.open({ shell: "/bin/zsh", env: {} });
+      const { id } = await host.open({ shell: "/bin/zsh", env: {} });
       pty.emitError(new Error("read EIO"));
       expect(endings).toEqual([]);
       expect(host.describe(id, "renderer")?.id).toBe(id);
@@ -141,7 +141,7 @@ describe("what the host will say about a terminal that is no longer running", ()
             signals.push(signal);
           },
         });
-        const { id } = host.open({ shell: "/bin/zsh", env: {}, sessionId: "sess_1" });
+        const { id } = await host.open({ shell: "/bin/zsh", env: {}, sessionId: "sess_1" });
         const closing = close(host, id);
 
         while (!signals.includes("SIGTERM")) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -151,15 +151,15 @@ describe("what the host will say about a terminal that is no longer running", ()
       }
       const pty = fakePty(84);
       const { host, endings } = hostWith(pty);
-      host.open({ shell: "/bin/zsh", env: {} });
+      await host.open({ shell: "/bin/zsh", env: {} });
       pty.emitExit({ exitCode: 0 });
       expect(endings[0][1].closed).toBeUndefined();
     });
 
-    test("registers the TWO error listeners node-pty counts before it rethrows", () => {
+    test("registers the TWO error listeners node-pty counts before it rethrows", async () => {
       const pty = fakePty(84);
       const { host } = hostWith(pty);
-      host.open({ shell: "/bin/zsh", env: {} });
+      await host.open({ shell: "/bin/zsh", env: {} });
       expect(pty.listenerCount("error")).toBeGreaterThanOrEqual(2);
     });
 
@@ -171,10 +171,10 @@ describe("what the host will say about a terminal that is no longer running", ()
     });
   });
 
-  test("a terminal ends exactly once, whatever happens to it afterwards", () => {
+  test("a terminal ends exactly once, whatever happens to it afterwards", async () => {
     const pty = fakePty(83);
     const { host, endings } = hostWith(pty);
-    host.open({ shell: "/bin/zsh", env: {} });
+    await host.open({ shell: "/bin/zsh", env: {} });
     pty.emitExit({ exitCode: 0, signal: 0 });
     pty.emitExit({ exitCode: 0, signal: 0 });
     pty.emitError(new Error("read EIO"));
@@ -184,20 +184,20 @@ describe("what the host will say about a terminal that is no longer running", ()
 });
 
 describe("a terminal asked to start somewhere it cannot", () => {
-  const missing = () => {
+  const missing = async () => {
     const error = new Error("ENOENT: no such file or directory, stat '/gone'");
     error.code = "ENOENT";
     throw error;
   };
 
-  test("no cwd at all is not a refusal — most terminals name none", () => {
-    expect(unusableCwd(undefined)).toBeNull();
-    expect(unusableCwd(null)).toBeNull();
-    expect(unusableCwd("")).toBeNull();
+  test("no cwd at all is not a refusal — most terminals name none", async () => {
+    expect(await unusableCwd(undefined)).toBeNull();
+    expect(await unusableCwd(null)).toBeNull();
+    expect(await unusableCwd("")).toBeNull();
   });
 
-  test("a directory that is not there names itself and the errno", () => {
-    const refusal = unusableCwd("/gone", { fs: { statSync: missing, accessSync: () => {} } });
+  test("a directory that is not there names itself and the errno", async () => {
+    const refusal = await unusableCwd("/gone", { fs: { stat: missing, access: async () => {} } });
 
     expect(typeof refusal).toBe("string");
     expect(refusal).toContain("/gone");
@@ -205,28 +205,28 @@ describe("a terminal asked to start somewhere it cannot", () => {
     expect(refusal).toContain("No process was started.");
   });
 
-  test("a path UNDER a regular file is not a directory for anybody, root included", () => {
-    const enotdir = () => {
+  test("a path UNDER a regular file is not a directory for anybody, root included", async () => {
+    const enotdir = async () => {
       const error = new Error("ENOTDIR: not a directory, stat '/etc/passwd/nope'");
       error.code = "ENOTDIR";
       throw error;
     };
-    const nested = unusableCwd("/etc/passwd/nope", { fs: { statSync: enotdir, accessSync: () => {} } });
+    const nested = await unusableCwd("/etc/passwd/nope", { fs: { stat: enotdir, access: async () => {} } });
     expect(typeof nested).toBe("string");
     expect(nested).toContain("ENOTDIR");
 
-    const refusal = unusableCwd("/etc/passwd", {
-      fs: { statSync: () => ({ isDirectory: () => false }), accessSync: () => {} },
+    const refusal = await unusableCwd("/etc/passwd", {
+      fs: { stat: async () => ({ isDirectory: () => false }), access: async () => {} },
     });
     expect(typeof refusal).toBe("string");
     expect(refusal).toContain("is not a directory");
   });
 
-  test("a directory this process may not enter is refused, not attempted", () => {
-    const refusal = unusableCwd("/private", {
+  test("a directory this process may not enter is refused, not attempted", async () => {
+    const refusal = await unusableCwd("/private", {
       fs: {
-        statSync: () => ({ isDirectory: () => true }),
-        accessSync: () => {
+        stat: async () => ({ isDirectory: () => true }),
+        access: async () => {
           const error = new Error("EACCES: permission denied, access '/private'");
           error.code = "EACCES";
           throw error;
@@ -238,17 +238,41 @@ describe("a terminal asked to start somewhere it cannot", () => {
     expect(refusal).toContain("EACCES");
   });
 
-  test("a usable directory is NOT refused — the control arm", () => {
-    expect(unusableCwd("/work", { fs: { statSync: () => ({ isDirectory: () => true }), accessSync: () => {} } })).toBeNull();
+  test("a usable directory is NOT refused — the control arm", async () => {
+    expect(await unusableCwd("/work", { fs: { stat: async () => ({ isDirectory: () => true }), access: async () => {} } })).toBeNull();
 
-    expect(unusableCwd(path.dirname(__filename))).toBeNull();
+    expect(await unusableCwd(path.dirname(__filename))).toBeNull();
   });
 
-  test("the refusal is `failed`, carries no exit code, and never spawned", () => {
-    const { host, spawned, endings } = hostWith(fakePty(99), {
-      fs: { statSync: missing, accessSync: () => {} },
+  test("a disk that never answers is a refusal after the deadline, not a hang", async () => {
+    const { host, spawned, endings, clock } = hostWith(fakePty(98), {
+      fs: { stat: () => new Promise(() => {}), access: async () => {} },
     });
-    const opened = host.open({ shell: "/bin/zsh", cwd: "/gone", env: {} });
+    const opening = host.open({ shell: "/bin/zsh", cwd: "/Volumes/Slow/project", env: {} });
+    await Promise.resolve();
+    clock.advance(5000);
+    const opened = await opening;
+
+    expect(spawned).toHaveLength(0);
+    expect(opened.ending.fate).toBe(TerminalFate.FAILED);
+    expect(opened.ending.error).toContain("did not answer");
+    expect(endings).toHaveLength(1);
+    expect(clock.pending()).toBe(0);
+  });
+
+  test("a host disposed while the cwd was being checked starts nothing", async () => {
+    const { host, spawned } = hostWith(fakePty(97));
+    const opening = host.open({ shell: "/bin/zsh", cwd: "/work", env: {} });
+    host.dispose();
+    await expect(opening).rejects.toThrow(/shutting down/);
+    expect(spawned).toHaveLength(0);
+  });
+
+  test("the refusal is `failed`, carries no exit code, and never spawned", async () => {
+    const { host, spawned, endings } = hostWith(fakePty(99), {
+      fs: { stat: missing, access: async () => {} },
+    });
+    const opened = await host.open({ shell: "/bin/zsh", cwd: "/gone", env: {} });
 
     expect(spawned).toHaveLength(0);
     expect(opened.pid).toBeUndefined();
@@ -262,9 +286,9 @@ describe("a terminal asked to start somewhere it cannot", () => {
     expect(host.list()).toEqual([]);
   });
 
-  test("a terminal with a usable cwd still starts, and gets it", () => {
+  test("a terminal with a usable cwd still starts, and gets it", async () => {
     const { host, spawned, endings } = hostWith(fakePty(100));
-    const opened = host.open({ shell: "/bin/zsh", cwd: "/work", env: {} });
+    const opened = await host.open({ shell: "/bin/zsh", cwd: "/work", env: {} });
     expect(spawned).toHaveLength(1);
     expect(spawned[0].opts.cwd).toBe("/work");
     expect(opened.pid).toBe(100);

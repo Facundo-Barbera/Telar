@@ -3,10 +3,10 @@ const { TERM } = require("./terminal-host");
 const { fakePty, hostWith } = require("../../test/terminal-host-fakes");
 
 describe("driving a live terminal", () => {
-  test("open passes the size and the environment through to the spawner", () => {
+  test("open passes the size and the environment through to the spawner", async () => {
     const pty = fakePty();
     const { host, spawned } = hostWith(pty);
-    host.open({ shell: "/bin/zsh", args: ["-l"], cwd: "/work", cols: 120, rows: 40, env: { HOME: "/home/x" } });
+    await host.open({ shell: "/bin/zsh", args: ["-l"], cwd: "/work", cols: 120, rows: 40, env: { HOME: "/home/x" } });
     expect(spawned[0].file).toBe("/bin/zsh");
     expect(spawned[0].args).toEqual(["-l"]);
     expect(spawned[0].opts.cwd).toBe("/work");
@@ -17,18 +17,18 @@ describe("driving a live terminal", () => {
     expect(spawned[0].opts.env.TERM_PROGRAM_VERSION).toBe("9.9.9");
   });
 
-  test("a terminal with no size still gets one, because 0x0 draws nothing", () => {
+  test("a terminal with no size still gets one, because 0x0 draws nothing", async () => {
     const pty = fakePty();
     const { host, spawned } = hostWith(pty);
-    host.open({ shell: "/bin/zsh", env: {}, cols: 0, rows: -5 });
+    await host.open({ shell: "/bin/zsh", env: {}, cols: 0, rows: -5 });
     expect(spawned[0].opts.cols).toBe(80);
     expect(spawned[0].opts.rows).toBe(24);
   });
 
-  test("write and resize reach the pty; both refuse an id that is not live", () => {
+  test("write and resize reach the pty; both refuse an id that is not live", async () => {
     const pty = fakePty();
     const { host } = hostWith(pty);
-    const { id } = host.open({ shell: "/bin/zsh", env: {} });
+    const { id } = await host.open({ shell: "/bin/zsh", env: {} });
     expect(host.write(id, "ls\r")).toBe(true);
     expect(host.resize(id, 100, 30)).toBe(true);
     expect(pty.calls.writes).toEqual(["ls\r"]);
@@ -38,38 +38,38 @@ describe("driving a live terminal", () => {
     expect(host.kill("term_nope")).toBe(false);
   });
 
-  test("a keystroke arriving after the exit is dropped, not thrown", () => {
+  test("a keystroke arriving after the exit is dropped, not thrown", async () => {
     const pty = fakePty();
     const { host } = hostWith(pty);
-    const { id } = host.open({ shell: "/bin/zsh", env: {} });
+    const { id } = await host.open({ shell: "/bin/zsh", env: {} });
     pty.emitExit({ exitCode: 0, signal: 0 });
     expect(host.write(id, "ls\r")).toBe(false);
     expect(pty.calls.writes).toEqual([]);
   });
 
-  test("ids are not pids — a reused pid must not address a stranger", () => {
+  test("ids are not pids — a reused pid must not address a stranger", async () => {
     const first = fakePty(500);
     const { host } = hostWith(first);
-    const a = host.open({ shell: "/bin/zsh", env: {} });
-    const b = host.open({ shell: "/bin/zsh", env: {} });
+    const a = await host.open({ shell: "/bin/zsh", env: {} });
+    const b = await host.open({ shell: "/bin/zsh", env: {} });
     expect(a.id).not.toBe(b.id);
     expect(a.pid).toBe(b.pid);
   });
 
-  test("data is forwarded while live and dropped after the ending", () => {
+  test("data is forwarded while live and dropped after the ending", async () => {
     const pty = fakePty();
     const { host, data } = hostWith(pty);
-    const { id } = host.open({ shell: "/bin/zsh", env: {} });
+    const { id } = await host.open({ shell: "/bin/zsh", env: {} });
     pty.emitData("hello");
     pty.emitExit({ exitCode: 0, signal: 0 });
     pty.emitData("after");
     expect(data).toEqual([[id, "hello"]]);
   });
 
-  test("list reports facts, never handles", () => {
+  test("list reports facts, never handles", async () => {
     const pty = fakePty(91);
     const { host } = hostWith(pty);
-    const { id } = host.open({ shell: "/bin/zsh", cwd: "/work", cols: 90, rows: 20, env: {} });
+    const { id } = await host.open({ shell: "/bin/zsh", cwd: "/work", cols: 90, rows: 20, env: {} });
     expect(host.list()).toEqual([
       {
         id,
@@ -86,9 +86,9 @@ describe("driving a live terminal", () => {
     ]);
   });
 
-  test("a disposed host will not start another shell", () => {
+  test("a disposed host will not start another shell", async () => {
     const { host } = hostWith(fakePty());
     host.dispose();
-    expect(() => host.open({ shell: "/bin/zsh", env: {} })).toThrow(/shutting down/);
+    await expect(host.open({ shell: "/bin/zsh", env: {} })).rejects.toThrow(/shutting down/);
   });
 });

@@ -19,6 +19,9 @@ export function StoreSection() {
     );
   }
 
+  const retiredAt = status?.retired
+    ? `${status.retired.bytes === undefined ? "" : `${formatBytes(status.retired.bytes)} at `}${status.retired.source}.`
+    : "";
   const where = status?.volume?.label ? `${status.volume.label} · ${status.path}` : status?.path;
 
   return (
@@ -50,8 +53,8 @@ export function StoreSection() {
           label="Previous store"
           hint={
             status.retired.removable
-              ? `${formatBytes(status.retired.bytes)} at ${status.retired.source}. The moved store is open; this copy can go.`
-              : `${formatBytes(status.retired.bytes)} at ${status.retired.source}. Restart Telar first.`
+              ? `${retiredAt} The moved store is open; this copy can go.`
+              : `${retiredAt} Restart Telar first.`
           }
           control={
             <span className="flex items-center gap-2">

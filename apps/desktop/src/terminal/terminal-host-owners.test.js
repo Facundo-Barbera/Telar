@@ -3,7 +3,7 @@ const { TerminalHost, CLOSE_GRACE_MS } = require("./terminal-host");
 const { fakePty, anyCwdIsFine, fakeClock } = require("../../test/terminal-host-fakes");
 
 describe("a terminal has an owner, and only its owner may reach it", () => {
-  function twoOwnerHost() {
+  async function twoOwnerHost() {
     const ptys = [];
     const host = new TerminalHost({
       platform: "darwin",
@@ -15,13 +15,13 @@ describe("a terminal has an owner, and only its owner may reach it", () => {
         return pty;
       },
     });
-    const mine = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
-    const theirs = host.open({ shell: "/bin/sh", args: ["-c", "bun run dev"], env: {}, owner: "engine" });
+    const mine = await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    const theirs = await host.open({ shell: "/bin/sh", args: ["-c", "bun run dev"], env: {}, owner: "engine" });
     return { host, mine, theirs, ptys };
   }
 
-  test("write refuses the other owner's id and still delivers to its own", () => {
-    const { host, mine, theirs, ptys } = twoOwnerHost();
+  test("write refuses the other owner's id and still delivers to its own", async () => {
+    const { host, mine, theirs, ptys } = await twoOwnerHost();
 
     expect(host.write(theirs.id, "rm -rf /\r", "renderer")).toBe(false);
 
@@ -31,8 +31,8 @@ describe("a terminal has an owner, and only its owner may reach it", () => {
     expect(ptys[1].calls.writes).toEqual([]);
   });
 
-  test("resize and kill are scoped the same way, in both directions", () => {
-    const { host, mine, theirs, ptys } = twoOwnerHost();
+  test("resize and kill are scoped the same way, in both directions", async () => {
+    const { host, mine, theirs, ptys } = await twoOwnerHost();
     expect(host.resize(theirs.id, 10, 10, "renderer")).toBe(false);
     expect(host.resize(mine.id, 100, 40, "renderer")).toBe(true);
     expect(ptys[1].calls.resizes).toEqual([]);
@@ -42,16 +42,16 @@ describe("a terminal has an owner, and only its owner may reach it", () => {
     expect(host.kill(theirs.id, "SIGTERM", "engine")).toBe(true);
   });
 
-  test("the engine reaches its own terminal, which is the other direction of the same guard", () => {
-    const { host, mine, theirs, ptys } = twoOwnerHost();
+  test("the engine reaches its own terminal, which is the other direction of the same guard", async () => {
+    const { host, mine, theirs, ptys } = await twoOwnerHost();
     expect(host.write(theirs.id, "y\r", "engine")).toBe(true);
     expect(host.write(mine.id, "y\r", "engine")).toBe(false);
     expect(ptys[1].calls.writes).toEqual(["y\r"]);
     expect(ptys[0].calls.writes).toEqual([]);
   });
 
-  test("list omits the other owner's terminals and keeps its own", () => {
-    const { host, mine, theirs } = twoOwnerHost();
+  test("list omits the other owner's terminals and keeps its own", async () => {
+    const { host, mine, theirs } = await twoOwnerHost();
     const rendererIds = host.list("renderer").map((entry) => entry.id);
     const engineIds = host.list("engine").map((entry) => entry.id);
 
@@ -62,21 +62,21 @@ describe("a terminal has an owner, and only its owner may reach it", () => {
     expect(engineIds).toEqual([theirs.id]);
   });
 
-  test("the default scope is the renderer's, so a caller that forgets is refused rather than trusted", () => {
-    const { host, mine, theirs } = twoOwnerHost();
+  test("the default scope is the renderer's, so a caller that forgets is refused rather than trusted", async () => {
+    const { host, mine, theirs } = await twoOwnerHost();
     expect(host.write(theirs.id, "x", undefined)).toBe(false);
     expect(host.write(mine.id, "x", undefined)).toBe(true);
     expect(host.list().map((entry) => entry.id)).toEqual([mine.id]);
   });
 
-  test("an owner that is neither throws rather than being rounded to one", () => {
-    const { host, mine } = twoOwnerHost();
-    expect(() => host.open({ shell: "/bin/zsh", env: {}, owner: "engine " })).toThrow(/owner/);
+  test("an owner that is neither throws rather than being rounded to one", async () => {
+    const { host, mine } = await twoOwnerHost();
+    await expect(host.open({ shell: "/bin/zsh", env: {}, owner: "engine " })).rejects.toThrow(/owner/);
     expect(() => host.write(mine.id, "x", "ENGINE")).toThrow(/owner/);
     expect(() => host.list("agent")).toThrow(/owner/);
   });
 
-  test("dispose ends every terminal, whoever opened it", () => {
+  test("dispose ends every terminal, whoever opened it", async () => {
     const killed = [];
     let pid = 700;
     const host = new TerminalHost({
@@ -88,8 +88,8 @@ describe("a terminal has an owner, and only its owner may reach it", () => {
       setTimeout: () => null,
       clearTimeout: () => {},
     });
-    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
-    host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
+    await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    await host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
     host.dispose();
     expect(killed).toEqual([
       [701, "SIGHUP"],
@@ -124,52 +124,52 @@ describe("a terminal's session and origin", () => {
     return { host, killed, clock, finished };
   }
 
-  test("each owner gets the only origin it ever had when it does not say", () => {
+  test("each owner gets the only origin it ever had when it does not say", async () => {
     const { host } = sessionHost();
-    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
-    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
+    const shell = await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    const run = await host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
     expect(host.describe(shell.id, "renderer").origin).toBe("user");
     expect(host.describe(run.id, "engine").origin).toBe("run");
   });
 
-  test("session, origin and title are recorded and listed", () => {
+  test("session, origin and title are recorded and listed", async () => {
     const { host } = sessionHost();
-    const { id } = host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "agent", sessionId: " s_1 ", title: "web dev" });
+    const { id } = await host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "agent", sessionId: " s_1 ", title: "web dev" });
     expect(host.list("engine")).toEqual([
       expect.objectContaining({ id, sessionId: "s_1", origin: "agent", title: "web dev" }),
     ]);
     expect(host.describe(id, "engine")).toEqual(expect.objectContaining({ sessionId: "s_1", origin: "agent", title: "web dev" }));
   });
 
-  test("describe is scoped like every verb — the other owner's id is not there", () => {
+  test("describe is scoped like every verb — the other owner's id is not there", async () => {
     const { host } = sessionHost();
-    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
-    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
+    const run = await host.open({ shell: "/bin/sh", env: {}, owner: "engine" });
+    const shell = await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer" });
     expect(host.describe(run.id, "renderer")).toBeUndefined();
     expect(host.describe(shell.id, "renderer")).toBeDefined();
   });
 
-  test("an origin the owner could not have is refused, in both directions", () => {
+  test("an origin the owner could not have is refused, in both directions", async () => {
     const { host } = sessionHost();
-    expect(() => host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "agent" })).toThrow(/origin/);
-    expect(() => host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "run" })).toThrow(/origin/);
-    expect(() => host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "user" })).toThrow(/origin/);
-    expect(() => host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "bogus" })).toThrow(/origin/);
-    expect(host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "run" }).pid).toBeDefined();
-    expect(host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "user" }).pid).toBeDefined();
+    await expect(host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "agent" })).rejects.toThrow(/origin/);
+    await expect(host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "run" })).rejects.toThrow(/origin/);
+    await expect(host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "user" })).rejects.toThrow(/origin/);
+    await expect(host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "bogus" })).rejects.toThrow(/origin/);
+    expect((await host.open({ shell: "/bin/sh", env: {}, owner: "engine", origin: "run" })).pid).toBeDefined();
+    expect((await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", origin: "user" })).pid).toBeDefined();
   });
 
-  test("a session id that is not a string is dropped, not coerced", () => {
+  test("a session id that is not a string is dropped, not coerced", async () => {
     const { host } = sessionHost();
-    const { id } = host.open({ shell: "/bin/zsh", env: {}, sessionId: { toString: () => "s_1" } });
+    const { id } = await host.open({ shell: "/bin/zsh", env: {}, sessionId: { toString: () => "s_1" } });
     expect(host.describe(id).sessionId).toBeUndefined();
   });
 
   test("killBySession closes that session's terminals, every owner, and nobody else's", async () => {
     const { host, killed, finished } = sessionHost();
-    const shell = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
-    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
-    const other = host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_b" });
+    const shell = await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
+    const run = await host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
+    const other = await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_b" });
     expect(await finished(host.killBySession("s_a"))).toBe(2);
     expect(killed.filter(([, signal]) => signal === "SIGTERM")).toEqual([
       [shell.pid, "SIGTERM"],
@@ -179,19 +179,19 @@ describe("a terminal's session and origin", () => {
     expect(killed.some(([pid]) => pid === other.pid)).toBe(false);
   });
 
-  test("countBySession counts every owner's terminals per session, and none in no session (#883)", () => {
+  test("countBySession counts every owner's terminals per session, and none in no session (#883)", async () => {
     const { host } = sessionHost();
-    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
-    host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
-    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_b" });
-    host.open({ shell: "/bin/zsh", env: {} });
+    await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
+    await host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
+    await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_b" });
+    await host.open({ shell: "/bin/zsh", env: {} });
     expect(host.countBySession()).toEqual({ s_a: 2, s_b: 1 });
   });
 
   test("killBySession can be narrowed to one owner", async () => {
     const { host, killed, finished } = sessionHost();
-    host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
-    const run = host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
+    await host.open({ shell: "/bin/zsh", env: {}, owner: "renderer", sessionId: "s_a" });
+    const run = await host.open({ shell: "/bin/sh", env: {}, owner: "engine", sessionId: "s_a" });
     expect(await finished(host.killBySession("s_a", { owner: "engine" }))).toBe(1);
     expect(killed).toEqual([
       [run.pid, "SIGHUP"],
@@ -202,7 +202,7 @@ describe("a terminal's session and origin", () => {
 
   test("no session never matches no session", async () => {
     const { host, killed } = sessionHost();
-    host.open({ shell: "/bin/zsh", env: {} });
+    await host.open({ shell: "/bin/zsh", env: {} });
     for (const missing of [undefined, null, "", "   ", 7]) {
       expect(await host.killBySession(missing)).toBe(0);
     }
@@ -211,7 +211,7 @@ describe("a terminal's session and origin", () => {
 
   test("killBySession escalates like any close", async () => {
     const { host, killed, finished } = sessionHost();
-    const { pid } = host.open({ shell: "/bin/zsh", env: {}, sessionId: "s_a" });
+    const { pid } = await host.open({ shell: "/bin/zsh", env: {}, sessionId: "s_a" });
     expect(await finished(host.killBySession("s_a"))).toBe(1);
     expect(killed).toEqual([
       [pid, "SIGHUP"],

@@ -27,8 +27,8 @@ function fakePty(pid = 4242, ptsName) {
 }
 
 const anyCwdIsFine = {
-  statSync: () => ({ isDirectory: () => true }),
-  accessSync: () => {},
+  stat: async () => ({ isDirectory: () => true }),
+  access: async () => {},
 };
 
 function fakeClock() {

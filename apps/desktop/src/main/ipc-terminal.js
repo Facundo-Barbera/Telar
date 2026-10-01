@@ -5,10 +5,10 @@ const { requireCockpitSender } = require("./browser-hosts");
 
 function registerTerminalIpc(main) {
   const { RENDERER, requireTerminalHost, terminalReaders } = main;
-  ipcMain.handle("telar:terminal:open", (event, input) => {
+  ipcMain.handle("telar:terminal:open", async (event, input) => {
     requireCockpitSender(event, "open a terminal");
     const host = requireTerminalHost();
-    const opened = host.open({
+    const opened = await host.open({
       shell: input?.shell,
       args: input?.args,
       cwd: input?.cwd,

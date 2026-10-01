@@ -10,7 +10,7 @@ export type StoreStatus = {
   storeId?: string;
   volume?: StoreVolume;
   pinnedByEnvironment: boolean;
-  retired?: { source: string; stamp: string; bytes: number; removable: boolean };
+  retired?: { source: string; stamp: string; bytes?: number; removable: boolean };
 };
 
 type StoreOutcome = { ok: true; removed?: number } | { ok: false; message: string };

@@ -36,13 +36,14 @@ function runOnPty(host, script, options = {}) {
       clearTimeout(timer);
       resolve({ out, ending });
     };
-    const opened = host.open({ shell: "/bin/sh", args: ["-c", script], ...options });
-    ours = opened.id;
-    if (opened.ending) {
-      settled = true;
-      clearTimeout(timer);
-      resolve({ out, ending: opened.ending });
-    }
+    host.open({ shell: "/bin/sh", args: ["-c", script], ...options }).then((opened) => {
+      ours = opened.id;
+      if (opened.ending) {
+        settled = true;
+        clearTimeout(timer);
+        resolve({ out, ending: opened.ending });
+      }
+    }, reject);
   });
 }
 
@@ -143,8 +144,9 @@ async function main() {
       clearTimeout(timer);
       resolve({ out, ending });
     };
-    const opened = host.open({ shell: "/bin/sh", args: ["-c", "stty size; sleep 1; stty size"], cols: 123, rows: 45, env: dirty });
-    setTimeout(() => host.resize(opened.id, 99, 33), 400);
+    host
+      .open({ shell: "/bin/sh", args: ["-c", "stty size; sleep 1; stty size"], cols: 123, rows: 45, env: dirty })
+      .then((opened) => setTimeout(() => host.resize(opened.id, 99, 33), 400), reject);
   });
   const sizes = sized.out.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   report.sizes = sizes;
@@ -170,7 +172,7 @@ async function main() {
       }
     };
     host.onExit = () => {};
-    host.open({ shell: "/bin/sh", args: ["-c", "sleep 20 & echo CHILD=$!; wait"], env: dirty });
+    host.open({ shell: "/bin/sh", args: ["-c", "sleep 20 & echo CHILD=$!; wait"], env: dirty }).catch(reject);
   });
   const live = host.list()[0];
   assert(live && typeof live.pid === "number", "the terminal with a backgrounded child is not listed as live");
@@ -228,8 +230,10 @@ async function main() {
     host.onExit = (id, ending) => {
       if (id === ours) resolve({ id, ending });
     };
-    ours = host.open({ shell: "/bin/sh", args: ["-c", "sleep 20"], env: dirty }).id;
-    setTimeout(() => host.dispose(), 300);
+    host.open({ shell: "/bin/sh", args: ["-c", "sleep 20"], env: dirty }).then((opened) => {
+      ours = opened.id;
+      setTimeout(() => host.dispose(), 300);
+    });
   });
   report.dispose = orphan.ending;
   assert(orphan.ending.fate === TerminalFate.EXITED, `a live terminal at shutdown reported ${JSON.stringify(orphan.ending)} — dispose must end it and report the real exit`);
