@@ -14,10 +14,10 @@ struct ComposerTextView: UIViewRepresentable {
     var listening = false
 
     var caretRect: Binding<CGRect?>?
-    var suggesting = false
-    var onSuggestionKey: (ComposerSuggestionKey) -> Void = { _ in }
     var field: ComposerField?
     var onTouch: () -> Void = {}
+    var suggesting = false
+    var onSuggestionKey: (ComposerSuggestionKey) -> Void = { _ in }
     let onPaste: ([NSItemProvider]) -> Void
 
     func makeUIView(context: Context) -> ComposerUITextView {
