@@ -178,6 +178,15 @@ describe("one card per dispatch, from the engine's own sequence", () => {
     expect(html).toContain("3 sessions · 3 finished");
   });
 
+  test("one batch sessions_create that subscribes its workers opens the card too", () => {
+    const output = JSON.stringify({ workers: WORKERS.map((id) => ({ id, title: TITLES[id] })), cohort: { id: "coh_batch" } }, null, 2);
+    const batch = turn({ runId: "run_batch", prompt: "fan out", items: [toolItem("run_batch", "create", "sessions_create", { projectId: "project_1", envMode: "worktree", tasks: WORKERS.map((id) => ({ title: TITLES[id], task: "…" })) }, output)] });
+    const html = render([batch, results[0]!, results[1]!]);
+    expect(cards(html)).toBe(1);
+    expect(lines(html)).toEqual(["Fix the rail", "Tidy the panel", "Speed up boot"]);
+    expect(html).toContain("3 sessions · 2 finished · 1 working");
+  });
+
   test("every arrival lands on the same card whichever order the planner meets them", () => {
     const plan = planDispatches([fanOut, ...results, close]);
     expect(new Set(plan.blocks.values()).size).toBe(1);

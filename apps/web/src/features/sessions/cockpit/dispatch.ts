@@ -38,16 +38,16 @@ export function sends(items: readonly JournalItem[]): { to?: string; intent?: st
   }));
 }
 
-function createdWithTask(call: Call): string | undefined {
-  if (typeof call.input.task !== "string" || !call.input.task) return undefined;
-  return /"id"\s*:\s*"(session_[^"]+)"/.exec(call.output)?.[1];
+function createdWithTask(call: Call): string[] {
+  const tasked = Array.isArray(call.input.tasks) || (typeof call.input.task === "string" && call.input.task.length > 0);
+  return tasked ? [...call.output.matchAll(/"id"\s*:\s*"(session_[^"]+)"/g)].map((match) => match[1]!) : [];
 }
 
 /** The sessions one turn sent out together: tasked, created with a task, or subscribed to as a cohort. */
 function dispatchedFrom(items: readonly JournalItem[]): string[] {
   const tasked = [
     ...sends(items).flatMap((send) => (send.intent === "task" && send.to ? [send.to] : [])),
-    ...calls(items, "sessions_create").flatMap((call) => createdWithTask(call) ?? []),
+    ...calls(items, "sessions_create").flatMap(createdWithTask),
   ];
   const subscribed = calls(items, "sessions_subscribe").flatMap(({ input }) => (Array.isArray(input.sessionIds) ? input.sessionIds.filter((id): id is string => typeof id === "string") : []));
   const all = [...new Set([...tasked, ...subscribed])];
