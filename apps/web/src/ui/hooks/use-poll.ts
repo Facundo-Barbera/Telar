@@ -7,15 +7,14 @@ export type PollOptions = {
   immediate?: boolean;
   /** Restart the poll (aborting the read in flight) when this changes. */
   key?: unknown;
-  /** Skip ticks while the document is hidden, and run once when it shows again. */
-  pauseHidden?: boolean;
 };
 
 /**
  * Calls `fn` every `ms`, never overlapping a read still in flight. `null` stops it.
+ * Ticks are skipped while the document is hidden, and one runs as soon as it shows again.
  * `fn` gets a signal aborted on unmount and on `key` change; it handles its own errors.
  */
-export function usePoll(fn: (signal: AbortSignal) => unknown, ms: number | null, { immediate = true, key, pauseHidden = false }: PollOptions = {}): void {
+export function usePoll(fn: (signal: AbortSignal) => unknown, ms: number | null, { immediate = true, key }: PollOptions = {}): void {
   const latest = useRef(fn);
   useEffect(() => {
     latest.current = fn;
@@ -26,8 +25,7 @@ export function usePoll(fn: (signal: AbortSignal) => unknown, ms: number | null,
     const controller = new AbortController();
     let running = false;
     const run = () => {
-      if (running || controller.signal.aborted) return;
-      if (pauseHidden && document.visibilityState === "hidden") return;
+      if (running || controller.signal.aborted || document.visibilityState === "hidden") return;
       const result = latest.current(controller.signal);
       if (!(result instanceof Promise)) return;
       running = true;
@@ -41,11 +39,11 @@ export function usePoll(fn: (signal: AbortSignal) => unknown, ms: number | null,
     };
     if (immediate) run();
     const timer = window.setInterval(() => run(), ms);
-    if (pauseHidden) document.addEventListener("visibilitychange", onVisibility);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       controller.abort();
       window.clearInterval(timer);
-      if (pauseHidden) document.removeEventListener("visibilitychange", onVisibility);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [ms, key, immediate, pauseHidden]);
+  }, [ms, key, immediate]);
 }

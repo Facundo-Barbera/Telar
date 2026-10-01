@@ -24,6 +24,10 @@ export const gitClient = {
     return this.request("GET", `${sessionPath(sessionId)}/diff${query ? `?${query}` : ""}`);
   },
 
+  sessionDirtyFiles(this: EngineTransport, sessionId: string): Promise<{ dirtyFiles?: number }> {
+    return this.request("GET", `${sessionPath(sessionId)}/git/status`);
+  },
+
   sessionFilePatch(this: EngineTransport, sessionId: string, path: string, options: FilePatchOptions = {}): Promise<{ file: GitFilePatch }> {
     return this.request("GET", `${sessionPath(sessionId)}/diff?${filePatchQuery(path, options)}`);
   },

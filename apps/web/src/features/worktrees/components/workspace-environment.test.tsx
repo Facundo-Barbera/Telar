@@ -137,10 +137,9 @@ describe("the uncommitted count", () => {
     createEngineApi(async (url) => {
       const path = String(url);
       if (path === "/api/projects/p1/git") return Response.json({ git: git({ dirtyFiles: 7 }) });
-      if (path === "/api/sessions/session_1/diff?base=") {
+      if (path === "/api/sessions/session_1/git/status") {
         if (worktreeFiles === "gone") return Response.json({ error: { code: "not_found", message: "gone" } }, { status: 404 });
-        const files = worktreeFiles.map((file) => ({ path: file, status: "modified" }));
-        return Response.json({ diff: { repository: true, workspacePath: "/wt", files, commits: [], linesAdded: 0, linesRemoved: 0, truncated: false } });
+        return Response.json({ dirtyFiles: worktreeFiles.length });
       }
       return Response.json({ error: { code: "not_found", message: path } }, { status: 404 });
     });
