@@ -154,7 +154,7 @@ import Foundation
                     }
                     self.listen()
                 case .failure:
-
+                    if self.draining != nil { return self.drained() }
                     self.error = Self.socketEnded
                     self.stop()
                     self.diagnose(replacing: Self.socketEnded)
@@ -163,8 +163,30 @@ import Foundation
         }
     }
 
+    private var draining: CheckedContinuation<Void, Never>?
+
+    func finish(within limit: Duration = .seconds(2)) async {
+        guard phase == .listening, let task = socket else { return stop() }
+        teardownAudio()
+        task.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
+        await withCheckedContinuation { done in
+            draining = done
+            Task { [weak self] in
+                try? await Task.sleep(for: limit)
+                self?.drained()
+            }
+        }
+        if phase != .idle { stop() }
+    }
+
+    private func drained() {
+        draining?.resume()
+        draining = nil
+    }
+
     func stop() {
         generation += 1
+        drained()
 
         if let task = socket {
             task.send(.string(#"{"type":"CloseStream"}"#)) { _ in }
