@@ -50,3 +50,30 @@ describe("telar:workspace:open", () => {
     expect(await open({ path: path.join(root, "file.ts"), kind: "file", openerId: "/bin/sh" })).toEqual({ ok: false, error: "That app is not installed on this machine." });
   });
 });
+
+describe("telar:dialog:choose-directory", () => {
+  const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo";
+
+  const choose = (input, answer) => {
+    const asked = [];
+    electron.dialog.showOpenDialog = async (...args) => {
+      asked.push(args.at(-1));
+      return answer;
+    };
+    return electron.ipcMain.invoke("telar:dialog:choose-directory", { sender: {} }, input).then((chosen) => ({ chosen, asked }));
+  };
+
+  test("the picked folder comes back as it is, spaces and all", async () => {
+    const { chosen } = await choose({}, { canceled: false, filePaths: [drive] });
+    expect(chosen).toEqual({ path: drive });
+  });
+
+  test("it opens on an absolute start folder and ignores anything else", async () => {
+    expect((await choose({ defaultPath: drive }, { canceled: true, filePaths: [] })).asked[0].defaultPath).toBe(drive);
+    expect((await choose({ defaultPath: "My Drive" }, { canceled: true, filePaths: [] })).asked[0].defaultPath).toBeUndefined();
+  });
+
+  test("a cancelled picker says so", async () => {
+    expect((await choose({}, { canceled: true, filePaths: [] })).chosen).toEqual({ cancelled: true });
+  });
+});

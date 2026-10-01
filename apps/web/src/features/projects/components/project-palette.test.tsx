@@ -397,15 +397,49 @@ test("a URL already in the search field skips the URL page", async () => {
   });
 });
 
-test("an unreachable engine offers the system picker, and what it picks is registered", async () => {
-  const { calls } = engine({ ...registerRoutes(), "POST /api/browse": () => ({ path: "/Users/me/picked/" }) }, ["/api/fs"]);
-  const { log } = await openPalette({ page: "sources" });
-  await key({ key: "Enter" });
-  const fallback = () => buttonLabelled("Choose a folder with the system picker instead");
-  await flush(() => Boolean(fallback()));
-  await click(fallback());
-  await flush(() => log.includes("registered"));
-  expect(calls.find((call) => call.route === "POST /api/projects")?.body).toEqual({ name: "picked", root: "/Users/me/picked" });
+describe("a Google Drive folder", () => {
+  const drive = "/Users/me/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo";
+  afterEach(() => delete (window as { telarDesktop?: unknown }).telarDesktop);
+
+  test("the desktop picker opens where the browser is, and what it picks is registered", async () => {
+    const asked: unknown[] = [];
+    const chooseDirectory = async (options: unknown) => (asked.push(options), { path: drive });
+    (window as { telarDesktop?: unknown }).telarDesktop = { dialog: { chooseDirectory } };
+    const { calls } = engine(registerRoutes());
+    const { log } = await openPalette({ page: "sources" });
+    await key({ key: "Enter" });
+    await flush(() => Boolean(buttonLabelled("Choose in Finder…")));
+    await click(buttonLabelled("Choose in Finder…"));
+    await flush(() => log.includes("registered"));
+    expect(asked).toEqual([{ title: "Choose a project folder", defaultPath: "/Users/me/code/telar" }]);
+    expect(calls.find((call) => call.route === "POST /api/projects")?.body).toEqual({ name: "repo", root: drive });
+  });
+
+  test("a pasted path the engine cannot list can still be added", async () => {
+    const { calls } = engine(registerRoutes());
+    const stubbed = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes("CloudStorage")
+        ? Response.json({ error: { code: "invalid_request", message: "macOS has not let Telar read this cloud folder." } }, { status: 403 })
+        : stubbed(input, init)) as typeof fetch;
+    const { log } = await openPalette({ page: "sources" });
+    await typeInto(field(), drive);
+    await key({ key: "Enter" });
+    const anyway = () => buttonLabelled("Add ~/Library/CloudStorage/GoogleDrive-me@example.com/My Drive/[01] Work/repo anyway");
+    await flush(() => Boolean(anyway()));
+    expect(page()).toContain("macOS has not let Telar read this cloud folder.");
+    await click(anyway());
+    await flush(() => log.includes("registered"));
+    expect(calls.find((call) => call.route === "POST /api/projects")?.body).toEqual({ name: "repo", root: drive });
+  });
+
+  test("a browser tab has no native picker to offer", async () => {
+    engine(registerRoutes());
+    await openPalette({ page: "sources" });
+    await key({ key: "Enter" });
+    await flush(() => Boolean(buttonLabelled("Add⌘↵")));
+    expect(buttonLabelled("Choose in Finder…")).toBeUndefined();
+  });
 });
 
 test("the folder name is what the project is called when nobody typed one", () => {

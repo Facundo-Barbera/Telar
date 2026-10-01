@@ -46,8 +46,8 @@ export function useProjectAdding({
   const addLocalFolder = (root: string) => register(() => api.registerProject({ name: folderName(root), root }));
   const cloneInto = (url: string, parent: string) => register(() => api.cloneProject({ url, parent }));
 
-  const pickWithSystem = (title: string, then: (path: string) => void) => {
-    void chooseDirectory({ title }).then((chosen) => {
+  const pickWithSystem = ({ title, defaultPath }: { title: string; defaultPath: string | undefined }, then: (path: string) => void) => {
+    void chooseDirectory({ title, ...(defaultPath ? { defaultPath } : {}) }).then((chosen) => {
       if ("cancelled" in chosen) return;
       if ("unavailable" in chosen) {
         setNotice(chosen.unavailable);

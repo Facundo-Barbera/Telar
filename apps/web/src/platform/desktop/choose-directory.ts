@@ -2,12 +2,18 @@
 export type DirectoryChoice = { path: string } | { cancelled: true } | { unavailable: string };
 
 type DesktopDialogBridge = {
-  dialog?: { chooseDirectory?: (options?: { title?: string; buttonLabel?: string }) => Promise<unknown> };
+  dialog?: { chooseDirectory?: (options?: DirectoryPickerOptions) => Promise<unknown> };
 };
+
+type DirectoryPickerOptions = { title?: string; buttonLabel?: string; defaultPath?: string };
 
 function desktop(): DesktopDialogBridge | undefined {
   if (typeof window === "undefined") return undefined;
   return (window as unknown as { telarDesktop?: DesktopDialogBridge }).telarDesktop;
+}
+
+export function hasNativeFolderPicker(): boolean {
+  return Boolean(desktop()?.dialog?.chooseDirectory);
 }
 
 export function readDirectoryChoice(answer: unknown): DirectoryChoice {
@@ -20,7 +26,7 @@ export function readDirectoryChoice(answer: unknown): DirectoryChoice {
 }
 
 export async function chooseDirectory(
-  options: { title?: string } = {},
+  options: DirectoryPickerOptions = {},
   seams: { bridge?: DesktopDialogBridge | undefined; fetcher?: typeof fetch } = {},
 ): Promise<DirectoryChoice> {
   const bridge = "bridge" in seams ? seams.bridge : desktop();
