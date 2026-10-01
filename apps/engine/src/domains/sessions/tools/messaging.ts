@@ -1,24 +1,9 @@
-import crypto from "node:crypto";
 import { z } from "zod";
-import type { Session } from "@telar/engine-client";
 import { err, failure, fillWithin, json, type ToolFactory } from "../../agent-tools";
+import { createTool, modelChoice, runIdFor } from "./create";
 import { delegationAnswer, WAIT, waitForDelegation } from "./wait";
 import { FIND_LIMIT_DEFAULT, findView } from "./query";
-import { CREATE, EFFORT, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, MODEL, SEND, type SessionsCapability, summarise, summariseOne } from "./shared";
-
-const modelChoice = (args: Record<string, unknown>): { model?: { model?: string; effort?: string } } => {
-  const model = typeof args.model === "string" && args.model.trim() ? args.model.trim() : undefined;
-  const effort = typeof args.effort === "string" && args.effort.trim() ? args.effort.trim() : undefined;
-  return model || effort ? { model: { ...(model ? { model } : {}), ...(effort ? { effort } : {}) } } : {};
-};
-
-const runsOn = (session: Session): Record<string, string> =>
-  session.model?.model ? { model: `${session.model.model}${session.model.effort ? ` at ${session.model.effort}` : ""}` } : {};
-
-const runIdFor = (tool: string, toolCallId: string | undefined): string =>
-  toolCallId
-    ? `run_${crypto.createHash("sha256").update(`${tool}:${toolCallId}`).digest("hex").slice(0, 32)}`
-    : `run_${crypto.randomUUID().replaceAll("-", "")}`;
+import { EFFORT, LIST, LIST_CHARS, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, MODEL, SEND, type SessionsCapability, summarise } from "./shared";
 
 export function messagingTools(tool: ToolFactory, capability: SessionsCapability): unknown[] {
   return [
@@ -142,72 +127,3 @@ export function messagingTools(tool: ToolFactory, capability: SessionsCapability
   ];
 }
 
-function createTool(tool: ToolFactory, capability: SessionsCapability): unknown {
-  return tool(
-    "sessions_create",
-    CREATE,
-    {
-      projectId: z.string().min(1).describe("From sessions_list."),
-      title: z
-        .string()
-        .optional()
-        .describe("A few words; always set one."),
-      envMode: z
-        .enum(["local", "worktree"])
-        .describe(
-          "worktree: its own checkout, for anything that edits files. local: shares the project's checkout.",
-        ),
-      driver: z
-        .enum(["claude", "codex"])
-        .optional()
-        .describe("Omit unless the user asked."),
-      model: z.string().min(1).optional().describe(MODEL),
-      effort: z.string().min(1).optional().describe(EFFORT),
-      task: z.string().min(1).optional().describe("A self-contained brief; it cannot see this conversation."),
-      wait: WAIT,
-    },
-    async (args, context) => {
-      const projectId = String(args.projectId ?? "");
-      const envMode = args.envMode === "worktree" ? "worktree" : "local";
-      if (typeof args.wait === "number" && (typeof args.task !== "string" || !args.task)) return err("wait needs a task: there is nothing to wait for.");
-      let session: Session;
-      try {
-        session = await capability.create({
-          projectId,
-          ...(typeof args.title === "string" && args.title.trim() ? { title: args.title } : {}),
-          envMode,
-          ...(args.driver === "claude" || args.driver === "codex" ? { driver: args.driver } : {}),
-          ...modelChoice(args),
-        });
-      } catch (error) {
-        return err(`Could not create a session on "${projectId}": ${failure(error)}`);
-      }
-      const where = session.workspace.mode === "worktree"
-        ? `Created with a checkout of its own on branch ${session.workspace.branch}.`
-        : "Created against the project's own checkout, which it shares with anything else working there.";
-      const answer = {
-        ...summariseOne(session, new Map<string, string>()),
-        ...runsOn(session),
-        note: `${where} Nothing is queued and nothing has started — send it a message with intent: task to give it work.`,
-        note2: "It is filed under you, but it reports back only when you task it.",
-        access: `${session.runtimeMode} — never wider than your own, so if you have to ask about something, so does it.`,
-      };
-      if (typeof args.task !== "string" || !args.task) return json(answer);
-      try {
-        const { turn } = await capability.send(session.id, { runId: runIdFor("sessions_create", context?.toolCallId), input: args.task, intent: "task" });
-        if (typeof args.wait === "number") {
-          return json({ ...answer, runId: turn.runId, ...delegationAnswer(await waitForDelegation(capability, session.id, args.wait)) });
-        }
-        return json({
-          ...answer,
-          runId: turn.runId,
-          taskState: turn.state,
-          ...(turn.agentNotice ? { recipientSees: turn.agentNotice } : {}),
-          note: `${where} Your task is queued as ${turn.runId}; its model was handed the notice above. Subscribe and end your turn.`,
-        });
-      } catch (error) {
-        return err(`Created ${session.id}, but the task was not delivered: ${failure(error)}. Send it with sessions_send intent task.`);
-      }
-    },
-  );
-}

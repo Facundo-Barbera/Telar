@@ -82,10 +82,9 @@ test("the cohort delivers ONCE, after the last member, with a line per member", 
   // Where a transcript's fold of the host's reactions begins.
   expect(detail.cohortOpenedAt).toBe(cohort.createdAt);
   expect(detail.body.startsWith("[cohort done · all 3 sessions finished]")).toBe(true);
-  expect(detail.body).toContain('1. session_a "worker a" — result: Merged #12; CI green. · sessions_read(sessionId: "session_host", runId: "run_msg_run_a_result")');
+  expect(detail.body).toContain('1. session_a "worker a" — result · sessions_read(sessionId: "session_host", runId: "run_msg_run_a_result")\nIn full:\n<<<\nMerged #12; CI green.\nDetails follow.\n>>>');
   expect(detail.body).toContain('2. session_b "worker b" — FAILED: driver_failed: the CLI died · sessions_read(sessionId: "session_b", runId: "run_b")');
   expect(detail.body).toContain('3. session_c "worker c" — completed: Refactored the parser.');
-  expect(detail.body).not.toContain("Details follow.");
   expect(detail.entries?.map((entry) => entry.sessionId)).toEqual(["session_a", "session_b", "session_c"]);
   expect(detail.entries?.map((entry) => entry.title)).toEqual(["worker a", "worker b", "worker c"]);
   // The last to finish leads.
@@ -310,7 +309,7 @@ test("a cohort of ONE quotes what its member said, like the single wake it repla
   expect(body).toContain("PR #7 is green.");
   expect(body).toContain("<<<");
   expect(body).toMatch(/more chars not shown/);
-  // Several members stay one line each.
+  // Several members are each quoted too, as far as the body has room.
   const two = setup();
   const x = start(two.store, "session_a", "run_x");
   const y = start(two.store, "session_b", "run_y");
@@ -319,7 +318,10 @@ test("a cohort of ONE quotes what its member said, like the single wake it repla
   y.send("result", "Done.");
   x.complete();
   y.complete();
-  expect(woken(two.store)[0]!.notification!.body).not.toContain("<<<");
+  const both = woken(two.store)[0]!.notification!.body;
+  expect(both).toContain("PR #7 is green.");
+  expect(both).toMatch(/more chars not shown/);
+  expect(both).toContain('2. session_b "worker b" — result: Done.');
 });
 
 /** The host tasks `sessionId` (run ids suffixed by `tag`); returns the member's claimed run. */

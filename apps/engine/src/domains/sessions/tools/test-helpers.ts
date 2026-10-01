@@ -4,8 +4,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ProviderModel } from "@telar/engine-client";
+import { STATE_VERSION } from "../../../platform/kernel";
 import { EngineStore } from "../../../state";
 import { sessionsTools, type SessionsCapability } from "..";
+import { sessionsCapability, storeReads, storeSessionsPort } from "../capability";
 
 function knownClaudeDefault(directory: string): string {
   fs.mkdirSync(directory, { recursive: true });
@@ -106,6 +109,44 @@ export function engine(options?: ConstructorParameters<typeof EngineStore>[2]): 
   const store = new EngineStore(tmp("telar-sessions-state-"), Date.now, options);
   const project = store.projectRegistry.register({ name: "aurora", root: projectRoot });
   return { store, projectId: project.id, projectRoot };
+}
+
+export function orchestrator(store: EngineStore, projectId: string) {
+  const parent = store.lifecycle.createSession({ projectId, title: "the orchestrator" });
+  store.intake.submitTurn(parent.id, { runId: "run_parent", input: "dispatch" });
+  const claimToken = store.claims.claimTurn(parent.id, "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning(parent.id, "run_parent", claimToken);
+  const tools = new Map<string, Registered>();
+  sessionsTools(
+    (name, description, shape, run) => {
+      tools.set(name, { name, description, shape, run });
+      return { name };
+    },
+    sessionsCapability(storeSessionsPort(store), { sessionId: parent.id, proof: () => ({ runId: "run_parent", claimToken }) }, storeReads(store)),
+  );
+  return { parent, tools };
+}
+
+const catalogueRow = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
+  id,
+  label: id,
+  isDefault: false,
+  hidden: false,
+  hiddenByUser: false,
+  legacy: false,
+  source: "provider",
+  efforts: ["low", "medium", "high"],
+  fastMode: false,
+  ...extra,
+});
+
+export function withModelCatalogue(store: EngineStore): EngineStore {
+  const models = [catalogueRow("claude-opus-5-5[1m]", { isDefault: true }), catalogueRow("claude-sonnet-5"), catalogueRow("claude-haiku-4-5", { efforts: [] })];
+  store.kernel.writeDocument(store.kernel.paths.modelCatalogues, {
+    version: STATE_VERSION,
+    entries: [{ catalogue: { driver: "claude", models, source: "provider", readAt: Date.now(), cliVersion: "2.1.300" }, cliVersion: "2.1.300" }],
+  });
+  return store;
 }
 
 /** The JSON a tool answered with, or the error text when it refused. */

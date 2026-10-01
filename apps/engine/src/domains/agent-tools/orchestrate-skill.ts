@@ -46,18 +46,21 @@ Write each worker a self-contained brief. It will not see this conversation.
 
 ## 3. Dispatch
 
-- One \`worktree\` session per task: \`sessions_create\` with \`envMode:
-  "worktree"\`, a title that says what it is, and the brief as \`task\`. One
-  call creates it under you and assigns the work.
-- Pick each worker's \`model\` and \`effort\` for its task, not yours: search
+- One \`worktree\` session per task, the whole wave in ONE call:
+  \`sessions_create({ projectId, envMode: "worktree", tasks: [...] })\`, an
+  entry per task with a title that says what it is and the brief as \`task\`.
+  It creates each worker under you, assigns its work and subscribes you to
+  all of them as one cohort.
+- Pick each entry's \`model\` and \`effort\` for its task, not yours: search
   or read, a Haiku; mechanical edits, a Sonnet at medium; review, a Sonnet at
   high; design or debugging, your own model. \`sessions_capabilities\` lists
   what is offered, and each result says what that run spent.
-- Then ONE \`sessions_subscribe({ sessionIds: [...] })\` for all of them, and
-  END YOUR TURN. No per-session subscribes, no polling, no sleeping. You are
-  woken once, when every worker has sent its result (or failed, was stopped
-  or settled); a blocker reaches you at once. Their progress reports never
-  interrupt you — they arrive with your next turn.
+- Then END YOUR TURN. No per-session creates, sends or subscribes, no
+  polling, no sleeping. You are woken once, when every worker has sent its
+  result (or failed, was stopped or settled), with each result quoted; a
+  blocker reaches you at once. Their progress reports never interrupt you —
+  they arrive with your next turn. Work tasked another way: ONE
+  \`sessions_subscribe({ sessionIds: [...] })\` for all of it.
 - A single quick task whose answer you need now: give \`sessions_create\` a
   \`wait\` in seconds and read the result in the same call. Never wait on one
   worker of a wave; that stalls the rest.
@@ -66,8 +69,8 @@ Write each worker a self-contained brief. It will not see this conversation.
 
 ## 4. Integrate
 
-When results arrive (each is quoted in the notice; call \`sessions_read\`
-only if it was cut, with \`view: "diff"\` for what a worker changed; never
+When results arrive (each is quoted in the one notice; call \`sessions_read\`
+only for one it cut, with \`view: "diff"\` for what a worker changed; never
 reply just to acknowledge one):
 
 - **Verify before merging.** Checks must belong to the PR's CURRENT head SHA,

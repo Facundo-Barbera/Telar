@@ -4,10 +4,8 @@ import path from "node:path";
 import { workspacePath } from "@telar/engine-client";
 import { worktreeReady } from "../../../../test/worktree-ready";
 import { defaultAsyncGitRunner, GIT_TIMEOUT_STATUS, type AsyncGitRunner } from "../../../platform/git/runner";
-import type { EngineStore } from "../../../state";
-import { TELAR_SKILL, sessionsTools } from "..";
-import { sessionsCapability, storeReads, storeSessionsPort } from "../capability";
-import { cleanUp, capabilityOver, wall, engine, call, type Registered } from "./test-helpers";
+import { TELAR_SKILL } from "..";
+import { cleanUp, capabilityOver, wall, engine, call, orchestrator } from "./test-helpers";
 
 afterEach(cleanUp);
 
@@ -148,25 +146,9 @@ describe("a session whose checkout failed", () => {
 });
 
 describe("a session created by a session", () => {
-  function caller(store: EngineStore, projectId: string) {
-    const parent = store.lifecycle.createSession({ projectId, title: "the orchestrator" });
-    store.intake.submitTurn(parent.id, { runId: "run_parent", input: "dispatch" });
-    const claimToken = store.claims.claimTurn(parent.id, "worker_one")!.claim!.token;
-    store.turnLifecycle.markRunning(parent.id, "run_parent", claimToken);
-    const tools = new Map<string, Registered>();
-    sessionsTools(
-      (name, description, shape, run) => {
-        tools.set(name, { name, description, shape, run });
-        return { name };
-      },
-      sessionsCapability(storeSessionsPort(store), { sessionId: parent.id, proof: () => ({ runId: "run_parent", claimToken }) }, storeReads(store)),
-    );
-    return { parent, tools };
-  }
-
   test("is born with the caller and its run as its parent", async () => {
     const { store, projectId } = engine();
-    const { parent, tools } = caller(store, projectId);
+    const { parent, tools } = orchestrator(store, projectId);
     const created = await call(tools, "sessions_create", { projectId, envMode: "local", title: "builder" });
 
     expect(store.records.get(created.json!.id as string).startedFrom).toEqual({ sessionId: parent.id, runId: "run_parent" });
@@ -175,7 +157,7 @@ describe("a session created by a session", () => {
 
   test("with a task, gets exactly the one assignment create-then-send would give", async () => {
     const { store, projectId } = engine();
-    const { parent, tools } = caller(store, projectId);
+    const { parent, tools } = orchestrator(store, projectId);
     const created = await call(tools, "sessions_create", { projectId, envMode: "local", title: "one call", task: "port the parser" });
     const oneCall = created.json!.id as string;
     const twoCalls = (await call(tools, "sessions_create", { projectId, envMode: "local", title: "two calls" })).json!.id as string;
@@ -193,7 +175,7 @@ describe("a session created by a session", () => {
 
   test("without a task, nothing is assigned or queued", async () => {
     const { store, projectId } = engine();
-    const { tools } = caller(store, projectId);
+    const { tools } = orchestrator(store, projectId);
     const created = await call(tools, "sessions_create", { projectId, envMode: "local" });
     const id = created.json!.id as string;
 

@@ -50,7 +50,7 @@ const NOT_A_BYPASS = "Never hand a peer work you were refused.";
 
 export const LIST = `Live sessions and the projects you can create in; check it before creating. q searches every session's text instead.`;
 
-export const CREATE = `Start a new session on a project, filed under you. task assigns its first work now; without it nothing starts. ${NOT_A_BYPASS}`;
+export const CREATE = `Start a session on a project, filed under you. task assigns its first work now; without it nothing starts. For several workers pass tasks instead: one call creates and tasks each and subscribes you to them as one cohort. ${NOT_A_BYPASS}`;
 
 export const CAPABILITIES = `What a session you start can run on: each provider's models with their efforts, window and cost tier (1 is cheapest), the person's defaults, and your own model and access.`;
 
@@ -66,7 +66,7 @@ export const NO_SELF =
 export const NO_SESSION_TO_SCHEDULE =
   "This door has no session to schedule: a scheduled run is submitted INTO a conversation, and this client is not one. Ask a session to schedule itself.";
 
-export const SUBSCRIBE = `Be woken once when the sessions you tasked are done (result sent, failed, stopped or settled); blockers still arrive at once. Send the tasks, subscribe once, end your turn. cancel stops one; no arguments lists yours.`;
+export const SUBSCRIBE = `Be woken once when the sessions you tasked are done (result sent, failed, stopped or settled); blockers still arrive at once. Send the tasks, subscribe once, end your turn; sessions_create tasks does this for you. cancel stops one; no arguments lists yours.`;
 
 export const REQUESTS = `A session's open requests, with the ids sessions_resolve_request takes. They are meant for a human; answering one makes it yours.`;
 
