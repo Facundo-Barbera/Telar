@@ -4,7 +4,7 @@ export {
   isGitWorkTree,
   lockSessionWorktree,
   repairWorktree,
-  WORKTREE_ADD_TIMEOUT_MS,
+  WORKTREE_TREE_TIMEOUT_MS,
   WORKTREE_ADMISSION_MS,
   WorktreeError,
   worktreeLockReason,

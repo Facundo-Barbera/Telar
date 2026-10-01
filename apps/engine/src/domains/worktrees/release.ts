@@ -2,7 +2,7 @@
 // Never released: dirty or unprovable trees, unpushed branches, a process's cwd, anything outside the root.
 import fs from "node:fs";
 import path from "node:path";
-import { lockSessionWorktree, WORKTREE_ADD_TIMEOUT_MS, WorktreeError } from "./checkout";
+import { lockSessionWorktree, WORKTREE_TREE_TIMEOUT_MS, WorktreeError } from "./checkout";
 import { type AsyncGitRunner } from "../../platform/git/runner";
 import { lsof } from "../../platform/process/lsof";
 
@@ -66,7 +66,7 @@ export async function reattachSessionWorktreeAsync(
   input: { projectRoot: string; path: string; branch: string; timeoutMs?: number },
 ): Promise<void> {
   await fs.promises.mkdir(path.dirname(input.path), { recursive: true, mode: 0o700 });
-  const options = { timeoutMs: input.timeoutMs ?? WORKTREE_ADD_TIMEOUT_MS };
+  const options = { timeoutMs: input.timeoutMs ?? WORKTREE_TREE_TIMEOUT_MS };
   let added = await git(input.projectRoot, ["worktree", "add", input.path, input.branch], options);
   // A registration left behind by a directory that went some other way makes
   // `add` refuse the path. `--force` for exactly that case — never `prune`,

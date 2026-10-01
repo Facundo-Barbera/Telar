@@ -372,7 +372,7 @@ test("reclaimable rows sort before the rest, biggest first", async () => {
 
 // ── The fenced removal ────────────────────────────────────────────────────
 
-test("an unregistered checkout is removed only from inside a root the engine manages", () => {
+test("an unregistered checkout is removed only from inside a root the engine manages", async () => {
   const managed = tmp("telar-671-managed-");
   const elsewhere = tmp("telar-671-elsewhere-");
 
@@ -384,29 +384,29 @@ test("an unregistered checkout is removed only from inside a root the engine man
   fs.mkdirSync(outside);
   fs.writeFileSync(path.join(outside, "important.txt"), "not Telar's to delete");
 
-  expect(removeUnregisteredCheckout(outside, [managed])).toBe(false);
+  expect(await removeUnregisteredCheckout(outside, [managed])).toBe(false);
   expect(fs.existsSync(outside)).toBe(true);
 
-  expect(removeUnregisteredCheckout(inside, [managed])).toBe(true);
+  expect(await removeUnregisteredCheckout(inside, [managed])).toBe(true);
   expect(fs.existsSync(inside)).toBe(false);
 });
 
 /** A DIRECT CHILD, NOT A DESCENDANT. `planSessionWorktree` puts every cut
  *  exactly one level down, so accepting a descendant would let "remove this
  *  checkout" remove something INSIDE one. */
-test("a directory nested inside a checkout is refused", () => {
+test("a directory nested inside a checkout is refused", async () => {
   const managed = tmp("telar-671-nested-");
   const checkout = path.join(managed, "telar--held-dddd4444");
   const nested = path.join(checkout, "src");
   fs.mkdirSync(nested, { recursive: true });
 
-  expect(removeUnregisteredCheckout(nested, [managed])).toBe(false);
+  expect(await removeUnregisteredCheckout(nested, [managed])).toBe(false);
   expect(fs.existsSync(nested)).toBe(true);
 });
 
-test("the root itself is never removable", () => {
+test("the root itself is never removable", async () => {
   const managed = tmp("telar-671-root-");
-  expect(removeUnregisteredCheckout(managed, [managed])).toBe(false);
+  expect(await removeUnregisteredCheckout(managed, [managed])).toBe(false);
   expect(fs.existsSync(managed)).toBe(true);
 });
 

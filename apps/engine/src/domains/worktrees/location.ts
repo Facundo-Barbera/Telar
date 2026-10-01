@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { atomicWrite } from "../../platform/fs/atomic";
 import { statePaths } from "../../platform/fs/state-paths";
-import { isMountPoint, knownVolumeMount, volumeForRoot, volumeForRootAsync, volumeSupportOn, type VolumeDeps, type VolumeIdentity } from "../../platform/fs/volumes";
+import { knownVolumeMount, listedMounts, probeAvailability, volumeForRoot, volumeForRootAsync, volumeSupportOn, type ProjectAvailability, type VolumeDeps, type VolumeIdentity } from "../../platform/fs/volumes";
 
 // Not marked for Spotlight or Time Machine: .metadata_never_index only works at a volume root,
 // and excluding uncommitted work from backups is the owner's call.
@@ -60,16 +60,44 @@ function locationFile(engineRoot: string): string {
   return statePaths(engineRoot).worktreesLocation;
 }
 
-// An unreadable record refuses the cut, not the engine. A remount under a new name is resolved by uuid
-// and the record rewritten.
-export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): WorktreesRootState {
+const PRESENCE_REFRESH_MS = 2_000;
+const presences = new Map<string, { value: ProjectAvailability; at: number }>();
+const probing = new Map<string, Promise<ProjectAvailability>>();
+
+const presenceKey = (root: string, volume?: VolumeIdentity): string => `${root}\0${volume?.mount ?? ""}`;
+
+function probeRoot(root: string, volume: VolumeIdentity | undefined, deps: VolumeDeps): Promise<ProjectAvailability> {
+  const key = presenceKey(root, volume);
+  const running = probing.get(key);
+  if (running) return running;
+  const probe = probeAvailability({ root, ...(volume ? { volume } : {}) }, deps)
+    .catch((): ProjectAvailability => "missing")
+    .then((value) => {
+      probing.delete(key);
+      presences.set(key, { value, at: Date.now() });
+      return value;
+    });
+  probing.set(key, probe);
+  return probe;
+}
+
+// From memory, re-probed in the background once stale; before the first probe answers, a drive is here if it is listed.
+function rootPresent(root: string, volume: VolumeIdentity | undefined, deps: VolumeDeps): boolean {
+  const known = presences.get(presenceKey(root, volume));
+  if (known === undefined || Date.now() - known.at >= PRESENCE_REFRESH_MS) void probeRoot(root, volume, deps);
+  if (known !== undefined) return known.value === "available";
+  return volume === undefined || listedMounts(deps).includes(volume.mount);
+}
+
+type LocationRecord = { root: string; volume?: VolumeIdentity; label?: string; movedAt?: number };
+
+function readRecord(engineRoot: string): LocationRecord | Extract<WorktreesRootState, { kind: "default" | "unreadable" }> {
   let raw: string;
   try {
     raw = fs.readFileSync(locationFile(engineRoot), "utf8");
   } catch {
     return { kind: "default", root: defaultWorktreesRoot(engineRoot) };
   }
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -86,36 +114,52 @@ export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): Wo
   if (typeof record.root !== "string" || !path.isAbsolute(record.root)) {
     return { kind: "unreadable", reason: `${locationFile(engineRoot)} does not name an absolute folder for session checkouts. Choose a location again in Settings ▸ Storage.` };
   }
+  return { root: record.root, ...(record.volume ? { volume: record.volume } : {}), ...(typeof record.label === "string" ? { label: record.label } : {}), ...(record.movedAt === undefined ? {} : { movedAt: record.movedAt }) };
+}
 
-  const volume = record.volume;
-  const label = typeof record.label === "string" ? record.label : undefined;
-  if (!volume) return { kind: "configured", root: path.resolve(record.root) };
+// An unreadable record refuses the cut, not the engine. Whether the drive is here comes from memory, never a stat
+// on the read; a remount under a new name is resolved by uuid and the record rewritten.
+export function readWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): WorktreesRootState {
+  const record = readRecord(engineRoot);
+  if ("kind" in record) return record;
+  const { volume, label } = record;
+  const root = path.resolve(record.root);
+  if (!volume) return { kind: "configured", root };
+  const named = { volume, ...(label ? { label } : {}) };
 
   // Checked first: on a platform with no mount roots the branches below would call a connected drive absent.
   if (volumeSupportOn(deps.platform ?? process.platform) === "unsupported") {
-    if (fs.existsSync(record.root)) return { kind: "configured", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
-    return { kind: "unverifiable", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
+    return { kind: rootPresent(root, undefined, deps) ? "configured" : "unverifiable", root, ...named };
   }
-
-  // Still mounted where it was: the ordinary case, and the cheapest check.
-  if (isMountPoint(volume.mount, deps) && fs.existsSync(record.root)) {
-    return { kind: "configured", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
-  }
-  // Mounted elsewhere — resolve by the drive's own id, and rewrite the hint.
+  if (rootPresent(root, volume, deps)) return { kind: "configured", root, ...named };
   const moved = volume.uuid ? knownVolumeMount(volume.uuid, deps) : undefined;
   if (moved && moved !== volume.mount) {
-    const root = path.join(moved, path.relative(volume.mount, record.root));
-    if (fs.existsSync(root)) {
-      const next: WorktreesLocation = { version: 1, root, volume: { ...volume, mount: moved }, ...(label ? { label } : {}), movedAt: record.movedAt ?? Date.now() };
+    const next: WorktreesLocation = { version: 1, root: path.join(moved, path.relative(volume.mount, root)), volume: { ...volume, mount: moved }, ...(label ? { label } : {}), movedAt: record.movedAt ?? Date.now() };
+    if (rootPresent(next.root, next.volume, deps)) {
       try {
         atomicWrite(locationFile(engineRoot), next, 0o600);
       } catch {
         // The answer is right either way; rewriting only saves the next read resolving it again.
       }
-      return { kind: "configured", root, volume: next.volume!, ...(label ? { label } : {}) };
+      return { kind: "configured", root: next.root, volume: next.volume!, ...(label ? { label } : {}) };
     }
   }
-  return { kind: "absent", root: path.resolve(record.root), volume, ...(label ? { label } : {}) };
+  return { kind: "absent", root, ...named };
+}
+
+/** `readWorktreesRoot` once the disk has been asked, for a route a person is waiting on. */
+export async function probeWorktreesRoot(engineRoot: string, deps: VolumeDeps = {}): Promise<WorktreesRootState> {
+  const record = readRecord(engineRoot);
+  if (!("kind" in record)) {
+    const unsupported = volumeSupportOn(deps.platform ?? process.platform) === "unsupported";
+    const volume = unsupported ? undefined : record.volume;
+    await probeRoot(path.resolve(record.root), volume, deps);
+    const moved = volume?.uuid ? knownVolumeMount(volume.uuid, deps) : undefined;
+    if (volume && moved && moved !== volume.mount) {
+      await probeRoot(path.join(moved, path.relative(volume.mount, path.resolve(record.root))), { ...volume, mount: moved }, deps);
+    }
+  }
+  return readWorktreesRoot(engineRoot, deps);
 }
 
 // Written only once the folder exists. Nothing is moved: this only decides the next cut.
