@@ -1,12 +1,13 @@
 "use client";
 
-import { Suspense, useEffect, type ReactNode } from "react";
+import { Suspense, useEffect, useRef, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import { SidebarInset, SidebarProvider } from "@/ui/sidebar";
 import { APP_SIDEBAR_STORAGE_KEY } from "@/ui/sidebar-width";
 import { installNavigationMarks, isMeasuredHref, markNavigation, startNavigation } from "@/platform/perf-marks";
 import { installPageApi } from "@/features/composer";
+import { useRouteSwap } from "./route-swap";
 
 const AppSidebar = dynamic(() => import("@/features/sessions/rail/app-sidebar").then((mod) => mod.AppSidebar));
 
@@ -22,6 +23,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const settings = isSettingsRoute(pathname);
   const railless = settings || isSoloRoute(pathname);
+  const shell = useRef<HTMLDivElement>(null);
+  useRouteSwap(shell, settings);
   useEffect(() => {
     installPageApi();
   }, []);
@@ -32,7 +35,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     markNavigation("commit", pathname);
   }, [pathname]);
   return (
-    <SidebarProvider storageKey={APP_SIDEBAR_STORAGE_KEY} className="app-ground bg-sidebar">
+    <SidebarProvider ref={shell} storageKey={APP_SIDEBAR_STORAGE_KEY} className="app-ground bg-sidebar">
       {!railless && (
         <Suspense fallback={null}>
           <AppSidebar />
