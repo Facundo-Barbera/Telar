@@ -85,6 +85,10 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
 
     private var wantsSettled = false
 
+    private var list: LiveSessions?
+
+    private var shelf = SettledShelf()
+
     init(api: any EngineAPI, hostId: HostID = HostID(), cache: HostSnapshotCache? = nil) {
         self.api = api
         self.hostId = hostId
@@ -123,6 +127,7 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
     func setSettled(_ id: EngineID, _ settled: Bool) async {
         do {
             try await api.patchSession(id, patch: SessionPatch(settledOverride: settled ? "settled" : "active"))
+            shelf.stale = true
             await refresh()
         } catch {
             lastError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
@@ -153,60 +158,69 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
 
     func refresh() async {
         do {
-            let answer: LiveSessionsRead
-            if etag == nil, !wantsSettled, let cursor = revision {
-                answer = try await api.liveSessions(matching: nil, since: cursor, all: false)
-            } else {
-                answer = try await api.liveSessions(matching: etag, since: nil, all: wantsSettled)
-            }
-            etag = answer.etag
-            guard let live = answer.live else {
-                lastError = nil
-                unauthorized = false
-                loaded = true
-                recordedAt = nil
-                return
-            }
-            revision = live.revision
-            if live.unchanged {
-                lastError = nil
-                unauthorized = false
-                loaded = true
-                recordedAt = nil
-                return
-            }
-
-            if let policy = live.inbox {
-                autoSettleAfterHours = policy.autoSettleAfterHours
-                policyReadAt = .now
-            } else if policyReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
-                      let policy = try? await api.inboxPolicy() {
-                autoSettleAfterHours = policy.autoSettleAfterHours
-                policyReadAt = .now
-            }
-
-            if live.layout != nil {
-                layoutReadAt = .now
-            } else if layoutReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
-                      let fetched = try? await api.sidebarLayout() {
-                layout = fetched
-                layoutReadAt = .now
-            }
-            apply(live)
+            let changed = try await refreshList()
+            if wantsSettled { try await refreshShelf(listChanged: changed) }
             lastError = nil
             unauthorized = false
             loaded = true
             recordedAt = nil
-            remember(answer.data)
         } catch {
             lastError = (error as? EngineAPIError)?.errorDescription ?? error.localizedDescription
             unauthorized = (error as? EngineAPIError)?.isUnauthorized == true
         }
     }
 
+    private func refreshList() async throws -> Bool {
+        let answer: LiveSessionsRead
+        if etag == nil, let cursor = revision {
+            answer = try await api.liveSessions(matching: nil, since: cursor, all: false)
+        } else {
+            answer = try await api.liveSessions(matching: etag, since: nil, all: false)
+        }
+        etag = answer.etag
+        guard let live = answer.live else { return false }
+        revision = live.revision
+        if live.unchanged { return false }
+
+        if let policy = live.inbox {
+            autoSettleAfterHours = policy.autoSettleAfterHours
+            policyReadAt = .now
+        } else if policyReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
+                  let policy = try? await api.inboxPolicy() {
+            autoSettleAfterHours = policy.autoSettleAfterHours
+            policyReadAt = .now
+        }
+
+        if live.layout != nil {
+            layoutReadAt = .now
+        } else if layoutReadAt.map({ $0.duration(to: .now) > .seconds(60) }) ?? true,
+                  let fetched = try? await api.sidebarLayout() {
+            layout = fetched
+            layoutReadAt = .now
+        }
+        apply(live)
+        remember(answer.data)
+        return true
+    }
+
+    private func refreshShelf(listChanged: Bool) async throws {
+        guard shelf.needsRead(listChanged: listChanged) else { return }
+        let read = try await api.settledShelf(matching: shelf.etag)
+        guard shelf.absorb(read) else { return }
+        regroup()
+        guard let cache, let body = read.data, let record = shelf.record(body) else { return }
+        recording = Task.detached(priority: .utility) { cache.writeShelf(record) }
+    }
+
     func showSettled() async {
         guard !wantsSettled else { return }
         wantsSettled = true
+        if shelf.live == nil, let cache,
+           let restored = await Task.detached(priority: .userInitiated, operation: { cache.readShelf().flatMap { SettledShelf.restored($0.data) } }).value {
+            shelf = restored
+        }
+        shelf.stale = true
+        regroup()
         await refresh()
     }
 
@@ -216,15 +230,21 @@ func applyReadMark(_ sections: InboxSections, sessionId: EngineID, answer: ReadM
         shelvedOnMac = live.settledCount ?? 0
         projectNames = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0.name) })
         projects = Dictionary(uniqueKeysWithValues: live.projects.map { ($0.id, $0) })
-        assignments = live.assignments
-        sections = groupInbox(
-            live.sessions,
-            now: Timestamp(Date().timeIntervalSince1970 * 1000),
-            autoSettleAfterHours: autoSettleAfterHours
-        )
+        list = live
+        regroup()
         anythingLive = live.sessions.contains {
             $0.activity == .blocked || $0.activity == .working || $0.activity == .queued
         }
+    }
+
+    private func regroup() {
+        guard let list else { return }
+        assignments = wantsSettled ? shelf.assignments(over: list.assignments) : list.assignments
+        sections = groupInbox(
+            wantsSettled ? shelf.merged(into: list.sessions) : list.sessions,
+            now: Timestamp(Date().timeIntervalSince1970 * 1000),
+            autoSettleAfterHours: autoSettleAfterHours
+        )
     }
 
     private func remember(_ data: Data?) {

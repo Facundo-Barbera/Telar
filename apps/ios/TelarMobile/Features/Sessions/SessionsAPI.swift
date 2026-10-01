@@ -3,6 +3,7 @@ import Foundation
 protocol SessionsAPI: Sendable {
     func liveSessions() async throws -> LiveSessions
     func liveSessions(matching etag: String?, since: Int?, all: Bool) async throws -> LiveSessionsRead
+    func settledShelf(matching etag: String?) async throws -> LiveSessionsRead
     func session(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionSnapshot
     func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead
     func events(_ id: EngineID, after: Int) async throws -> EventPage
@@ -32,6 +33,10 @@ extension SessionsAPI {
 
     func sessionRead(_ id: EngineID, window: SnapshotWindow?) async throws -> SessionRead {
         SessionRead(snapshot: try await session(id, window: window), data: nil)
+    }
+
+    func settledShelf(matching etag: String?) async throws -> LiveSessionsRead {
+        try await liveSessions(matching: etag, since: nil, all: true)
     }
 }
 
@@ -106,6 +111,14 @@ extension HTTPEngineAPI: SessionsAPI {
         var query: [URLQueryItem] = []
         if all { query.append(URLQueryItem(name: "all", value: "1")) }
         if let since { query.append(URLQueryItem(name: "since", value: String(since))) }
+        return try await liveRead(query, matching: etag)
+    }
+
+    func settledShelf(matching etag: String?) async throws -> LiveSessionsRead {
+        try await liveRead([URLQueryItem(name: "all", value: "1"), URLQueryItem(name: "shelf", value: "1")], matching: etag)
+    }
+
+    private func liveRead(_ query: [URLQueryItem], matching etag: String?) async throws -> LiveSessionsRead {
         var request = makeRequest(url("api/sessions/live", query: query))
         if let etag { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
 
