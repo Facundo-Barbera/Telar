@@ -7,7 +7,7 @@ import type { JournalTurn } from "@/platform/engine";
 import { Alert, AlertDescription, AlertTitle } from "@/ui/alert";
 import { Button } from "@/ui/button";
 import { ConversationContent, ConversationScrollButton, ConversationTopEdge, ConversationViewport, type ConversationFollowHandle } from "@/ui/conversation";
-import { TranscriptWorkspace } from "@/features/transcript";
+import { TranscriptSession, TranscriptWorkspace } from "@/features/transcript";
 import { ArtifactShelf } from "@/features/agent-tools";
 import { artifactPanelTab } from "@/features/panel";
 import type { useSessionSync } from "../hooks/use-session-sync";
@@ -93,6 +93,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
               </Button>
             </div>
           </ConversationTopEdge>
+          <TranscriptSession.Provider value={session?.id}>
           <TranscriptWorkspace path={session ? workspacePath(session.workspace) : undefined}>
             <ArtifactShelf items={items} hostId={props.hostId} {...(openArtifact ? { onOpen: openArtifact } : {})}>
             <TranscriptTurns
@@ -107,6 +108,7 @@ export function TranscriptList({ sync, model, receipt, ...props }: {
             />
             </ArtifactShelf>
           </TranscriptWorkspace>
+          </TranscriptSession.Provider>
         </ConversationContent>
         <ConversationScrollButton />
       </ConversationViewport>
