@@ -37,6 +37,7 @@ import { errorFor as httpErrorFor, HttpError } from "./platform/http/http";
 import { closeServer, listenLoopback, removeOwnDiscovery, writeDiscovery } from "./platform/http/listen";
 import type { Route } from "./platform/http/route";
 import { router } from "./platform/http/router";
+import { createLoopLag } from "./platform/process/loop-lag";
 import { startSweepers, type Sweep } from "./platform/process/sweepers";
 import { EngineStore, type EngineNotifier } from "./state";
 import { engineRootFromEnv, migrateLegacyEngineRoot } from "./platform/fs/engine-root";
@@ -147,12 +148,13 @@ const leaseMs = (options: EngineDaemonOptions) => options.workerLeaseMs ?? 15_00
 function engineSweeps(store: EngineStore, options: EngineDaemonOptions, pruneWorkers: () => void, forgetStorage: () => void): Sweep[] {
   const sweepCleanup = () => store.worktrees.runCleanup().then(forgetStorage);
   return [
-    { every: options.workerPruneIntervalMs ?? Math.max(10, Math.floor(leaseMs(options) / 3)), run: pruneWorkers },
+    { name: "worker-prune", every: options.workerPruneIntervalMs ?? Math.max(10, Math.floor(leaseMs(options) / 3)), run: pruneWorkers },
     // Nothing writes when a delegate's quiet hour passes, a settled session's grace ends or a deadline expires; these are those writes.
-    { every: options.delegationSweepIntervalMs ?? 5 * 60_000, run: () => store.settler.sweepDelegated() },
-    { every: options.settledTerminalSweepIntervalMs ?? 5 * 60_000, run: () => store.sessionTerminals.sweepSettled() },
+    { name: "delegations", every: options.delegationSweepIntervalMs ?? 5 * 60_000, run: () => store.settler.sweepDelegated() },
+    { name: "settled-terminals", every: options.settledTerminalSweepIntervalMs ?? 5 * 60_000, run: () => store.sessionTerminals.sweepSettled() },
     // A minute is the shortest cohort timeout, so this ticks faster than that.
     {
+      name: "cohorts",
       every: options.cohortSweepIntervalMs ?? 30_000,
       run: () => {
         try {
@@ -162,13 +164,13 @@ function engineSweeps(store: EngineStore, options: EngineDaemonOptions, pruneWor
         }
       },
     },
-    { every: options.snoozeWakeSweepIntervalMs ?? 60_000, run: () => store.settler.sweepSnoozeWakes() },
-    { every: options.scheduleSweepIntervalMs ?? 30_000, run: () => store.schedules.sweep() },
+    { name: "snooze-wakes", every: options.snoozeWakeSweepIntervalMs ?? 60_000, run: () => store.settler.sweepSnoozeWakes() },
+    { name: "schedules", every: options.scheduleSweepIntervalMs ?? 30_000, run: () => store.schedules.sweep() },
     // Finer than the rest: a tick coarser than the shortest deadline someone sets would become the deadline.
-    { every: options.requestDeadlineSweepIntervalMs ?? 15_000, run: () => store.requestGate.sweepDeadlines() },
-    { once: options.cleanupFirstDelayMs ?? 5 * 60 * 1000, run: sweepCleanup },
-    { every: options.cleanupIntervalMs ?? 30 * 60 * 1000, run: sweepCleanup },
-    { once: options.modelPrefetchDelayMs === null ? null : (options.modelPrefetchDelayMs ?? 5_000), run: () => store.catalogues.prefetch() },
+    { name: "request-deadlines", every: options.requestDeadlineSweepIntervalMs ?? 15_000, run: () => store.requestGate.sweepDeadlines() },
+    { name: "first-cleanup", once: options.cleanupFirstDelayMs ?? 5 * 60 * 1000, run: sweepCleanup },
+    { name: "cleanup", every: options.cleanupIntervalMs ?? 30 * 60 * 1000, run: sweepCleanup },
+    { name: "model-prefetch", once: options.modelPrefetchDelayMs === null ? null : (options.modelPrefetchDelayMs ?? 5_000), run: () => store.catalogues.prefetch() },
   ];
 }
 
@@ -254,14 +256,17 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const lock = await acquireDaemonLock(statePaths(root));
   const doorbell: EmbeddedDoorbell = {};
   const computerUseGate = options.computerUseGate ?? createComputerUseGate();
+  const loopLag = createLoopLag();
+  loopLag.start();
   let store: EngineStore;
   try {
-    store = openStore(root, options, doorbell, computerUseGate);
+    store = loopLag.run("boot: open store", () => openStore(root, options, doorbell, computerUseGate));
   } catch (error) {
+    loopLag.stop();
     lock.release();
     throw error;
   }
-  reportBootHousekeeping(store, now, say);
+  loopLag.run("boot: housekeeping", () => reportBootHousekeeping(store, now, say));
   const skillRoots = options.skillRoots ?? [];
   // Never fatal and never awaited on start: a provider that isn't installed has nowhere to put the skill.
   const syncOrientationSkill = (policy = store.settings.orientation()): Promise<unknown> =>
@@ -296,7 +301,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const execution = createExecutionPort(store, workers.registration, workers.active, (sessionId) =>
     setImmediate(() => void maybeRetitleWithContext(store, sessionId).catch((error: unknown) => console.error(`[engine] the second title for ${sessionId} failed: ${String(error)}`))),
   );
-  const sweepers = startSweepers(engineSweeps(store, options, workers.prune, storageMeter.forget));
+  const sweepers = startSweepers(engineSweeps(store, options, workers.prune, storageMeter.forget), loopLag.run);
   // Read once, `.local` dropped: a name that changed per request would be a row that renames itself.
   const hostname = os.hostname().replace(/\.local$/i, "") || undefined;
   const health = (): EngineHealth => ({
@@ -307,6 +312,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     worker: workers.health(),
     ...(pluginStatuses.length > 0 ? { plugins: plugins.host.statuses() } : {}),
     git: { liveChildren: gitChildren.live(), cap: gitChildren.cap },
+    eventLoop: loopLag.health(),
   });
   let port = 0;
   const sessionsDoor = sessionsSocketDoor(store, () => port);
@@ -321,13 +327,13 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     if (!bearerIsValid(request.headers.authorization, secrets[auth]())) throw new HttpError(401, "engine_unauthorized", refusals[auth]);
   };
   const routes = engineRoutes({ store, options, now, root, remoteStore, remoteDir, push, syncOrientationSkill, computerUseGate, storageMeter, notesDoor, sessionsDoor, daemonId, openStreams, execution, plugins, runMount, workers, health, port: () => port });
-  const server = http.createServer(router(routes, { authorize, errorFor }));
+  const server = http.createServer(router(routes, { authorize, errorFor, observe: loopLag.run }));
 
   try {
     port = await listenLoopback(server, options.port ?? 0);
     const discovery: EngineDiscovery = { version: ENGINE_PROTOCOL_VERSION, daemonId, host: "127.0.0.1", port, token, startedAt };
     // Recovered under the lock and before discovery is published, so no client sees a pre-recovery queue.
-    store.recovery.recover();
+    loopLag.run("boot: recovery", () => store.recovery.recover());
     writeDiscovery(store.paths.engine, discovery);
     push.listening(discovery);
     const checkoutPasses = sweepCheckoutsAfterBoot(store, say).catch((error: unknown) => console.error(`[engine] the checkout passes failed: ${String(error)}`));
@@ -369,6 +375,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
         openStreams.clear();
         await closeServer(server);
         sweepers.stop();
+        loopLag.stop();
         store.checkoutSizes.stop();
         store.setups.stopAll();
         removeOwnDiscovery(store.paths.engine, daemonId);
@@ -378,6 +385,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     };
   } catch (error) {
     sweepers.stop();
+    loopLag.stop();
     server.close();
     store.kernel.executionStore.close();
     lock.release();

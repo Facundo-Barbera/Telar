@@ -8,6 +8,7 @@ type RouterOptions = {
   errorFor(error: unknown): HttpError;
   /** What an unmatched request gets; by default an authenticated 404. */
   fallback?(request: http.IncomingMessage, response: http.ServerResponse, url: URL): Promise<void>;
+  observe?<T>(operation: string, section: () => T): T;
 };
 
 /** Exact paths win over patterns, whatever the order; patterns are tried in declaration order. */
@@ -37,7 +38,8 @@ export function router(routes: readonly Route[], options: RouterOptions): http.R
       if (!matched) return await fallback(request, response, url);
       options.authorize(matched.route.auth, request);
       const parsed = request.method === "GET" || matched.route.body === "raw" ? {} : await body(request);
-      const answer = await matched.route.handle({ body: parsed, params: matched.params, query: url.searchParams, request, response });
+      const handle = () => matched.route.handle({ body: parsed, params: matched.params, query: url.searchParams, request, response });
+      const answer = await (options.observe ? options.observe(`${request.method} ${url.pathname}`, handle) : handle());
       if (!answer) return;
       if (answer.bytes) response.writeHead(answer.status, answer.headers).end(answer.bytes);
       else writeJson(response, answer.status, answer.body, answer.headers);
