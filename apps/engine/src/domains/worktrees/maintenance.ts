@@ -11,6 +11,7 @@ import {
   type WorktreeReclaimResult,
   type WorktreeSummary,
 } from "@telar/engine-client";
+import { liveFsmonitorCheckouts } from "../../platform/git/fsmonitor";
 import type { AsyncGitRunner } from "../../platform/git/runner";
 import type { Kernel } from "../../platform/kernel";
 import type { ProjectAvailability } from "../../platform/fs/volumes";
@@ -365,9 +366,6 @@ export class WorktreeMaintenance {
         ...(session.workspace.branch ? { branch: session.workspace.branch } : {}),
         projectId: session.projectId,
         lifecycle,
-        // `moveWorktrees`' predicate, and #671's rung 1. See
-        // `worktree-inventory.ts` for why this is a policy asserted up front
-        // rather than a git lock waiting to refuse.
         busy: session.activity !== "idle",
       });
     }
@@ -378,8 +376,6 @@ export class WorktreeMaintenance {
         measure: async (target) => this.deps.checkoutSizes.peek(target, roots),
       },
       {
-        // Both roots while a #642 move is half-done — `readStorage`'s reason,
-        // and the same pair it passes.
         roots,
         rootsReadable: location.kind !== "absent" && location.kind !== "unreadable",
         ...(worktreesRootBlocker(location) ? { blocker: worktreesRootBlocker(location)! } : {}),
@@ -400,9 +396,12 @@ export class WorktreeMaintenance {
 
   /** Counts and sizes per location and state. Git is asked at most once a minute; sizes are re-read every time. */
   async summary(options: { refresh?: boolean } = {}): Promise<WorktreeSummary> {
-    const [inventory] = await Promise.all([this.checkedInventory(options.refresh === true), this.volumes.recheck()]);
+    const [inventory, fsmonitor] = await Promise.all([this.checkedInventory(options.refresh === true), liveFsmonitorCheckouts(), this.volumes.recheck()]);
     const degraded = [...this.volumes.degraded].map(([mount, state]) => ({ mount, state }));
-    return { ...summarizeWorktrees(this.summaryInput(inventory)), ...(degraded.length > 0 ? { degradedVolumes: degraded } : {}) };
+    return {
+      ...summarizeWorktrees({ ...this.summaryInput(inventory), ...(fsmonitor ? { fsmonitor } : {}) }),
+      ...(degraded.length > 0 ? { degradedVolumes: degraded } : {}),
+    };
   }
 
   /** Gives back every worktree in `state` that is proven safe to lose; nothing that needs a typed confirmation. */

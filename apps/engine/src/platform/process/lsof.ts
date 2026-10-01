@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 
-/** lsof's stdout, or undefined when it cannot run or times out. */
 export function lsof(args: readonly string[], timeoutMs = 30_000): Promise<string | undefined> {
   return new Promise((resolve) => {
     let out = "";

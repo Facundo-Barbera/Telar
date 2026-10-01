@@ -15,6 +15,7 @@ export type SummaryInput = {
   idleDays: number;
   now: number;
   exists: (folder: string) => boolean;
+  fsmonitor?: readonly string[];
 };
 
 export function stateOf(row: WorktreeRow, input: Pick<SummaryInput, "sessions" | "idleDays" | "now">): WorktreeState {
@@ -94,6 +95,7 @@ function locationsOf(rows: readonly WorktreeRow[], input: SummaryInput): Worktre
         current: isCurrent,
         worktrees,
         ...(present && !isCurrent && current ? { move: moveOf(members) } : {}),
+        ...(input.fsmonitor ? { fsmonitor: input.fsmonitor.filter((checkout) => path.dirname(path.resolve(checkout)) === folder).length } : {}),
       };
     })
     .sort((left, right) => Number(right.current) - Number(left.current) || right.worktrees.count - left.worktrees.count);
@@ -115,5 +117,6 @@ export function summarizeWorktrees(input: SummaryInput): WorktreeSummary {
     measuring: rows.some((row) => row.onDisk && row.bytes === undefined),
     partial: input.inventory.partial,
     ...(input.inventory.blocker ? { blocker: input.inventory.blocker } : {}),
+    ...(input.fsmonitor ? { fsmonitor: input.fsmonitor.length } : {}),
   };
 }

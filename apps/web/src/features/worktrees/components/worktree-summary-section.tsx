@@ -102,6 +102,7 @@ function LocationRow({ location, current, onMoved }: { location: WorktreeLocatio
       hint={
         <>
           {tallyLabel(location.worktrees)}
+          {location.fsmonitor ? ` · ${plural(location.fsmonitor, "file watcher")}` : null}
           {note ? <span className="block">{note}</span> : null}
           {outcome ? <span className="block text-foreground">{outcomeCounts(outcome)}. {outcome.summary}</span> : null}
         </>
@@ -221,12 +222,13 @@ export function WorktreeSummarySection({ version = 0 }: { version?: number }) {
   const degraded = summary?.degradedVolumes?.map((volume) => volume.mount.split("/").filter(Boolean).pop() ?? volume.mount) ?? [];
   const away = degraded.length > 0 ? `${degraded.join(", ")} ${degraded.length === 1 ? "is" : "are"} slow or not connected.` : undefined;
   const checked = summary ? `Checked ${fmtAgo(summary.checkedAt)}${summary.measuring ? ", still measuring sizes" : ""}.` : "Counting…";
+  const watchers = summary?.fsmonitor ? `${plural(summary.fsmonitor, "file watcher")} running on this Mac.` : undefined;
 
   return (
     <>
       <SettingsGroup
         title="Where worktrees live"
-        description={[summary?.blocker, away, failure ?? checked, summary?.partial ? "Some folders could not be read, so sizes are a floor." : undefined].filter(Boolean).join(" ")}
+        description={[summary?.blocker, away, failure ?? checked, summary?.partial ? "Some folders could not be read, so sizes are a floor." : undefined, watchers].filter(Boolean).join(" ")}
         action={
           <span className="flex items-center gap-2 whitespace-nowrap">
             {loading ? <Spinner className="size-3.5" /> : null}
