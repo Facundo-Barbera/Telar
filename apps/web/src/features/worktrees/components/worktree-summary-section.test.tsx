@@ -122,6 +122,15 @@ describe("Settings ▸ Storage ▸ where worktrees live", () => {
     view.unmount();
   });
 
+  test("live file watchers are counted per location and for the whole Mac", async () => {
+    summary = { ...summaryWith([{ ...CURRENT, fsmonitor: 0 }, { ...OLD, fsmonitor: 120 }]), fsmonitor: 131 };
+    const view = await mount();
+    expect(view.text()).toContain("Focaltec HD150 worktrees · 40 GB · 120 file watchers");
+    expect(view.text()).not.toContain("3.0 GB · 0 file watchers");
+    expect(view.text()).toContain("131 file watchers running on this Mac.");
+    view.unmount();
+  });
+
   test("the move button is short: count, size and the destination's label", async () => {
     const view = await mount();
     const button = view.button("Move 143 worktrees · 38 GB to Taller");

@@ -23,7 +23,7 @@ function row(path: string, patch: Partial<WorktreeRow> & { session?: string; lif
   };
 }
 
-function summarize(rows: WorktreeRow[], options: { sessions?: Record<string, Partial<SessionFacts>>; current?: string; present?: string[] } = {}) {
+function summarize(rows: WorktreeRow[], options: { sessions?: Record<string, Partial<SessionFacts>>; current?: string; present?: string[]; fsmonitor?: string[] } = {}) {
   const sessions = new Map(Object.entries(options.sessions ?? {}).map(([id, facts]) => [id, { lastActiveAt: NOW, released: false, ...facts }]));
   const present = new Set(options.present ?? ["/Volumes/Old", "/Volumes/Old/live", "/Volumes/New", "/Volumes/New/wt", "/Users/me/wt"]);
   const input: SummaryInput = {
@@ -34,9 +34,18 @@ function summarize(rows: WorktreeRow[], options: { sessions?: Record<string, Par
     idleDays: 7,
     now: NOW,
     exists: (folder) => present.has(folder),
+    ...(options.fsmonitor ? { fsmonitor: options.fsmonitor } : {}),
   };
   return summarizeWorktrees(input);
 }
+
+test("counts live fsmonitor daemons per location and on the whole host", () => {
+  const rows = [row("/Volumes/Old/live/a"), row("/Volumes/New/wt/b")];
+  const summary = summarize(rows, { fsmonitor: ["/Volumes/Old/live/a", "/Volumes/Old/live/released", "/Users/me/code/other"] });
+  expect(summary.fsmonitor).toBe(3);
+  expect(Object.fromEntries(summary.locations.map((location) => [location.folder, location.fsmonitor]))).toEqual({ "/Volumes/Old/live": 2, "/Volumes/New/wt": 0 });
+  expect(summarize(rows).locations.every((location) => location.fsmonitor === undefined)).toBe(true);
+});
 
 test("worktrees are grouped by the folder they live in, current first, with counts and sizes", () => {
   const summary = summarize([row("/Volumes/Old/live/a"), row("/Volumes/Old/live/b", { bytes: 2 * GB }), row("/Volumes/New/wt/c")]);

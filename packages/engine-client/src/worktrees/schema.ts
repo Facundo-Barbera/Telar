@@ -89,6 +89,7 @@ export type WorktreeLocation = {
   current: boolean;
   worktrees: WorktreeTally;
   move?: WorktreeLocationMove;
+  fsmonitor?: number;
 };
 
 export type WorktreeStateSummary = { state: WorktreeState; worktrees: WorktreeTally; releasable: WorktreeTally };
@@ -102,6 +103,7 @@ export type WorktreeSummary = {
   partial: boolean;
   blocker?: string;
   degradedVolumes?: { mount: string; state: "slow" | "missing" }[];
+  fsmonitor?: number;
 };
 
 export type WorktreeReclaimItem = { path: string; confirm?: string; settled?: "release" | "archive" };
