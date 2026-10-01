@@ -5,7 +5,6 @@ const SCOPES = ["apps/engine/src/domains/worktrees", "apps/engine/src/domains/st
 /** Each file's exact count of `*Sync` names; a file that drops one must lower its count, so the list only shrinks. */
 const ALLOWED = {
   "apps/engine/src/domains/worktrees/checkout.ts": { count: 4, reason: "lock reason's mount check and removing an unregistered checkout, one checkout per person-run reclaim" },
-  "apps/engine/src/domains/worktrees/dependencies.ts": { count: 12, reason: "sharing a project's node_modules into a new worktree and pruning build output on archive, one worktree at a time" },
   "apps/engine/src/domains/worktrees/inventory.ts": { count: 4, reason: "the worktree inventory a person opens in Storage; reads the roots and the checkouts on them" },
   "apps/engine/src/domains/worktrees/location.ts": { count: 6, reason: "the worktrees-location record in the engine's own directory and the configured root's existence" },
   "apps/engine/src/domains/worktrees/maintenance.ts": { count: 2, reason: "existence checks before a release, a move or a lock, per worktree session" },
