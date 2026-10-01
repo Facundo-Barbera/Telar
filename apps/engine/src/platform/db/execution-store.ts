@@ -179,6 +179,9 @@ export class ExecutionStore {
   sessionIds(): string[] { return tables.sessionIds(this); }
   sessionRowGaps() { return tables.sessionRowGaps(this); }
   liveSessionRows(): tables.SessionIndexRow[] { return tables.liveSessionRows(this); }
+  unsettledSessionIds(): string[] { return tables.unsettledSessionIds(this); }
+  unfinishedSessionIds(): string[] { return tables.unfinishedSessionIds(this); }
+  sessionIdsWithTurnsEndedSince(at: number): string[] { return tables.sessionIdsWithTurnsEndedSince(this, at); }
   dueSnoozeWakes(): tables.SessionIndexRow[] { return tables.dueSnoozeWakes(this); }
   sessionRow(sessionId: string): tables.SessionIndexRow | undefined { return tables.sessionRow(this, sessionId); }
   projectSessionRows(projectId: string): tables.SessionIndexRow[] { return tables.projectSessionRows(this, projectId); }

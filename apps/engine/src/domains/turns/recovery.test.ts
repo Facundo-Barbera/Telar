@@ -410,3 +410,21 @@ test("a shutdown mid-turn settles the message it was carrying — not held, not 
   expect(crashed.queries.turns("session_one")[1]?.held).toBeUndefined();
   expect(crashed.claims.claimNextTurn("worker_two")?.turn.runId).toBe("run_after");
 });
+
+test("boot recovery reads the queues of unfinished sessions only, however long the history", () => {
+  const { store, root: stateRoot } = readyStore();
+  for (let n = 0; n < 200; n += 1) {
+    store.lifecycle.createSession({ id: `session_done_${n}`, projectId: "project_one" });
+    store.lifecycle.updateSession(`session_done_${n}`, { settledOverride: "settled" });
+  }
+  store.intake.submitTurn("session_one", { runId: "run_live", input: "Hello" });
+  store.turnLifecycle.markRunning("session_one", "run_live", store.claims.claimTurn("session_one", "worker_one")!.claim!.token);
+  store.kernel.executionStore.close();
+
+  const reopened = new EngineStore(stateRoot, () => 200);
+  reopened.recovery.cancellationsForWorker("worker_none");
+  const before = reopened.kernel.readAccounting.queueParses;
+  expect(reopened.recovery.recover().stopped).toEqual(["run_live"]);
+  expect(reopened.kernel.readAccounting.queueParses - before).toBeLessThanOrEqual(3);
+  expect(reopened.queries.turns("session_one")[0]).toMatchObject({ state: "stopped", stopReason: "engine_restart" });
+});

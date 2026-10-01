@@ -60,7 +60,7 @@ export class SessionSettler {
   sweepDelegated(): string[] {
     if (this.deps.settleDelegatedAfterHours() === null) return [];
     const settled: string[] = [];
-    for (const sessionId of this.deps.records.ids()) {
+    for (const sessionId of this.kernel.executionStore.unsettledSessionIds()) {
       try {
         if (this.settleIfDue(sessionId)) settled.push(sessionId);
       } catch {

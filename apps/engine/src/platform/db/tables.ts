@@ -163,6 +163,21 @@ export function liveSessionRows(store: ExecutionStore): SessionIndexRow[] {
   return store.statement("SELECT * FROM sessions WHERE archived = 0").all().map(rowFromColumns);
 }
 
+export function unsettledSessionIds(store: ExecutionStore): string[] {
+  return store.statement("SELECT id FROM sessions WHERE archived = 0 AND settled_override IS NULL").all().map((row) => String(row.id));
+}
+
+export function unfinishedSessionIds(store: ExecutionStore): string[] {
+  return store.statement(`SELECT id FROM sessions WHERE activity != 'idle'
+    UNION SELECT session_id FROM turn_summaries WHERE state IN ('queued','claimed','running','steering','ambiguous')`)
+    .all()
+    .map((row) => String(row.id));
+}
+
+export function sessionIdsWithTurnsEndedSince(store: ExecutionStore, at: number): string[] {
+  return store.statement("SELECT DISTINCT session_id FROM turn_summaries WHERE ended_at >= ?").all(at).map((row) => String(row.session_id));
+}
+
 export function dueSnoozeWakes(store: ExecutionStore): SessionIndexRow[] {
   return store.statement("SELECT * FROM sessions WHERE snoozed_until IS NOT NULL AND woke_at IS NULL AND archived = 0")
     .all()
