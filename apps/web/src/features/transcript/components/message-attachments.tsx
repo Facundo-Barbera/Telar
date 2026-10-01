@@ -29,7 +29,7 @@ export function MessageAttachments({ attachments }: { attachments?: readonly Tur
                 type="button"
                 aria-label={`Open ${attachment.name}`}
                 title={attachment.name}
-                className="block overflow-hidden rounded-md border border-border outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="block overflow-hidden rounded-md border border-border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 onClick={() => setOpen(attachment)}
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
