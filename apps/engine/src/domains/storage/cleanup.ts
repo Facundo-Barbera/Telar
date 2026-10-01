@@ -48,7 +48,6 @@ export type CleanupCandidate = {
   archived: boolean;
   released: boolean;
   lastActiveAt: number;
-  /** When it was shelved; absent while the session is live. */
   settledAt?: number;
 };
 
