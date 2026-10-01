@@ -30,6 +30,8 @@ const MAX_LINES = 2000;
 const MAX_LINE_CHARS = 4000;
 /** Between SIGTERM and SIGKILL: longer than a terminal's, so an interrupted installer can clean up. */
 export const SETUP_STOP_GRACE_MS = 5000;
+/** Installs running at once across every session; more wait their turn, so a slow disk is not thrashed. */
+const SETUP_CONCURRENCY = 2;
 
 type Live = {
   status: SetupStatus;
@@ -38,6 +40,8 @@ type Live = {
   /** Absolute index of `lines[0]`, so a cursor survives the ring dropping. */
   first: number;
   partial: string;
+  log?: fs.WriteStream;
+  holdsSlot?: boolean;
   timer?: ReturnType<typeof setTimeout>;
   stopping?: "stopped" | "timed-out";
   done: Promise<SetupStatus>;
@@ -52,14 +56,37 @@ export type SetupDeps = {
   now?: () => number;
   /** Told on every state change, so the session row can say "Setting up". */
   onChange?: (sessionId: string, status: SetupStatus) => void;
+  concurrency?: number;
 };
 
 export class WorktreeSetups {
   private readonly live = new Map<string, Live>();
   private readonly now: () => number;
+  private readonly flushing = new Map<string, Live>();
+  private readonly waiting: Array<{ run: Live; grant: () => void }> = [];
+  private free: number;
 
   constructor(private readonly deps: SetupDeps) {
     this.now = deps.now ?? Date.now;
+    this.free = deps.concurrency ?? SETUP_CONCURRENCY;
+  }
+
+  private acquire(run: Live): Promise<void> {
+    if (this.free === 0) return new Promise((grant) => this.waiting.push({ run, grant }));
+    this.free--;
+    run.holdsSlot = true;
+    return Promise.resolve();
+  }
+
+  private release(run: Live): void {
+    const queued = this.waiting.findIndex((entry) => entry.run === run);
+    if (queued >= 0) this.waiting.splice(queued, 1)[0]!.grant();
+    if (!run.holdsSlot) return;
+    run.holdsSlot = false;
+    const next = this.waiting.shift();
+    if (!next) return void this.free++;
+    next.run.holdsSlot = true;
+    next.grant();
   }
 
   private files(sessionId: string) {
@@ -81,7 +108,7 @@ export class WorktreeSetups {
 
   /** Lines after `after` (an absolute line number), and the cursor to resume from. */
   output(sessionId: string, after = 0): { lines: SetupLine[]; cursor: number } {
-    const running = this.live.get(sessionId);
+    const running = this.live.get(sessionId) ?? this.flushing.get(sessionId);
     if (running) {
       const start = Math.max(after, running.first);
       return { lines: running.lines.slice(start - running.first), cursor: running.first + running.lines.length };
@@ -102,7 +129,7 @@ export class WorktreeSetups {
 
   /** Resolves when the current run ends; the last status when none is running. */
   wait(sessionId: string): Promise<SetupStatus | undefined> {
-    return this.live.get(sessionId)?.done ?? Promise.resolve(this.status(sessionId));
+    return (this.live.get(sessionId) ?? this.flushing.get(sessionId))?.done ?? Promise.resolve(this.status(sessionId));
   }
 
   // Resolves once the run has started or was refused; `wait` is for its end.
@@ -117,8 +144,6 @@ export class WorktreeSetups {
     if (this.live.has(sessionId)) return { ...this.live.get(sessionId)!.status };
 
     const files = this.files(sessionId);
-    fs.mkdirSync(path.dirname(files.log), { recursive: true });
-    fs.writeFileSync(files.log, "");
     let resolve!: (status: SetupStatus) => void;
     const done = new Promise<SetupStatus>((settle) => (resolve = settle));
     const run: Live = {
@@ -130,9 +155,21 @@ export class WorktreeSetups {
       resolve,
     };
     this.live.set(sessionId, run);
+    try {
+      await fs.promises.mkdir(path.dirname(files.log), { recursive: true });
+      run.log = fs.createWriteStream(files.log).on("error", () => undefined);
+    } catch {
+      // A session deleted mid-setup has nowhere to log to; the run still reports in memory.
+    }
     this.persist(sessionId, run);
 
     this.append(sessionId, run, `$ ${setup.command}\n`);
+    if (this.free === 0) this.append(sessionId, run, `[telar] waiting for another setup to finish\n`);
+    if (!run.stopping) await this.acquire(run);
+    if (run.stopping) {
+      this.finish(sessionId, run, { state: run.stopping });
+      return { ...run.status };
+    }
     const shell = resolveShell({ command: setup.command }, this.deps.platform ?? process.platform, process.env);
     try {
       run.handle = await this.deps.launcher.launch(
@@ -174,6 +211,10 @@ export class WorktreeSetups {
     const run = this.live.get(sessionId);
     if (!run) return false;
     run.stopping ??= why;
+    if (this.waiting.some((entry) => entry.run === run)) {
+      this.finish(sessionId, run, { state: why });
+      return true;
+    }
     if (why === "timed-out") this.append(sessionId, run, `\n[telar] setup timed out; stopping it\n`);
     // The handle's close is the polite signal, the grace, then SIGKILL.
     void run.handle?.close().catch(() => {
@@ -195,28 +236,33 @@ export class WorktreeSetups {
       run.lines.splice(0, excess);
       run.first += excess;
     }
-    try {
-      fs.appendFileSync(this.files(sessionId).log, lines.map((line) => line.text).join("\n") + "\n");
-    } catch {
-      // A session deleted mid-setup has nowhere to log to.
-    }
+    run.log?.write(lines.map((line) => line.text).join("\n") + "\n");
   }
 
   private finish(sessionId: string, run: Live, end: Partial<SetupStatus> & { state: SetupState }): void {
+    this.release(run);
     if (this.live.get(sessionId) !== run) return;
     if (run.partial) this.append(sessionId, run, "\n");
     if (run.timer) clearTimeout(run.timer);
     run.status = { ...run.status, ...end, endedAt: this.now() };
     this.live.delete(sessionId);
     this.persist(sessionId, run);
-    run.resolve({ ...run.status });
+    const settled = { ...run.status };
+    if (!run.log) return run.resolve(settled);
+    // Lines stay readable from memory until the log is on disk, and waiters see the whole file.
+    this.flushing.set(sessionId, run);
+    run.log.once("close", () => {
+      if (this.flushing.get(sessionId) === run) this.flushing.delete(sessionId);
+      run.resolve(settled);
+    });
+    run.log.end();
   }
 
   private persist(sessionId: string, run: Live): void {
     try {
       atomicWrite(this.files(sessionId).status, run.status);
     } catch {
-      // Same as the log.
+      // A session deleted mid-setup has nowhere to write it.
     }
     this.deps.onChange?.(sessionId, { ...run.status });
   }
