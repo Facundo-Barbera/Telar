@@ -85,6 +85,7 @@ import UIKit
         view.selectedRange = NSRange(location: 0, length: 4)
         #expect(field.commit("spoken"))
         #expect(draft.text == "keep spoken this")
+        #expect(view.selectedRange == NSRange(location: 11, length: 0))
     }
 
     @Test func anUnmountedFieldRefusesSoTheWordsAreNotLost() {
