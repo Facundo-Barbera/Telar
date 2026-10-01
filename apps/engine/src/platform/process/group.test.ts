@@ -3,7 +3,6 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { OWN_GROUP, signalGroup, stopGroup } from "./group";
 
-// The grandchild inherits stdout, so the leader's "close" fires only once the grandchild is gone too.
 function shellWithGrandchild(grandchild: string) {
   const child = spawn("sh", ["-c", `(${grandchild}) & echo started; wait`], { detached: OWN_GROUP, stdio: ["ignore", "pipe", "ignore"] });
   return { child, exited: once(child, "exit"), closed: once(child, "close"), started: once(child.stdout, "data") };

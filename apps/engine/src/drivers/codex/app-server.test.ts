@@ -12,7 +12,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// A silent app-server whose grandchild holds a FIFO open: the FIFO ends only when the grandchild is gone.
 async function silentServerWithGrandchild() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-codex-group-"));
   dirs.push(dir);

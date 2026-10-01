@@ -146,7 +146,6 @@ export class CodexAppServer {
     this.write({ jsonrpc: "2.0", id, error: { code, message } });
   }
 
-  // Even after the leader exits: what it spawned can still be running in its group.
   kill(): void {
     if (this.killed) return;
     this.killed = true;

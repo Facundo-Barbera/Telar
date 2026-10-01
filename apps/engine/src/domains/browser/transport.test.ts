@@ -12,7 +12,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// Stands in for playwright-mcp: answers every request and leaves a "browser" holding a FIFO open.
 function fakeCliWithBrowser() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-browser-group-"));
   dirs.push(dir);

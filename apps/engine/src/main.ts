@@ -72,7 +72,6 @@ process.stdout.write(
     `${daemon.worker ? ` with embedded worker ${daemon.worker.workerId}` : " (no embedded worker)"}\n`,
 );
 
-// Under the desktop's SIGKILL grace (engine-child.js), so the engine exits on its own first.
 const STOP_DEADLINE_MS = 3_000;
 let stopping: Promise<void> | undefined;
 const stop = () => {
