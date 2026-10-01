@@ -88,8 +88,11 @@ struct AutomaticActivityTests {
     }
 
     @Test func aMacStartsTheCardUnlessItReportsItCannot() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         #expect(AutomaticCard.engineStarts(ActivityReport(card: false)))
-        #expect(AutomaticCard.engineStarts(ActivityReport(card: false, lastStart: .init(at: 1, status: 200))))
+        #expect(AutomaticCard.engineStarts(ActivityReport(card: false, lastStart: .init(at: 1_800_000_000 - 10, status: 200)), now: now))
+        #expect(AutomaticCard.engineStarts(ActivityReport(card: true, lastStart: .init(at: 1, status: 200)), now: now))
+        #expect(!AutomaticCard.engineStarts(ActivityReport(card: false, lastStart: .init(at: 1_800_000_000 - AutomaticCard.startGrace, status: 200)), now: now))
         #expect(!AutomaticCard.engineStarts(ActivityReport(card: false, blocker: "no-start-token")))
         #expect(!AutomaticCard.engineStarts(ActivityReport(card: false, lastStart: .init(at: 1, status: 400, reason: "BadDeviceToken"))))
     }

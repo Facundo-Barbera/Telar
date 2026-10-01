@@ -14,8 +14,12 @@ enum AutomaticCard {
         enabled ? working.subtracting(carded).subtracting(dismissed).subtracting(engineStarts) : []
     }
 
-    static func engineStarts(_ report: ActivityReport) -> Bool {
-        report.blocker == nil && (report.lastStart.map { $0.status == 200 } ?? true)
+    static let startGrace: TimeInterval = 60
+
+    static func engineStarts(_ report: ActivityReport, now: Date = Date()) -> Bool {
+        guard report.blocker == nil else { return false }
+        guard let start = report.lastStart else { return true }
+        return start.status == 200 && (report.card || now.timeIntervalSince1970 - start.at < startGrace)
     }
 
     static func duplicates(_ cards: [Shown]) -> Set<String> {

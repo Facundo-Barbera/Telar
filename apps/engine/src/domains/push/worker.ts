@@ -8,6 +8,7 @@ import { automaticActivityDelivery, automaticSessions, cardAlert, cardRows, type
 const RETRY_FLOOR = 30;
 const RETRY_CEILING = 3600;
 export const PARK_AFTER_FAILURES = 20;
+export const START_RETRY_S = 600;
 
 export async function deliverRecord(
   record: PushRecord,
@@ -89,13 +90,15 @@ async function deliverCard(record: PushRecord, next: PushRecord, sessions: Sessi
   const active = record.liveActivities ? automaticSessions(sessions) : [];
   const card = record.card;
   if (!active.length) next.automaticStartedAt = undefined;
-  if (active.length && !card && record.automaticStartedAt === undefined && record.pushToStartToken) {
+  const dropped = record.automaticStart?.status === 200 && !record.automaticStart.carded && now - record.automaticStart.at >= START_RETRY_S;
+  if (active.length && !card && (record.automaticStartedAt === undefined || dropped) && record.pushToStartToken) {
     const result = await send(automaticActivityDelivery(record, sessions, record.pushToStartToken, now, now, "start"));
     next.automaticStart = { at: now, status: result.status, ...(result.reason ? { reason: result.reason } : {}), ...(result.relay ? { relay: true as const } : {}), token: tokenFingerprint(record.pushToStartToken) };
     if (result.status === 200) next.automaticStartedAt = now;
     if (isDeadToken(result)) next.pushToStartToken = undefined;
   }
   if (!card) return false;
+  if (record.automaticStart && !record.automaticStart.carded) next.automaticStart = { ...record.automaticStart, carded: true };
   if (active.length) { next.automaticStartedAt = card.startedAt; delete next.cardFinishedAt; }
   const signal = JSON.stringify([record.liveActivities, record.previews, active.map(s => [s.id, signalKey(s)]), cardRows(sessions, now, record.previews)]);
   const moved = signal !== record.automaticSignal;

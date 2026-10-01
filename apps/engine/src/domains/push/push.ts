@@ -47,7 +47,7 @@ export interface PushRecord extends MobileRegistration {
   lastStatus?: number;
   lastReason?: string;
   relayTest?: { keyId: string; at: number; status: number; reason?: string; relay?: true };
-  automaticStart?: { at: number; status: number; reason?: string; relay?: true; token?: string };
+  automaticStart?: { at: number; status: number; reason?: string; relay?: true; token?: string; carded?: true };
   updatedAt: number;
   readSync?: ReadSyncState;
   seen: Record<string, string>;
