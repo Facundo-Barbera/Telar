@@ -12,6 +12,7 @@ import {
   KeyboardIcon,
   LanguagesIcon,
   LayersIcon,
+  ListTreeIcon,
   MicIcon,
   MonitorIcon,
   PackageIcon,
@@ -55,6 +56,17 @@ export const APP_PAGES: SettingsPageSpec[] = [
             hint: "A turn stopped by a usage limit runs again once the limit lifts.",
             keywords: ["rate limit", "usage limit", "resume", "five-hour", "weekly", "claude"],
             icon: RefreshCwIcon,
+          },
+        ],
+      },
+      {
+        title: "Rail",
+        rows: [
+          {
+            title: "Group sessions by project",
+            hint: "Off, the rail is one list, newest first, with spawned sessions under the one that started them.",
+            keywords: ["group by", "flat", "none", "list", "sidebar", "order", "newest"],
+            icon: ListTreeIcon,
           },
         ],
       },

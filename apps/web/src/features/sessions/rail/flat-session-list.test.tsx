@@ -11,7 +11,7 @@ mock.module("next/navigation", () => ({
   useSearchParams: () => new URLSearchParams(),
 }));
 
-const { FlatSessionList, RailModeSwitch } = await import("./flat-session-list");
+const { FlatSessionList } = await import("./flat-session-list");
 const { SidebarProvider } = await import("@/ui/sidebar");
 import { flattenSessions } from "./flat-rail";
 import type { SidebarSession } from "../session-list";
@@ -58,11 +58,4 @@ test("expanded: every child under the parent", () => {
   expect(html).toContain('aria-expanded="true"');
   expect(html).toContain("title-busy");
   expect(html).toContain("title-stuck");
-});
-
-test("the mode switch marks the current choice", () => {
-  const html = renderToStaticMarkup(<RailModeSwitch mode="flat" onChange={() => {}} />);
-  expect(html).toContain("Group by");
-  expect(html).toMatch(/aria-pressed="true"[^>]*>None</);
-  expect(html).toMatch(/aria-pressed="false"[^>]*>Project</);
 });

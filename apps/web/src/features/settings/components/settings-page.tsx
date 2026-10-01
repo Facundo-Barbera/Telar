@@ -13,6 +13,7 @@ import { useSectionFromUrl } from "../use-section-from-url";
 
 const AppearanceSection = dynamic(() => import("@/features/appearance/components/appearance-section").then((mod) => mod.AppearanceSection));
 const InboxSection = dynamic(() => import("@/features/sessions/components/inbox-section").then((mod) => mod.InboxSection));
+const RailSection = dynamic(() => import("@/features/sessions/components/rail-section").then((mod) => mod.RailSection));
 const LinksSection = dynamic(() => import("./links-section").then((mod) => mod.LinksSection));
 const DictationSection = dynamic(() => import("@/features/dictation/components/dictation-section").then((mod) => mod.DictationSection));
 const McpSection = dynamic(() => import("@/features/agent-tools/components/mcp-section").then((mod) => mod.McpSection));
@@ -120,6 +121,7 @@ export function SettingsPage() {
         {active === "general" && (
           <>
             <WorkspaceSection />
+            <RailSection />
             <InboxSection />
             <TextGenSection />
           </>
