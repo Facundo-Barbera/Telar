@@ -1,16 +1,15 @@
 "use client";
 
 import { Dialog, DialogContent, DialogTitle } from "@/ui/dialog";
-import { attachmentUrl } from "./ds";
 
-export function ImageLightbox({ sessionId, attachmentId, alt = "Figure", onClose }: { sessionId: string; attachmentId?: string; alt?: string; onClose: () => void }) {
+export function ImageLightbox({ src, alt = "Figure", onClose, onError }: { src?: string; alt?: string; onClose: () => void; onError?: () => void }) {
   return (
-    <Dialog open={Boolean(attachmentId)} onOpenChange={(open) => { if (!open) onClose(); }}>
-      <DialogContent className="sm:max-w-[min(90vw,1200px)]">
+    <Dialog open={Boolean(src)} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent className="w-auto min-w-48 sm:max-w-[min(90vw,1200px)]">
         <DialogTitle className="sr-only">{alt}</DialogTitle>
-        {attachmentId && (
+        {src && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={attachmentUrl(sessionId, attachmentId)} alt={alt} className="max-h-[80vh] w-full rounded bg-white object-contain" />
+          <img src={src} alt={alt} onError={onError} className="mx-auto block max-h-[80vh] min-h-16 max-w-full min-w-16 rounded bg-white object-contain" />
         )}
       </DialogContent>
     </Dialog>

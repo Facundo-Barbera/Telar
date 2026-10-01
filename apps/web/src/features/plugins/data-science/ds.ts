@@ -40,8 +40,8 @@ export type VarRow = { name: string; type: string; shape?: number[]; len?: numbe
 
 export type TableWindow = { path: string; columns: string[]; dtypes?: string[]; total: number; offset: number; rows: unknown[][]; truncated?: boolean };
 
-export function attachmentUrl(sessionId: string, attachmentId: string): string {
-  return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`;
+export function attachmentUrl(sessionId: string, attachmentId: string, options: { display?: boolean } = {}): string {
+  return `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}${options.display ? "?variant=display" : ""}`;
 }
 
 export function humanBytes(bytes: number): string {
