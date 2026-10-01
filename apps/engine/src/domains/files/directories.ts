@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { mountRootsFor, type DirectoryListing } from "@telar/engine-client";
 
-export type DirectoryFailure = { code: "invalid_request" | "not_found"; message: string };
+export type DirectoryFailure = { code: "invalid_request" | "not_found"; message: string; unreadable?: true };
 export type DirectoryOutcome = DirectoryListing | DirectoryFailure;
 
 export function isDirectoryFailure(outcome: DirectoryOutcome): outcome is DirectoryFailure {
@@ -76,16 +76,16 @@ const absent = (code: string | undefined) => code === "ENOENT" || code === "ENOT
 
 function unreadable(target: string, home: string, code: string | undefined): DirectoryFailure {
   const denied = code === "EACCES" || code === "EPERM";
+  const failure = (message: string): DirectoryFailure => ({ code: "invalid_request", message, unreadable: true });
   if (inCloudFolder(target, home)) {
-    return {
-      code: "invalid_request",
-      message: denied
+    return failure(
+      denied
         ? "macOS has not let Telar read this cloud folder. Allow it in System Settings → Privacy & Security → Files & Folders, then try again."
         : `That cloud folder could not be read${code ? ` (${code})` : ""}. Check that its sync app is running and signed in, then try again.`,
-    };
+    );
   }
-  if (denied) return { code: "invalid_request", message: "That folder is not readable." };
-  return { code: "invalid_request", message: `That folder could not be read${code ? ` (${code})` : ""}.` };
+  if (denied) return failure("That folder is not readable.");
+  return failure(`That folder could not be read${code ? ` (${code})` : ""}.`);
 }
 
 export function compareNames(a: string, b: string): number {
