@@ -12,6 +12,17 @@ import { Spinner } from "@/ui/spinner";
 import { SettingsGroup } from "@/features/settings";
 
 const api = createEngineApi();
+const PAGE = 50;
+
+export type ListSort = "size" | "age";
+
+export function visibleRows(rows: readonly WorktreeRow[], query: string, sort: ListSort): WorktreeRow[] {
+  const needle = query.trim().toLowerCase();
+  const matched = needle
+    ? rows.filter((row) => [row.basename, row.branch, row.projectName, row.path].some((field) => field?.toLowerCase().includes(needle)))
+    : [...rows];
+  return matched.sort((left, right) => (sort === "size" ? (right.bytes ?? -1) - (left.bytes ?? -1) : (left.updatedAt ?? Infinity) - (right.updatedAt ?? Infinity)));
+}
 
 const LOCK_TEXT: Record<string, string> = {
   unreadable: "On a drive that is not connected. Nothing was read, so nothing is claimed about it.",
@@ -220,7 +231,7 @@ function WorktreeRowItem({
   );
 }
 
-export function WorktreeListSection() {
+export function WorktreeListSection({ onChanged }: { onChanged?: () => void }) {
   const [inventory, setInventory] = useState<WorktreeInventory>();
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string>();
@@ -230,6 +241,9 @@ export function WorktreeListSection() {
   const [archiveSettled, setArchiveSettled] = useState(false);
   const [results, setResults] = useState<WorktreeReclaimResult[]>();
   const [summary, setSummary] = useState<string>();
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<ListSort>("size");
+  const [shown, setShown] = useState(PAGE);
 
   const inFlight = useRef<AbortController | undefined>(undefined);
   const load = useCallback(async () => {
@@ -284,6 +298,7 @@ export function WorktreeListSection() {
       setConfirming(false);
       setTyped({});
       setCleared(new Set());
+      onChanged?.();
       await load();
     } catch {
       setFailure("Telar could not give those checkouts back — the engine did not answer.");
@@ -303,11 +318,11 @@ export function WorktreeListSection() {
   }
 
   const reclaimable = rows.filter((row) => row.verdict.kind === "reclaimable");
+  const visible = visibleRows(rows, query, sort);
   const total = reclaimable.reduce((sum, row) => sum + (row.bytes ?? 0), 0);
 
   return (
     <SettingsGroup
-      title="Checkouts"
       description={[
         rows.length === 0 && !busy
           ? "No checkouts yet."
@@ -347,7 +362,25 @@ export function WorktreeListSection() {
         />
       ) : null}
 
-      {rows.map((row) => (
+      <div className="flex flex-wrap items-center gap-2 py-2.5">
+        <Input
+          value={query}
+          aria-label="Search worktrees"
+          placeholder="Search by name, branch or project"
+          className="h-7 min-w-48 flex-1 text-xs"
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setShown(PAGE);
+          }}
+        />
+        {(["size", "age"] as const).map((key) => (
+          <Button key={key} size="sm" variant={sort === key ? "secondary" : "ghost"} aria-pressed={sort === key} onClick={() => setSort(key)}>
+            {key === "size" ? "Largest" : "Oldest"}
+          </Button>
+        ))}
+      </div>
+
+      {visible.slice(0, shown).map((row) => (
         <WorktreeRowItem
           key={row.path}
           row={row}
@@ -357,6 +390,17 @@ export function WorktreeListSection() {
           onType={(value) => setTyped((current) => ({ ...current, [row.path]: value }))}
         />
       ))}
+
+      {visible.length > shown ? (
+        <div className="flex items-center justify-between py-2.5 text-xs text-muted-foreground">
+          <span>
+            Showing {shown} of {visible.length}
+          </span>
+          <Button size="sm" variant="ghost" onClick={() => setShown((count) => count + PAGE)}>
+            Show {Math.min(PAGE, visible.length - shown)} more
+          </Button>
+        </div>
+      ) : null}
     </SettingsGroup>
   );
 }

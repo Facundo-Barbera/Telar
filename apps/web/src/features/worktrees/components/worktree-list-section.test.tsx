@@ -22,7 +22,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import type { WorktreeInventory, WorktreeRow } from "@telar/engine-client";
-import { armedRows, confirmSentence, ownerLabel, reclaimPayload, WorktreeListSection } from "./worktree-list-section";
+import { armedRows, confirmSentence, ownerLabel, reclaimPayload, visibleRows, WorktreeListSection } from "./worktree-list-section";
 
 GlobalRegistrator.register({ url: "http://localhost/" });
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -80,7 +80,7 @@ async function mount() {
   return {
     host,
     boxes: () => [...host.querySelectorAll('input[type="checkbox"]')] as HTMLInputElement[],
-    fields: () => [...host.querySelectorAll('input:not([type="checkbox"])')] as HTMLInputElement[],
+    fields: () => [...host.querySelectorAll('input:not([type="checkbox"]):not([aria-label="Search worktrees"])')] as HTMLInputElement[],
     button: (label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim().startsWith(label)),
     unmount: () => {
       act(() => root.unmount());
@@ -321,4 +321,30 @@ test("closing the pane aborts a checkouts read the engine has not answered", asy
   } finally {
     window.setTimeout = realSetTimeout;
   }
+});
+
+describe("finding one among hundreds", () => {
+  const many = Array.from({ length: 120 }, (_, index) =>
+    row({ basename: `cut-${index}`, branch: index === 7 ? "telar/needle" : `telar/b${index}`, bytes: index * 1024, updatedAt: 1_000 + index }),
+  );
+
+  test("search matches name, branch or project; sort is largest or oldest first", () => {
+    expect(visibleRows(many, "NEEDLE", "size").map((entry) => entry.basename)).toEqual(["cut-7"]);
+    expect(visibleRows(many, "", "size")[0]!.basename).toBe("cut-119");
+    expect(visibleRows(many, "", "age")[0]!.basename).toBe("cut-0");
+  });
+
+  test("the dialog shows a page at a time, and asks before drawing more", async () => {
+    inventory = { ...inventory, rows: many };
+    const view = await mount();
+    expect(view.host.textContent).toContain("Showing 50 of 120");
+    expect(view.host.textContent).toContain("cut-119");
+    expect(view.host.textContent).not.toContain("cut-10 ");
+    await act(async () => {
+      view.button("Show 50 more")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+      await settle();
+    });
+    expect(view.host.textContent).toContain("Showing 100 of 120");
+    view.unmount();
+  });
 });
