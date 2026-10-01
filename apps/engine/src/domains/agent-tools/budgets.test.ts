@@ -370,6 +370,12 @@ const CASES: Array<{ tool: string; args?: Record<string, unknown>; ceiling: numb
   { tool: "sessions_list", ceiling: 14_000, why: "50 rows of 500, plus the project registry" },
   { tool: "sessions_list", args: { settled: true, limit: 200 }, ceiling: MAX_ANSWER_CHARS, why: "the widest ask a caller can make" },
   { tool: "sessions_create", args: { projectId: "project_0", envMode: "local" }, ceiling: 2_000, why: "one session and two notes" },
+  {
+    tool: "sessions_create",
+    args: { projectId: "project_0", envMode: "worktree", tasks: Array.from({ length: 20 }, (_, index) => ({ title: `worker ${index}`, task: "x".repeat(20_000) })) },
+    ceiling: 6_000,
+    why: "twenty workers as a row each, never an echo of their briefs",
+  },
   { tool: "sessions_send", args: { sessionId: SESSION_ID, input: "x".repeat(20_000) }, ceiling: 4_000, why: "a receipt, never an echo of the message" },
   // THE BARE CALL FOLDS (#608): the journal is the ask now, not the default.
   { tool: "sessions_read", args: { sessionId: SESSION_ID }, ceiling: 8_000, why: "five turns folded to a line each" },

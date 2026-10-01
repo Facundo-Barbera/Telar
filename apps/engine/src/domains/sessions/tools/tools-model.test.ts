@@ -1,32 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { ProviderModel } from "@telar/engine-client";
-import { STATE_VERSION } from "../../../platform/kernel";
-import type { EngineStore } from "../../../state";
-import { call, cleanUp, engine, wall } from "./test-helpers";
+import { call, cleanUp, engine, wall, withModelCatalogue as withCatalogue } from "./test-helpers";
 
 afterEach(cleanUp);
-
-const row = (id: string, extra: Partial<ProviderModel> = {}): ProviderModel => ({
-  id,
-  label: id,
-  isDefault: false,
-  hidden: false,
-  hiddenByUser: false,
-  legacy: false,
-  source: "provider",
-  efforts: ["low", "medium", "high"],
-  fastMode: false,
-  ...extra,
-});
-
-function withCatalogue(store: EngineStore): EngineStore {
-  const models = [row("claude-opus-5-5[1m]", { isDefault: true }), row("claude-sonnet-5"), row("claude-haiku-4-5", { efforts: [] })];
-  store.kernel.writeDocument(store.kernel.paths.modelCatalogues, {
-    version: STATE_VERSION,
-    entries: [{ catalogue: { driver: "claude", models, source: "provider", readAt: Date.now(), cliVersion: "2.1.300" }, cliVersion: "2.1.300" }],
-  });
-  return store;
-}
 
 describe("choosing a model for a session an agent starts", () => {
   test("a model and effort named at creation are what the session runs on", async () => {
