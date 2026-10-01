@@ -14,8 +14,10 @@ export type DisplayCapability = {
 
 const OPEN = `Show the human a file from this checkout in the panel, rendered (markdown, PDF, image, video, code). For something you made for them to look at now.`;
 
-const INLINE = `Draw something in the conversation itself: an html page, an svg, a mermaid diagram or markdown. Suits diagrams, charts, UI mockups, comparisons and visual explanations.
-Html runs sandboxed with no network, so inline every script, style and image. Pass the same id again to revise an artifact; the card shows the newest version.`;
+const INLINE = `Draw a visual artifact in the conversation: an html page, svg, mermaid diagram, chart or markdown. Best when asked for a status, overview, comparison, diagram or chart; otherwise reply in plain text, and honour a preference for md or html files. Pass the same id to revise it. Html has no network: inline every script, style and image.`;
+
+export const DISPLAY_BRIEFING =
+  "When the person asks for a status, overview, comparison, diagram or chart, an inline artifact from display_inline (tool search loads it) is usually best; otherwise reply in plain text and honour a preference for md or html files.";
 
 export function displayTools(tool: ToolFactory, capability: DisplayCapability): unknown[] {
   return [

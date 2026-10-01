@@ -58,6 +58,14 @@ describe("the display toolkit", () => {
     expect(() => assertTelarToolNames(registered.map((tool) => tool.name))).not.toThrow();
   });
 
+  test("a deferred-tool keyword search for what it draws finds display_inline", () => {
+    const { registered } = build();
+    for (const keyword of ["artifact", "diagram", "chart", "visual"]) {
+      const hits = registered.filter((tool) => `${tool.name} ${tool.description}`.toLowerCase().includes(keyword));
+      expect(hits.map((tool) => tool.name)).toContain("display_inline");
+    }
+  });
+
   test("display_open forwards path and title and answers in prose, not content", async () => {
     const { registered, opened } = build();
     const result = await registered[0]!.run({ path: "docs/guide.md", title: "Setup guide" });
