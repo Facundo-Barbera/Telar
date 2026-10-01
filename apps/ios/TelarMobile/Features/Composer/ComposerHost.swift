@@ -16,7 +16,7 @@ import Foundation
 
     func send(_ text: String) async
     func stop() async
-    func attach(data: Data, name: String, mediaType: String) async
+    func attach(data: Data, name: String, mediaType: String) async -> String?
     func removeAttachment(_ id: EngineID)
     func promote(_ runId: String) async
     func withdraw(_ runId: String) async
@@ -44,7 +44,7 @@ struct SessionComposerHost: ComposerHost {
 
     func send(_ text: String) async { await store.send(text) }
     func stop() async { await store.stopActiveTurn() }
-    func attach(data: Data, name: String, mediaType: String) async {
+    func attach(data: Data, name: String, mediaType: String) async -> String? {
         await store.attach(data: data, name: name, mediaType: mediaType)
     }
     func removeAttachment(_ id: EngineID) { store.removeAttachment(id) }

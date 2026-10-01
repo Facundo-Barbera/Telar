@@ -112,7 +112,7 @@ private struct OutputImage: View {
             if let dataB64, let data = Data(base64Encoded: dataB64) {
                 image = UIImage(data: data)
             } else if let attachmentId {
-                image = await AttachmentImageCache.shared.image(host: nil, session: sessionId, attachmentId: attachmentId, api: api)
+                image = await AttachmentCache.shared.image(host: nil, session: sessionId, attachmentId: attachmentId, api: api)
             }
         }
     }
@@ -179,32 +179,5 @@ private struct DataframeGrid: View {
         case .bool(let b): b ? "true" : "false"
         default: cell.prettyPrinted
         }
-    }
-}
-
-@MainActor final class AttachmentImageCache {
-    static let shared = AttachmentImageCache()
-    private var images: [String: UIImage] = [:]
-    private var failed: Set<String> = []
-    private let root = SnapshotCache.default.root.appending(path: "attachments")
-
-    func image(host: HostID?, session: EngineID, attachmentId: EngineID, api: any PanelAPI) async -> UIImage? {
-        let key = "\(host?.uuidString ?? "local")/\(session)/\(attachmentId)"
-        if let hit = images[key] { return hit }
-        if failed.contains(key) { return nil }
-        let safe = { (part: String) in part.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? part }
-        let file = root.appending(path: safe(host?.uuidString ?? "local")).appending(path: safe(session)).appending(path: safe(attachmentId))
-        if let data = try? Data(contentsOf: file), let image = UIImage(data: data) {
-            images[key] = image
-            return image
-        }
-        guard let raw = try? await api.attachmentBytes(session, attachmentId: attachmentId), let image = UIImage(data: raw.data) else {
-            failed.insert(key)
-            return nil
-        }
-        try? FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? raw.data.write(to: file, options: .atomic)
-        images[key] = image
-        return image
     }
 }

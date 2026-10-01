@@ -171,7 +171,10 @@ struct DraftComposerHost: ComposerHost {
 
     func send(_ text: String) async { await model.send(text) }
     func stop() async {}
-    func attach(data: Data, name: String, mediaType: String) async { model.attach(data: data, name: name, mediaType: mediaType) }
+    func attach(data: Data, name: String, mediaType: String) async -> String? {
+        model.attach(data: data, name: name, mediaType: mediaType)
+        return nil
+    }
     func removeAttachment(_ id: EngineID) { model.removeAttachment(id) }
     func promote(_ runId: String) async {}
     func withdraw(_ runId: String) async {}

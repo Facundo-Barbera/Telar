@@ -9,9 +9,11 @@ struct ComposerFile: Equatable, Identifiable {
 }
 
 enum ComposerIntake {
-    static let byteCap = 25 * 1024 * 1024
+    static let byteCap = 20 * 1024 * 1024
 
     static let previewCap = 8 * 1024 * 1024
+
+    static let turnCap = 16
 
     static let accepted: [UTType] = [.image, .pdf, .movie, .audio, .text, .fileURL, .data]
 
@@ -59,6 +61,18 @@ enum ComposerIntake {
             return .refused("\(named) is \(humanBytes(data.count)) — attachments stop at \(humanBytes(byteCap)).")
         }
         return .file(ComposerFile(data: data, name: named, mediaType: mediaType(for: type)))
+    }
+
+    static func take(fileAt url: URL) -> ComposerIntakeResult {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let name = url.lastPathComponent
+        let type = UTType(filenameExtension: url.pathExtension) ?? .data
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size > byteCap {
+            return .refused("\(name) is \(humanBytes(size)) — attachments stop at \(humanBytes(byteCap)).")
+        }
+        guard let data = try? Data(contentsOf: url) else { return .refused("\(name) could not be read.") }
+        return take(data, name: name, type: type)
     }
 }
 

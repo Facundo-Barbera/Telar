@@ -64,6 +64,12 @@ struct SessionView: View {
 
     private var panelAPI: (any PanelAPI)? { api as? any PanelAPI }
 
+    private var attachmentSource: AttachmentSource? {
+        panelAPI.map { panelAPI in
+            AttachmentSource(host: hostId, session: sessionId) { try await panelAPI.attachmentBytes($0, attachmentId: $1) }
+        }
+    }
+
     private var hostLabel: String? { HostLabel.header(name: hostName, hostCount: hostCount) }
 
     private var turnActive: Bool { store.hasActiveTurn }
@@ -361,6 +367,7 @@ struct SessionView: View {
                 .padding(.vertical, 12)
             }
         }
+        .environment(\.attachmentSource, attachmentSource)
         .scrollPosition($position)
 
         .scrollDismissesKeyboard(.immediately)
