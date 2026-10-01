@@ -13,7 +13,6 @@ export const worktreesClient = {
     return this.request("PUT", "/v2/worktrees-root", { root });
   },
 
-  /** Re-cuts the worktrees under `from` at the current location. */
   moveWorktrees(this: EngineTransport, from: string): Promise<{ move: WorktreeMoveResult }> {
     return this.request("POST", "/v2/worktrees-root/move", { from });
   },
@@ -22,7 +21,6 @@ export const worktreesClient = {
     return this.request("GET", `/v2/worktrees/summary${options.refresh ? "?refresh=1" : ""}`);
   },
 
-  /** Gives back every worktree in `state` that is safe to lose; the others are left alone. */
   releaseWorktreeState(this: EngineTransport, state: ReleasableState): Promise<{ reclaim: WorktreeReclaimOutcome }> {
     return this.request("POST", "/v2/worktrees/reclaim", { state });
   },

@@ -17,7 +17,7 @@ const POLL_MS = 3_000;
 
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 
-export function tallyLabel(tally: WorktreeTally): string {
+function tallyLabel(tally: WorktreeTally): string {
   if (tally.count === 0) return "None";
   const size = tally.unmeasured === tally.count ? "measuring…" : `${formatBytes(tally.bytes)}${tally.unmeasured > 0 ? "+" : ""}`;
   return `${plural(tally.count, "worktree")} · ${size}`;
@@ -29,7 +29,7 @@ function placeName(location: WorktreeLocation, other: WorktreeLocation | undefin
   return location.folder;
 }
 
-export function moveLabel(source: WorktreeLocation, current: WorktreeLocation | undefined): string {
+function moveLabel(source: WorktreeLocation, current: WorktreeLocation | undefined): string {
   const movable = source.move?.movable ?? { count: 0, bytes: 0, unmeasured: 0 };
   const to = current ? placeName(current, source) : "the current location";
   if (movable.count === 0) return `Move from ${placeName(source, current)} to ${to}`;
@@ -37,7 +37,7 @@ export function moveLabel(source: WorktreeLocation, current: WorktreeLocation | 
   return `Move ${plural(movable.count, "worktree")}${size} from ${placeName(source, current)} to ${to}`;
 }
 
-export function moveBlocker(location: WorktreeLocation): string | undefined {
+function moveBlocker(location: WorktreeLocation): string | undefined {
   if (location.current) return "New worktrees are made here already.";
   if (!location.present) return "The drive is not connected.";
   if (!location.move) return "Choose a location first.";
@@ -45,7 +45,7 @@ export function moveBlocker(location: WorktreeLocation): string | undefined {
   return undefined;
 }
 
-export function stayingSentence(staying: WorktreeLocationMove["staying"]): string | undefined {
+function stayingSentence(staying: WorktreeLocationMove["staying"]): string | undefined {
   const reasons = [
     staying.dirty > 0 ? `${plural(staying.dirty, "has", "have")} uncommitted changes` : undefined,
     staying.busy > 0 ? `${plural(staying.busy, "has a turn", "have turns")} running` : undefined,
@@ -56,7 +56,7 @@ export function stayingSentence(staying: WorktreeLocationMove["staying"]): strin
   return total === 0 ? undefined : `${total} will stay put: ${reasons.join(", ")}.`;
 }
 
-export function outcomeCounts(result: WorktreeMoveResult): string {
+function outcomeCounts(result: WorktreeMoveResult): string {
   const failed = result.skipped.filter((entry) => entry.reason === "failed").length;
   return `Moved ${result.moved.length} · stayed ${result.skipped.length - failed} · failed ${failed}`;
 }
@@ -70,7 +70,7 @@ const STATES: Record<WorktreeState, { label: (days: number) => string; icon: typ
   recent: { label: () => "Settled recently", icon: MoonIcon },
 };
 
-export function releaseLabel(state: WorktreeState, releasable: WorktreeTally): string | undefined {
+function releaseLabel(state: WorktreeState, releasable: WorktreeTally): string | undefined {
   const verb = STATES[state].verb;
   if (!verb || releasable.count === 0) return undefined;
   return `${verb} ${plural(releasable.count, "worktree")} · ${formatBytes(releasable.bytes)}${releasable.unmeasured > 0 ? "+" : ""}`;
@@ -240,7 +240,7 @@ export function WorktreeSummarySection({ version = 0 }: { version?: number }) {
       >
         {summary?.locations.map((location) => (
           <LocationRow key={location.folder} location={location} current={current} onMoved={() => void load(true)} />
-        )) ?? <Row label="…" />}
+        ))}
       </SettingsGroup>
 
       {summary ? (
