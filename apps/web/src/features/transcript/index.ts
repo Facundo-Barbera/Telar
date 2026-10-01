@@ -1,7 +1,7 @@
 export { ActivityGroup, LiveActivity } from "./components/activity";
 export { sessionWakeLabel } from "./components/item-rows";
-export { NotificationRow } from "./components/notification-row";
-export { notificationHead } from "./notifications";
+export { NotificationRow, SessionTitles } from "./components/notification-row";
+export { notificationHead, quotedMessage } from "./notifications";
 export { SessionSkeleton } from "./components/session-skeleton";
 export { TranscriptWorkspace } from "./components/tool-row";
 export { ROW } from "./components/transcript-fold";

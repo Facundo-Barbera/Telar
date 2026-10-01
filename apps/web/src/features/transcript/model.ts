@@ -3,7 +3,7 @@ BotIcon
 } from "lucide-react";
 import { type Item } from "@telar/engine-client";
 import { itemLabel, itemText, type JournalItem, type JournalTask, type JournalTurn } from "@/platform/engine";
-import { notificationHead, notificationVerbs, type NotificationSubject } from "./notifications";
+import { notificationHead, notificationVerbs, quotedMessage, type NotificationSubject } from "./notifications";
 import { CONSULT_TALLY_LABEL, harnessConsult } from "./harness-paths";
 import { toolInputSummary } from "./tool-input-summary";
 import { rowPath } from "./components/tool-row";
@@ -84,14 +84,13 @@ export function reasoningPaints(item: JournalItem): boolean {
 }
 
 export function notificationLabel(
-  detail: NotificationSubject & Partial<Pick<NonNullable<JournalTurn["notification"]>, "summary">>,
-  /** The peer's message as sent, when the surface has it — the turn's own
-   *  `prompt`. Falls back to the engine's summary line, which is all a row
-   *  drawing a bare item has. */
+  detail: NotificationSubject & { body?: string },
+  /** The peer's message as sent, when the surface has it: the turn's own `prompt`. */
   message?: string,
 ): { verb: string; Icon: typeof BotIcon; head?: string } {
   const { verb } = notificationVerbs(detail);
-  const head = detail.kind === "peer_message" ? notificationHead(message ?? detail.summary) : undefined;
+  const said = message ?? (detail.body ? quotedMessage(detail.body) : undefined);
+  const head = detail.kind === "peer_message" && said ? notificationHead(said) : undefined;
   return { verb, Icon: BotIcon, ...(head ? { head } : {}) };
 }
 

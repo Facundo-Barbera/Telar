@@ -116,3 +116,8 @@ export function notificationHead(text: string | undefined, limit = NOTIFICATION_
   if (stripped.length === 0) return undefined;
   return stripped.length <= limit ? stripped : `${stripped.slice(0, limit - 1)}…`;
 }
+
+/** The peer's own words, when the engine's notice quoted them whole. */
+export function quotedMessage(body: string): string | undefined {
+  return /\n<<<\n([\s\S]*?)\n>>>/.exec(body)?.[1]?.trim() || undefined;
+}

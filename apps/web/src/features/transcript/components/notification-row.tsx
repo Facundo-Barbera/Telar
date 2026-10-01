@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 import {
 ChevronRightIcon
 } from "lucide-react";
@@ -9,10 +9,16 @@ import { ROW } from "./transcript-fold";
 import { cn } from "@/ui/utils";
 import { notificationLabel } from "../model";
 
-export function NotificationRow({ detail, message }: { detail: NonNullable<JournalTurn["notification"]>; message?: string }) {
+/** Names the sessions a notification row mentions; ids are never shown. */
+export const SessionTitles = createContext<(sessionId: string) => string | undefined>(() => undefined);
+
+export function NotificationRow({ detail, message, title }: { detail: NonNullable<JournalTurn["notification"]>; message?: string; title?: string }) {
   const [open, setOpen] = useState(false);
   const [reading, setReading] = useState(false);
+  const titleOf = useContext(SessionTitles);
   const { verb, Icon, head } = notificationLabel(detail, message);
+  const mentioned = detail.entries?.length ? detail.entries : [{ sessionId: detail.sessionId, title: undefined }];
+  const named = title ?? [...new Set(mentioned.flatMap((each) => (each.sessionId ? (each.title ?? titleOf(each.sessionId) ?? []) : [])))].join(", ");
   const body = detail.body.trim();
   const entries = detail.entries ?? [];
   const peerMessage = detail.kind === "peer_message" && message && message.trim() !== body ? message.trim() : undefined;
@@ -27,13 +33,9 @@ export function NotificationRow({ detail, message }: { detail: NonNullable<Journ
       >
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
         <span className="shrink-0">{verb}</span>
-        {/* WHICH RESULT, not just that one arrived — #572. Two notices from one
-            session on one screen have to be told apart without expanding both. */}
         {head && <span className="min-w-0 truncate text-2xs text-muted-foreground">{head}</span>}
         {entries.length > 1 && <span className="shrink-0 text-2xs text-muted-foreground">{`and ${entries.length - 1} more`}</span>}
-        {detail.sessionId && (
-          <span className="min-w-0 truncate font-mono text-2xs text-muted-foreground">{`session …${detail.sessionId.slice(-6)}`}</span>
-        )}
+        {named && <span className="min-w-0 truncate text-2xs text-muted-foreground">{named}</span>}
         {body && <ChevronRightIcon className={cn("size-3 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")} />}
       </button>
       {open && body && (

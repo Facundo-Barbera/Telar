@@ -413,6 +413,8 @@ export const NotificationEntry = z.object({
   intent: AgentMessageIntent.optional(),
   /** One line. What a collapsed row and an outline page show. */
   summary: z.string().max(1_000),
+  title: z.string().max(200).optional(),
+  spent: z.string().max(300).optional(),
 });
 export type NotificationEntry = z.infer<typeof NotificationEntry>;
 
@@ -428,6 +430,7 @@ export const NotificationDetail = z.object({
   fetch: z.object({ sessionId: Id, runId: Id }),
   body: z.string().max(8_000),
   entries: z.array(NotificationEntry).max(50).optional(),
+  spent: z.string().max(300).optional(),
   deliveries: z.number().int().positive().optional(),
   /** Set on a cohort's one notification (see `Cohort`). */
   cohortId: Id.optional(),

@@ -88,6 +88,8 @@ type SessionTurnProps = {
   sending: boolean;
   live: boolean;
   onResumeNow?: () => void;
+  peerTitle?: string;
+  covered?: boolean;
 };
 
 // Presence of a gesture changes the render; identity does not (the cockpit passes inline arrows).
@@ -96,7 +98,7 @@ const TURN_GESTURES = ["onOpenAgent", "onOpenTab", "onInsert", "onOpenFile", "on
 // Compares what a turn draws, not object identity: every tail snapshot rebuilds turns as fresh objects.
 // `prompt` is not compared; the engine writes it once and the runId key pins the turn.
 function sameTurnRender(prev: SessionTurnProps, next: SessionTurnProps): boolean {
-  if (prev.live !== next.live || prev.sending !== next.sending) return false;
+  if (prev.live !== next.live || prev.sending !== next.sending || prev.peerTitle !== next.peerTitle || prev.covered !== next.covered) return false;
   for (const gesture of TURN_GESTURES) if (Boolean(prev[gesture]) !== Boolean(next[gesture])) return false;
   if (!sameEach(prev.requests, next.requests, (a, b) => a.id === b.id && a.state === b.state && a.decision === b.decision)) return false;
   // Only the wake-up row reads the roster, and only on a turn that names the task that woke it.
@@ -184,6 +186,8 @@ function SessionTurnBody({
   onOpenFile,
   onOpenFileInNewTab,
   roster = [],
+  peerTitle,
+  covered = false,
 }: SessionTurnProps) {
   const doing = turnActivity(turn);
   const rowGestures = {
@@ -222,7 +226,7 @@ function SessionTurnBody({
 
   return (
     <div className="flex flex-col gap-2">
-      <TurnOpening turn={turn} roster={roster} {...rowGestures} {...(onOpenTab ? { onOpenTab } : {})} />
+      {!covered && <TurnOpening turn={turn} roster={roster} {...rowGestures} {...(onOpenTab ? { onOpenTab } : {})} {...(peerTitle ? { peerTitle } : {})} />}
 
       {earlier.map((response) => (
         <Fragment key={response.boundary?.id ?? "opening"}>
@@ -323,7 +327,8 @@ function TurnOpening({
   onInsert,
   onOpenTab,
   onOpenAgent,
-}: RowGestures & { turn: JournalTurn; roster: readonly JournalTask[]; onOpenTab?: (tab: PanelTab) => void }) {
+  peerTitle,
+}: RowGestures & { turn: JournalTurn; roster: readonly JournalTask[]; onOpenTab?: (tab: PanelTab) => void; peerTitle?: string }) {
   return (
     <>
       {turn.kind !== "import" && turn.origin !== "provider" && turn.origin !== "session" && turn.origin !== "restart" && (
@@ -339,7 +344,7 @@ function TurnOpening({
       {(turn.origin === "provider" || turn.origin === "session") && (
         <Message from="assistant"><MessageContent from="assistant">
           {turn.notification ? (
-            <NotificationRow detail={turn.notification} {...(turn.sender ? { message: turn.prompt } : {})} />
+            <NotificationRow detail={turn.notification} {...(turn.sender ? { message: turn.prompt } : {})} {...(peerTitle ? { title: peerTitle } : {})} />
           ) : turn.origin === "session" && turn.sender ? (
             <AgentMessageBubble text={turn.prompt} sender={turn.sender} {...(turn.agentNotice ? { notice: turn.agentNotice } : {})} {...(turn.agentIntent ? { intent: turn.agentIntent } : {})} {...(turn.assignmentScope ? { scope: turn.assignmentScope } : {})} {...(turn.attachments ? { attachments: turn.attachments } : {})} {...(onOpenTab ? { onOpenTab } : {})} />
           ) : (
