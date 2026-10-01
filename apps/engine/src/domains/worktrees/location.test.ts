@@ -19,6 +19,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fakeMounts } from "../../../test/fake-mount";
 import {
   clearWorktreesRoot,
   defaultWorktreesRoot,
@@ -217,4 +218,27 @@ test("the whole point: changing the root never touches what is already cut", () 
 
   expect(fs.readFileSync(path.join(existing, "work.txt"), "utf8")).toBe("uncommitted");
   expect(fs.existsSync(existing)).toBe(true);
+});
+
+test("choosing a root on a drive whose id is still being looked up records the drive once it answers", async () => {
+  const mounts = fakeMounts();
+  try {
+    let answer: (uuid: string) => void = () => {};
+    const deps = { ...mounts.deps, volumeUuid: () => new Promise<string>((resolve) => { answer = resolve; }) };
+    const mount = mounts.mount("TelarVR");
+    const chosen = path.join(mount, "checkouts");
+
+    expect(writeWorktreesRoot(root, chosen, deps).volume).toBeUndefined();
+    answer("UUID-LATE");
+    await new Promise<void>((resolve) => {
+      const check = (): void => {
+        if (JSON.parse(fs.readFileSync(locationFile(), "utf8")).volume) resolve();
+        else setImmediate(check);
+      };
+      check();
+    });
+    expect(JSON.parse(fs.readFileSync(locationFile(), "utf8"))).toMatchObject({ root: chosen, volume: { mount, uuid: "UUID-LATE" }, label: "TelarVR" });
+  } finally {
+    mounts.cleanup();
+  }
 });

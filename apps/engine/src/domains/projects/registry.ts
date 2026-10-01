@@ -16,7 +16,7 @@ import {
   type Project,
 } from "@telar/engine-client";
 import { assertId, assertStateVersion, EngineStateError, STATE_VERSION, type Kernel } from "../../platform/kernel";
-import { volumeForRoot, type VolumeDeps } from "../../platform/fs/volumes";
+import { volumeForRoot, volumeForRootAsync, type VolumeDeps, type VolumeIdentity } from "../../platform/fs/volumes";
 import { ensureTelarGitignore } from "../git";
 import type { ProjectIcon } from "../appearance";
 import type { ProjectProbes } from "./probes";
@@ -146,6 +146,7 @@ export class ProjectRegistry {
       else tombstone.volume = volume;
       this.write(parsed);
       this.deps.probes.forget(tombstone.id);
+      this.recordVolumeLater(tombstone.id, projectRoot, volume);
       return structuredClone(tombstone);
     }
     const existing = parsed.projects.find((project) => project.id === id || project.root === projectRoot);
@@ -166,7 +167,21 @@ export class ProjectRegistry {
     parsed.projects.push(project);
     this.write(parsed);
     this.deps.probes.forget(id);
+    this.recordVolumeLater(id, projectRoot, volume);
     return structuredClone(project);
+  }
+
+  private recordVolumeLater(projectId: string, root: string, known: VolumeIdentity | undefined): void {
+    if (known !== undefined) return;
+    void volumeForRootAsync(root, this.deps.volumes).then((volume) => {
+      if (volume === undefined) return;
+      const parsed = this.read();
+      const project = parsed.projects.find((candidate) => candidate.id === projectId);
+      if (!project || project.root !== root || project.volume !== undefined) return;
+      project.volume = volume;
+      this.write(parsed);
+      this.deps.probes.forgetAvailability(projectId);
+    }).catch(() => undefined);
   }
 
   /** Puts a project away; refused while any of its sessions has work in flight. Nothing on disk is touched. */

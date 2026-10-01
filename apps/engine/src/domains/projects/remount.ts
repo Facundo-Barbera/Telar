@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { workspaceBaseRef, workspacePath, type Project, type Session } from "@telar/engine-client";
 import type { Kernel } from "../../platform/kernel";
-import { findVolumeMount, mountSignature, type VolumeDeps } from "../../platform/fs/volumes";
+import { findVolumeMount, forgetVolumeIds, type VolumeDeps } from "../../platform/fs/volumes";
 import { sessionMetadataFile, storedSession } from "../sessions";
 import type { WorktreePlan } from "../worktrees";
 import type { ProjectProbes } from "./probes";
@@ -22,7 +22,7 @@ type RemountDeps = {
  * project's folder exists on it; this is the one sanctioned write of `Project.root`.
  */
 export class ProjectRemounts {
-  private readonly attempts = new Map<string, string>();
+  private readonly recovering = new Map<string, Promise<Project | undefined>>();
 
   constructor(
     private readonly kernel: Kernel,
@@ -30,22 +30,23 @@ export class ProjectRemounts {
   ) {}
 
   /** The updated project, or nothing when there was nothing to recover. */
-  recover(project: Project): Project | undefined {
+  recover(project: Project): Promise<Project | undefined> {
+    const running = this.recovering.get(project.id);
+    if (running) return running;
+    const recovery = this.search(project).finally(() => this.recovering.delete(project.id));
+    this.recovering.set(project.id, recovery);
+    return recovery;
+  }
+
+  private async search(project: Project): Promise<Project | undefined> {
     if (project.volume === undefined) return undefined;
-    // Searching costs a `diskutil` per volume on a ten-second poll, so try once per distinct set of mounts.
-    const signature = mountSignature(this.deps.volumes);
-    if (this.attempts.get(project.id) === signature) return undefined;
-    this.attempts.set(project.id, signature);
-    const mount = findVolumeMount(project.volume.uuid, this.deps.volumes);
+    const mount = await findVolumeMount(project.volume.uuid, this.deps.volumes);
     if (mount === undefined || mount === project.volume.mount) return undefined;
     const within = path.relative(project.volume.mount, project.root);
     if (within.startsWith("..") || path.isAbsolute(within)) return undefined;
     const root = within === "" ? mount : path.join(mount, within);
-    try {
-      if (!fs.statSync(root).isDirectory()) return undefined;
-    } catch {
-      return undefined;
-    }
+    const directory = await fs.promises.stat(root).then((stats) => stats.isDirectory(), () => false);
+    if (!directory) return undefined;
 
     const parsed = this.deps.registry.read();
     const stored = parsed.projects.find((candidate) => candidate.id === project.id);
@@ -102,23 +103,21 @@ export class ProjectRemounts {
     }
   }
 
-  /**
-   * Asks every project's disk now: at start, and when the shell sees a mount change. A project that cannot be read
-   * gets the remount search here, off the poll path. Removed projects are on no surface, so they are skipped.
-   */
-  reprobe(): { projects: number; changed: number; recovered: number } {
+  /** Asks every project's disk now, when the shell sees a mount change, and searches for any that cannot be read. */
+  async reprobe(): Promise<{ projects: number; changed: number; recovered: number }> {
+    forgetVolumeIds(this.deps.volumes);
     const projects = this.deps.registry.read().projects.filter((project) => project.removedAt === undefined);
-    let changed = 0;
-    let recovered = 0;
-    for (const project of projects) {
+    const outcomes = await Promise.all(projects.map(async (project) => {
       const before = this.deps.probes.lastAvailability(project.id);
-      let availability = this.deps.probes.availability(project);
-      if (availability !== "available" && this.recover(project) !== undefined) {
-        recovered += 1;
-        availability = this.deps.probes.availability(this.deps.registry.get(project.id));
-      }
-      if (availability !== before) changed += 1;
-    }
-    return { projects: projects.length, changed, recovered };
+      let availability = await this.deps.probes.probe(project);
+      const recovered = availability !== "available" && (await this.recover(project)) !== undefined;
+      if (recovered) availability = await this.deps.probes.probe(this.deps.registry.get(project.id));
+      return { changed: availability !== before, recovered };
+    }));
+    return {
+      projects: projects.length,
+      changed: outcomes.filter((outcome) => outcome.changed).length,
+      recovered: outcomes.filter((outcome) => outcome.recovered).length,
+    };
   }
 }

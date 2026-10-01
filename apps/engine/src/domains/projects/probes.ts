@@ -1,7 +1,7 @@
 import type { Project } from "@telar/engine-client";
 import type { Kernel } from "../../platform/kernel";
 import { projectRemoteAsync } from "../git";
-import { probeAvailability, type ProjectAvailability, type VolumeDeps } from "../../platform/fs/volumes";
+import { listedMounts, probeAvailability, type ProjectAvailability, type VolumeDeps } from "../../platform/fs/volumes";
 import type { AsyncGitRunner } from "../../platform/git/runner";
 import { confirmProjectIcon, findProjectIconAsync, type ProjectIcon } from "../appearance";
 
@@ -9,6 +9,7 @@ const ICON_TTL_FOUND = 300_000;
 const ICON_TTL_MISSING = 15_000;
 const ICON_CACHE_CAPACITY = 512;
 const METADATA_REFRESH_MS = 10_000;
+const AVAILABILITY_REFRESH_MS = 2_000;
 
 type Metadata = Pick<Project, "branch" | "icon" | "remoteUrl">;
 
@@ -21,14 +22,14 @@ type ProbeDeps = {
 };
 
 /**
- * What each project's checkout looks like right now: whether its disk is here,
- * its branch, icon and remote. Availability is probed on every ask and only its
- * transitions are remembered; branch, icon and remote refresh off the request path.
+ * Whether each project's disk is here, and its branch, icon and remote: answered
+ * from memory and refreshed in the background, so a read never waits on a drive.
  */
 export class ProjectProbes {
   // `resolvedAt` is the last full discovery; a confirmation never moves it, or a new higher-priority icon would stay hidden.
   private readonly icons = new Map<string, { icon?: ProjectIcon; resolvedAt: number }>();
-  private readonly availabilities = new Map<string, ProjectAvailability>();
+  private readonly availabilities = new Map<string, { value: ProjectAvailability; at: number }>();
+  private readonly probing = new Map<string, Promise<ProjectAvailability>>();
   private readonly metadataCache = new Map<string, { root: string; at: number; value: Metadata; pending?: Promise<void> }>();
 
   constructor(
@@ -36,28 +37,45 @@ export class ProjectProbes {
     private readonly deps: ProbeDeps,
   ) {}
 
-  /** Always fresh; a change in either direction drops everything read off the old disk state. */
+  /** The last probed answer, re-probed in the background once it is stale. */
   availability(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): ProjectAvailability {
-    const availability = probeAvailability(project, this.deps.volumes);
-    const previous = this.availabilities.get(project.id);
-    if (previous === availability) return availability;
-    this.availabilities.set(project.id, availability);
-    // The first answer is not a transition.
-    if (previous !== undefined) this.forgetReads(project);
-    return availability;
+    const known = this.availabilities.get(project.id);
+    if ((known === undefined || this.kernel.now() - known.at >= AVAILABILITY_REFRESH_MS) && !this.probing.has(project.id)) void this.probe(project);
+    if (known !== undefined) return known.value;
+    return project.volume !== undefined && !listedMounts(this.deps.volumes).includes(project.volume.mount) ? "unmounted" : "available";
+  }
+
+  /** Asks the disk now, superseding a probe still running. Reads start one only when none is, so a hung drive holds one stat. */
+  probe(project: Pick<Project, "id" | "root"> & { volume?: Project["volume"] }): Promise<ProjectAvailability> {
+    const probe: Promise<ProjectAvailability> = probeAvailability(project, this.deps.volumes).then((availability) => {
+      // A probe overtaken by a recovery answers for a root that is no longer the project's.
+      if (this.probing.get(project.id) !== probe) return availability;
+      this.probing.delete(project.id);
+      this.remember(project, availability);
+      return availability;
+    });
+    this.probing.set(project.id, probe);
+    return probe;
   }
 
   lastAvailability(projectId: string): ProjectAvailability | undefined {
-    return this.availabilities.get(projectId);
+    return this.availabilities.get(projectId)?.value;
   }
 
   forgetAvailability(projectId: string): void {
     this.availabilities.delete(projectId);
+    this.probing.delete(projectId);
+  }
+
+  // A change in either direction drops everything read off the old disk state; the first answer is not a change.
+  private remember(project: Pick<Project, "id" | "root">, availability: ProjectAvailability): void {
+    const previous = this.availabilities.get(project.id)?.value;
+    this.availabilities.set(project.id, { value: availability, at: this.kernel.now() });
+    if (previous !== undefined && previous !== availability) this.forgetReads(project);
   }
 
   /** Branch, icon etag and remote for a listing. Nothing is spawned against a disk that isn't there. */
   metadata(project: Project): Metadata {
-    // Before the lookup: a transition deletes this very entry.
     const availability = this.availability(project);
     let entry = this.metadataCache.get(project.id);
     if (!entry || entry.root !== project.root) {
