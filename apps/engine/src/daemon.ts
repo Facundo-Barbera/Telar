@@ -249,7 +249,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
   const now = options.now ?? Date.now;
   // Before the store and the lock: only the engine may move this tree, and nothing may hold either name.
   if (migrateLegacyEngineRoot(root)) say(`Telar engine: moved the existing store from vnext/ to ${path.basename(root)}/`);
-  const lock = acquireDaemonLock(statePaths(root));
+  const lock = await acquireDaemonLock(statePaths(root));
   const doorbell: EmbeddedDoorbell = {};
   const computerUseGate = options.computerUseGate ?? createComputerUseGate();
   let store: EngineStore;
