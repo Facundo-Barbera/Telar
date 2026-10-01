@@ -71,23 +71,37 @@ export function planWorktreeCleanup(sessions: readonly CleanupCandidate[], polic
 
 export type SweepOutcome = "released" | "skipped" | "ignored";
 
+type Busy = Set<string> | undefined;
+
 export type SweepDeps = {
-  release(item: PlannedRelease): Promise<SweepOutcome>;
+  release(item: PlannedRelease, processes: () => Promise<Busy>): Promise<SweepOutcome>;
+  processes(checkouts: readonly string[]): Promise<Busy>;
   sizeOf(target: string): number | undefined;
   gate: VolumeGate;
+  tried: Map<string, number>;
+  limit?: number;
   concurrency?: number;
   timeoutMs?: number;
 };
 
 const SWEEP_TIMEOUT_MS = 60_000;
+const SWEEP_LIMIT = 8;
 
-/** Releases the plan a few at a time; a volume that is missing or stops answering is skipped whole. */
+/** Releases at most `limit` of the plan, least recently tried first (`tried` is the caller's, kept across sweeps); a volume that is missing or stops answering is skipped whole. */
 export async function sweepCheckouts(plan: readonly PlannedRelease[], deps: SweepDeps): Promise<{ released: number; skipped: number; freedBytes: number }> {
   const tally = { released: 0, skipped: 0, freedBytes: 0 };
-  await deps.gate.admit(plan.map((item) => item.path));
-  await eachBounded(plan, deps.concurrency ?? 2, async (item) => {
+  const planned = new Set(plan.map((item) => item.sessionId));
+  for (const sessionId of deps.tried.keys()) if (!planned.has(sessionId)) deps.tried.delete(sessionId);
+  const lastTry = (item: PlannedRelease) => deps.tried.get(item.sessionId) ?? 0;
+  const batch = [...plan].sort((a, b) => lastTry(a) - lastTry(b)).slice(0, deps.limit ?? SWEEP_LIMIT);
+  const sweep = Math.max(0, ...deps.tried.values()) + 1;
+  for (const item of batch) deps.tried.set(item.sessionId, sweep);
+  let busy: Promise<Busy> | undefined;
+  const processes = () => (busy ??= deps.processes(batch.map((item) => item.path)));
+  await deps.gate.admit(batch.map((item) => item.path));
+  await eachBounded(batch, deps.concurrency ?? 2, async (item) => {
     const bytes = deps.sizeOf(item.path);
-    const outcome = await deps.gate.run(item.path, () => deps.release(item), deps.timeoutMs ?? SWEEP_TIMEOUT_MS);
+    const outcome = await deps.gate.run(item.path, () => deps.release(item, processes), deps.timeoutMs ?? SWEEP_TIMEOUT_MS);
     if (outcome === "released") {
       tally.released += 1;
       tally.freedBytes += bytes ?? 0;
