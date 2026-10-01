@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { BROWSER_BRIEFING } from "../../domains/browser";
+import { DISPLAY_BRIEFING } from "../../domains/agent-tools";
 import { RUN_BRIEFING } from "../../domains/terminal";
 import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type TaskSeed } from "@telar/engine-client";
 import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "../../domains/providers";
@@ -221,6 +222,7 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
     ...(mainBriefing ? [mainBriefing] : []),
     ...(browserSocket ? [BROWSER_BRIEFING] : []),
     ...(run ? [RUN_BRIEFING] : []),
+    ...(display ? [DISPLAY_BRIEFING] : []),
     // Each enabled plugin's own paragraph, from its manifest. Carried by
     // the fingerprint's `plugins` field: the same set, the same words.
     ...pluginBriefings(Object.keys(plugins ?? {})),

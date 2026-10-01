@@ -33,7 +33,7 @@ import {
   telarSkillDigest,
   writeOrientationInstructions,
 } from "./orientation";
-import { BUNDLED_SKILLS, displayTools, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME, type ToolFactory } from "../agent-tools";
+import { BUNDLED_SKILLS, DISPLAY_BRIEFING, displayTools, ORCHESTRATE_SKILL, ORCHESTRATE_SKILL_NAME, type ToolFactory } from "../agent-tools";
 import { codexHome, openCodeHome, providerSkillRoot, providerSkillRoots } from "../providers";
 import { openCodeBriefings, openCodeConfigContent } from "../../drivers/opencode";
 import { sessionsTools } from ".";
@@ -220,6 +220,14 @@ test("Claude's spawn options carry the paragraph exactly once, appended to its o
   // And it leads, so the briefings under it are read in the vocabulary it
   // teaches.
   expect(prompt?.append?.startsWith(TELAR_ORIENTATION)).toBe(true);
+});
+
+test("a session that can draw artifacts is told when to, and one that cannot is not", async () => {
+  const display = { open: async () => ({ path: "" }), inline: async () => ({ id: "a" }) };
+  expect(openCodeBriefings(run({ display }))).toContain(DISPLAY_BRIEFING);
+  expect(openCodeBriefings(run())).not.toContain(DISPLAY_BRIEFING);
+  expect((await claudeSystemPrompt({ display }))?.append).toContain(DISPLAY_BRIEFING);
+  expect(await claudeSystemPrompt({})).toBeUndefined();
 });
 
 test("Claude's spawn options carry no orientation when the preamble is off", async () => {

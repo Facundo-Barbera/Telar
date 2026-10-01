@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
 import { autoCompactLimitFor, type AutoCompact } from "@telar/engine-client";
 import { BROWSER_BRIEFING } from "../../domains/browser";
+import { DISPLAY_BRIEFING } from "../../domains/agent-tools";
 import { RUN_BRIEFING } from "../../domains/terminal";
 import { pluginBriefings } from "../../domains/plugins";
 import { writeOrientationInstructions } from "../../domains/sessions";
@@ -20,6 +21,7 @@ export function openCodeBriefings(input: DriverRun): string[] {
     ...(input.mainBriefing ? [input.mainBriefing] : []),
     ...(input.browserSocket ? [BROWSER_BRIEFING] : []),
     ...(input.run ? [RUN_BRIEFING] : []),
+    ...(input.display ? [DISPLAY_BRIEFING] : []),
     ...pluginBriefings(Object.keys(input.plugins ?? {})),
   ];
 }
