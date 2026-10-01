@@ -100,6 +100,7 @@ export type WorktreeSummary = {
   measuring: boolean;
   partial: boolean;
   blocker?: string;
+  degradedVolumes?: { mount: string; state: "slow" | "missing" }[];
 };
 
 export type WorktreeReclaimItem = { path: string; confirm?: string; settled?: "release" | "archive" };

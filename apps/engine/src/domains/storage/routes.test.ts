@@ -78,6 +78,7 @@ test("refresh is what re-walks, and it sees what was written since", async () =>
 
 test("reading the store does not write to it", async () => {
   const { daemon, client } = await ready();
+  await daemon.checkoutPasses;
   const before = fs.readdirSync(daemon.store.paths.root).sort();
   await client.storage({ refresh: true });
   expect(fs.readdirSync(daemon.store.paths.root).sort()).toEqual(before);

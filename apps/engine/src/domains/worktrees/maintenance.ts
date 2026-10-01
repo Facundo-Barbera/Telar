@@ -14,9 +14,11 @@ import {
 import type { AsyncGitRunner } from "../../platform/git/runner";
 import type { Kernel } from "../../platform/kernel";
 import type { ProjectAvailability } from "../../platform/fs/volumes";
+import { existsWithin, VolumeGate, type VolumeProbe } from "../../platform/fs/volume-gate";
 import { parseSession, sessionDir, sessionMetadataFile, storedSession, type SessionRecords } from "../sessions";
 import { diskUsage, planWorktreeCleanup, sweepLogs, type CheckoutSizes, type CleanupStore, type ReapCandidate } from "../storage";
 import { lockSessionWorktree, removeUnregisteredCheckout } from "./checkout";
+import { liveCheckouts, lockCheckouts } from "./boot-pass";
 import { buildInventory, type InventoryProject, type InventorySession } from "./inventory";
 import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker } from "./location";
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./move";
@@ -43,6 +45,7 @@ type MaintenanceDeps = {
   hasLiveBackgroundWork: (sessionId: string) => boolean;
   autoSettleAfterHours: () => number | null;
   archiveSession: (sessionId: string, options: { releaseCheckout: boolean }) => unknown;
+  probeVolume?: VolumeProbe;
 };
 
 /** The checkouts a store holds after they are cut: release, restore, sweep, lock, move, inventory and reclaim. */
@@ -50,11 +53,15 @@ export class WorktreeMaintenance {
   private cleanupRunning = false;
   private checked?: { inventory: WorktreeInventory; at: number };
   private checking?: Promise<WorktreeInventory>;
+  private readonly locked = new Set<string>();
+  readonly volumes: VolumeGate;
 
   constructor(
     private readonly kernel: Kernel,
     private readonly deps: MaintenanceDeps,
-  ) {}
+  ) {
+    this.volumes = new VolumeGate(deps.probeVolume);
+  }
 
   /** Gives a session's checkout back, keeping its branch; refused with nothing touched while anything could still use it. `strict` is the sweep's. */
   async release(
@@ -135,7 +142,7 @@ export class WorktreeMaintenance {
         const session = this.deps.records.get(sessionId);
         if (session.workspace.mode !== "worktree" || !session.projectId) continue;
         if (reason === "unchanged" && !(await this.branchUnchanged(session.projectId, session.workspace.branch))) continue;
-        if (!fs.existsSync(session.workspace.path)) continue;
+        if (!(await existsWithin(this.volumes, session.workspace.path))) continue;
         const bytes = await diskUsage(session.workspace.path);
         const result = await this.release(sessionId, reason, { strict: true });
         if (result.ok) {
@@ -234,55 +241,65 @@ export class WorktreeMaintenance {
     this.kernel.appendEvent(sessionId, { type: "session.updated", session: updated });
   }
 
-  /** Checkouts on available disks, with whether anything live is using them. */
+  /** Archived sessions' unreleased checkouts, with whether anything live still uses them; no fs, so history costs nothing. */
   reapable(): ReapCandidate[] {
-    const candidates: ReapCandidate[] = [];
-    for (const session of this.deps.records.all()) {
-      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-      let project: Project;
-      try { project = this.deps.getProject(session.projectId); } catch { continue; }
-      if (this.deps.availability(project) !== "available") continue;
-      if (!fs.existsSync(session.workspace.path)) continue;
+    return this.deps.records.read().flatMap((session) => {
+      if (session.state !== "archived" || session.workspace.mode !== "worktree" || session.workspace.released || !session.projectId) return [];
       const activity = settlingActivityOf(this.kernel.executionStore.sessionRow(session.id) ?? { activity: session.activity });
-      candidates.push({
+      return [{
         sessionId: session.id,
         worktree: session.workspace.path,
-        archived: session.state === "archived",
+        archived: true,
         live:
           activity.working === true ||
           activity.waitingOnYou === true ||
           this.deps.hasLiveBackgroundWork(session.id) ||
           // A dev server in an open terminal is reading those node_modules.
           this.deps.openTerminals(session.id) > 0,
-      });
-    }
-    return candidates;
+      }];
+    });
   }
 
-  lockLive(): { locked: number } {
-    let locked = 0;
-    for (const session of this.deps.records.all()) {
-      if (session.state === "archived") continue;
-      if (session.workspace.mode !== "worktree" || !session.projectId) continue;
-      let project: Project;
-      try {
-        project = this.deps.getProject(session.projectId);
-      } catch {
-        continue;
-      }
-      // The same question `releaseWorktree` asks, and for the same reason: git
-      // run against a repository nobody can read answers about a repository
-      // nobody can read. See `worktree.ts`'s header.
-      if (this.deps.availability(project) !== "available") continue;
-      if (!fs.existsSync(session.workspace.path)) continue;
-      locked++;
-      const worktreePath = session.workspace.path;
-      // ON THE QUEUE so a lock cannot race a cut or a removal on the same
-      // repository, and NOT AWAITED so a machine with forty worktrees does not
-      // hold the boot open while git walks every one of them.
-      void this.deps.queue(project.root, () => lockSessionWorktree(this.deps.git, project.root, worktreePath));
+  /** Locks the live sessions' checkouts, skipping any on a volume that is slow or gone; settled ones lock on reopen. */
+  async lockLive(): Promise<{ locked: number }> {
+    const at = { now: this.kernel.now(), autoSettleAfterHours: this.deps.autoSettleAfterHours() };
+    const checkouts = liveCheckouts(this.deps.records.read(), at);
+    const roots = new Map(checkouts.flatMap((checkout) => {
+      const project = this.projectOf(checkout.projectId);
+      return project ? [[checkout.projectId, project.root] as const] : [];
+    }));
+    await this.volumes.admit([...roots.values()]);
+    const locked = await lockCheckouts(checkouts, this.volumes, (checkout) => {
+      const root = roots.get(checkout.projectId);
+      if (root === undefined || !this.volumes.open(root)) return Promise.resolve();
+      return this.deps.queue(root, () => lockSessionWorktree(this.deps.git, root, checkout.path));
+    });
+    for (const sessionId of locked) this.locked.add(sessionId);
+    return { locked: locked.length };
+  }
+
+  /** A message to a session: a released checkout is cut again, and one not locked since this engine started is locked. */
+  reopen(sessionId: string): void {
+    const session = this.deps.records.get(sessionId);
+    if (session.workspace.mode !== "worktree" || !session.projectId) return;
+    if (session.workspace.released) {
+      this.restore(sessionId);
+      return;
     }
-    return { locked };
+    if (this.locked.has(sessionId)) return;
+    const project = this.projectOf(session.projectId);
+    if (!project) return;
+    this.locked.add(sessionId);
+    const worktreePath = session.workspace.path;
+    void this.deps.queue(project.root, () => lockSessionWorktree(this.deps.git, project.root, worktreePath));
+  }
+
+  private projectOf(projectId: string): Project | undefined {
+    try {
+      return this.deps.getProject(projectId);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Re-cuts the checkouts on disk (only those directly under `from`, when given) under a new root, on the per-project queues so a move never races a cut. */
@@ -383,8 +400,9 @@ export class WorktreeMaintenance {
 
   /** Counts and sizes per location and state. Git is asked at most once a minute; sizes are re-read every time. */
   async summary(options: { refresh?: boolean } = {}): Promise<WorktreeSummary> {
-    const inventory = await this.checkedInventory(options.refresh === true);
-    return summarizeWorktrees(this.summaryInput(inventory));
+    const [inventory] = await Promise.all([this.checkedInventory(options.refresh === true), this.volumes.recheck()]);
+    const degraded = [...this.volumes.degraded].map(([mount, state]) => ({ mount, state }));
+    return { ...summarizeWorktrees(this.summaryInput(inventory)), ...(degraded.length > 0 ? { degradedVolumes: degraded } : {}) };
   }
 
   /** Gives back every worktree in `state` that is proven safe to lose; nothing that needs a typed confirmation. */

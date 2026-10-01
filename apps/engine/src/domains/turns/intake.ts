@@ -82,7 +82,7 @@ type IntakeDeps = {
   getProject: (projectId: string) => Project;
   availability: (project: Project) => ProjectAvailability;
   assertProjectAvailable: (projectId: string) => void;
-  restoreWorktree: (sessionId: string) => void;
+  reopenWorktree: (sessionId: string) => void;
   prepareWorktree: (sessionId: string, projectRoot: string, plan: WorktreePlan, baseSha: string) => void;
   // Injected rather than imported: the worktrees domain reaches agent-tools, which reads the sessions index at load.
   planWorktree: typeof prepareSessionWorktree;
@@ -113,8 +113,8 @@ export class TurnIntake {
       validateSubmission(input);
       const kind = input.kind === "compact" ? "compact" : undefined;
       const session = this.deps.records.get(sessionId);
-      // A message to a released session brings its checkout back; the turn waits on `preparing`.
-      if (session.workspace.mode === "worktree" && session.workspace.released) this.deps.restoreWorktree(sessionId);
+      // A released checkout comes back and the turn waits on `preparing`; a settled one is locked again.
+      if (session.workspace.mode === "worktree") this.deps.reopenWorktree(sessionId);
       if (kind === "compact" && !PROVIDER_CAPABILITIES[session.driver].compaction)
         throw new EngineStateError("conflict", "this provider does not support manual compaction");
       const queue = this.deps.readQueue(sessionId);

@@ -1,9 +1,17 @@
 import type { EngineStore } from "../../state";
-import { readWorktreesRoot } from "../worktrees";
 import { retireAgentReport, retireAgentStore, sweepReport, sweepSpoolAndLooms } from "./decommission-sweep";
 import { reapNodeModules, reapReport } from "./node-modules-reap";
 
 const count = (value: number) => value.toLocaleString("en-US");
+
+/** The checkout passes, run once the engine serves: every fs call is async and bounded, and only live sessions are locked. */
+export async function sweepCheckoutsAfterBoot(store: EngineStore, say: (line: string) => void): Promise<void> {
+  await store.worktrees.lockLive();
+  const reaped = reapReport(await reapNodeModules(store.paths.root, store.worktrees.reapable(), { gate: store.worktrees.volumes }));
+  if (reaped) say(reaped);
+  const degraded = [...store.worktrees.volumes.degraded].map(([mount, state]) => `${mount} (${state})`);
+  if (degraded.length > 0) say(`Telar engine: skipped checkouts on ${degraded.join(", ")}`);
+}
 
 /**
  * The once-per-start housekeeping, each part best-effort and one line on stdout only when something actually
@@ -31,18 +39,6 @@ export function reportBootHousekeeping(store: EngineStore, now: () => number, sa
   if (summarised && summarised.turns > 0) say(`Telar engine: summarised ${count(summarised.turns)} turns across ${count(summarised.sessions)} sessions`);
   const decommissioned = sweepReport(sweepSpoolAndLooms(store.paths.root));
   if (decommissioned) say(decommissioned);
-  try {
-    // Asked first: a checkouts root on a drive that is out makes every tree look gone, and reaping on that reading is wrong.
-    const checkouts = readWorktreesRoot(store.paths.root);
-    const reaped = reapReport(
-      reapNodeModules(store.paths.root, { rootReadable: checkouts.kind === "configured" || checkouts.kind === "default", candidates: store.worktrees.reapable() }),
-    );
-    if (reaped) say(reaped);
-  } catch {
-    /* never the reason an engine fails to start; the next start tries again */
-  }
-  // Not a sweep: the backfill for the lock the cut applies, silent because it runs on every start.
-  store.worktrees.lockLive();
   const retiredAgent = retireAgentReport(retireAgentStore(store.paths.root, now));
   if (retiredAgent) say(retiredAgent);
   // Once on the way up, so a drive already unplugged is known before the first listing.

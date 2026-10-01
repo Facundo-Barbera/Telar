@@ -22,7 +22,7 @@ import { createRemoteStore, remoteDirFor, remoteRoutes } from "./domains/remote"
 import { schedulesRoutes } from "./domains/schedules";
 import { sessionAttachmentRoutes, sessionLifecycleRoutes, sessionReadRoutes, sessionsRoutes, sessionsSocketDoor, syncTelarSkill, type OpenStream } from "./domains/sessions";
 import { settingsRoutes } from "./domains/settings";
-import { createStorageMeter, reportBootHousekeeping, storageRoutes, type CheckoutSizesOptions } from "./domains/storage";
+import { createStorageMeter, reportBootHousekeeping, storageRoutes, sweepCheckoutsAfterBoot, type CheckoutSizesOptions } from "./domains/storage";
 import { createRunMount, runRoutes } from "./domains/terminal";
 import { sessionTurnRoutes, turnRoutes, workerRoutes } from "./domains/turns";
 import { aboutRoutes } from "./domains/updates";
@@ -103,6 +103,8 @@ export type EngineDaemon = {
   store: EngineStore;
   /** Present only with `embeddedWorker`; the id changes when the worker re-registers after lease loss. */
   worker?: { readonly workerId: string };
+  /** The checkout passes that start once the engine serves; never rejects. */
+  checkoutPasses: Promise<void>;
   close(): Promise<void>;
 };
 
@@ -326,6 +328,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
     store.recovery.recover();
     writeDiscovery(store.paths.engine, discovery);
     push.listening(discovery);
+    const checkoutPasses = sweepCheckoutsAfterBoot(store, say).catch((error: unknown) => console.error(`[engine] the checkout passes failed: ${String(error)}`));
     const embedded = options.embeddedWorker
       ? await startEmbeddedWorker(options.embeddedWorker === true ? {} : options.embeddedWorker, { store, discovery, execution, workers, doorbell, errorFor })
       : undefined;
@@ -346,6 +349,7 @@ export async function startEngine(options: EngineDaemonOptions = {}): Promise<En
       discovery,
       store,
       ...(embedded ? { worker: embedded } : {}),
+      checkoutPasses,
       async close() {
         if (closed) return;
         closed = true;

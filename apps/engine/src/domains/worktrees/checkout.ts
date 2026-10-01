@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { mountRootsFor } from "../../platform/fs/volumes";
+import { mountPointForRoot } from "../../platform/fs/volumes";
 import { createAsyncGitRunner, type GitRunner, type AsyncGitRunner } from "../../platform/git/runner";
 
 export const WORKTREE_ADD_TIMEOUT_MS = 120_000;
@@ -20,35 +20,10 @@ export class WorktreeError extends Error {
   }
 }
 
-/** Mount roots — where a removable volume appears. The fourth copy of this
- *  list, for the reason `volumes.ts`'s header gives: no app here imports
- *  another, and each says so. */
-function isOnRemovableVolume(target: string, platform: NodeJS.Platform = process.platform): boolean {
-  // THE ONE LIST (#665). This used to be the fourth copy, and its own comment
-  // said so; the win32 hole was in every one of them.
-  const roots = mountRootsFor(platform);
-  for (const root of roots) {
-    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
-    if (!target.startsWith(prefix)) continue;
-    const [name] = target.slice(prefix.length).split(path.sep);
-    if (!name) continue;
-    const mount = path.join(root, name);
-    try {
-      // A mount point's `st_dev` differs from its parent's. An empty folder
-      // left where a drive used to be shares its parent's and is not a mount —
-      // `volumes.ts`'s `isMountPoint`, and the same reason for it.
-      return fs.statSync(mount).dev !== fs.statSync(root).dev;
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
 export function worktreeLockReason(worktreePath: string, platform: NodeJS.Platform = process.platform): string {
   const session =
     "A Telar session is working in this worktree. Telar removes it when that session is archived or deleted — until then, removing it destroys work that is not finished.";
-  return isOnRemovableVolume(worktreePath, platform)
+  return mountPointForRoot(worktreePath, { platform }) !== undefined
     ? `${session} It also sits on a removable volume; unmounting that is not a deletion.`
     : session;
 }
@@ -57,10 +32,9 @@ export async function lockSessionWorktree(
   git: AsyncGitRunner,
   projectRoot: string,
   worktreePath: string,
-  platform: NodeJS.Platform = process.platform,
 ): Promise<boolean> {
   try {
-    const locked = await git(projectRoot, ["worktree", "lock", "--reason", worktreeLockReason(worktreePath, platform), worktreePath]);
+    const locked = await git(projectRoot, ["worktree", "lock", "--reason", worktreeLockReason(worktreePath), worktreePath]);
     return locked.status === 0;
   } catch {
     return false;
