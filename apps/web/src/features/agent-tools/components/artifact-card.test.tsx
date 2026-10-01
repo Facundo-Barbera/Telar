@@ -1,10 +1,11 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { Artifact, ArtifactKind, Item } from "@telar/engine-client";
-import { buttonLabelled, click, flush, installTestDom, mount } from "@/test/dom";
+import { buttonLabelled, click, flush, installTestDom, mount, stubBoxSize } from "@/test/dom";
 import { RightPanel } from "@/features/panel";
 import { ArtifactCard, ArtifactShelf } from "./artifact-card";
 
 installTestDom();
+stubBoxSize(600, 400);
 
 const drawn: Array<{ source: string; theme: unknown }> = [];
 void mock.module("@streamdown/mermaid", () => ({
@@ -61,12 +62,15 @@ describe("an artifact card", () => {
     expect(doc.indexOf("Content-Security-Policy")).toBeLessThan(doc.indexOf("<h1>Revenue</h1>"));
   });
 
-  test("svg is drawn in the same sandbox, never into the page", async () => {
+  test("svg is drawn as an image, so none of its markup reaches the page", async () => {
     serveAttachments();
     const host = await card(artifact("svg", "att_svg"));
-    await flush(() => host.querySelector("iframe") !== null);
-    expect(host.querySelector("iframe")!.getAttribute("sandbox")).toBe("allow-scripts");
+    await flush(() => host.querySelector("img") !== null);
+    const image = host.querySelector("img")!;
+    expect(image.getAttribute("src")).toStartWith("data:image/svg+xml");
+    expect(decodeURIComponent(image.getAttribute("src")!)).toContain('id="agent-dot"');
     expect(host.querySelector("#agent-dot")).toBeNull();
+    expect(host.querySelector("iframe")).toBeNull();
   });
 
   test("in a dark Look an svg sits on a dark checkerboard, never on white", async () => {
@@ -74,10 +78,10 @@ describe("an artifact card", () => {
     document.documentElement.classList.add("dark");
     try {
       const host = await card(artifact("svg", "att_svg"));
-      await flush(() => host.querySelector("iframe") !== null);
-      const doc = host.querySelector("iframe")!.getAttribute("srcdoc")!;
-      expect(doc).toContain("repeating-conic-gradient(#3d3d3d");
-      expect(doc).not.toMatch(/#fff\b|#ffffff|white/i);
+      await flush(() => host.querySelector("img") !== null);
+      const ground = (host.querySelector("[role=group]") as HTMLElement).style.background;
+      expect(ground).toContain("#3d3d3d");
+      expect(ground).not.toMatch(/#fff\b|#ffffff|white/i);
     } finally {
       document.documentElement.classList.remove("dark");
     }
@@ -91,18 +95,15 @@ describe("an artifact card", () => {
     expect(host.textContent).toContain("ship it");
   });
 
-  test("mermaid is drawn to an svg in the sandbox, fitted to the card with no code-block chrome", async () => {
+  test("mermaid is drawn to an svg image in a pan-and-zoom viewer, with no code-block chrome", async () => {
     serveAttachments();
     drawn.length = 0;
     const host = await card(artifact("mermaid", "att_mermaid"));
-    await flush(() => host.querySelector("iframe") !== null);
+    await flush(() => host.querySelector("img") !== null);
     expect(drawn).toEqual([{ source: "graph TD; A-->B", theme: "default" }]);
-    const frame = host.querySelector("iframe")!;
-    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
-    expect(frame.getAttribute("srcdoc")).toContain('<svg id="drawn-diagram">');
-    expect(frame.getAttribute("srcdoc")).toContain("max-width:100%");
-    expect(host.querySelector("pre, code, [data-streamdown]")).toBeNull();
-    expect(host.querySelector("#drawn-diagram")).toBeNull();
+    expect(decodeURIComponent(host.querySelector("img")!.getAttribute("src")!)).toContain('id="drawn-diagram"');
+    expect(buttonLabelled("Fit", host)).toBeDefined();
+    expect(host.querySelector("pre, code, [data-streamdown], #drawn-diagram")).toBeNull();
   });
 
   test("an earlier version folds to its header and names the newest", async () => {
@@ -133,4 +134,5 @@ test("the panel draws an artifact tab from the newest version in the conversatio
   );
   await flush(() => host.querySelector("h1") !== null);
   expect(host.querySelector("h1")?.textContent).toBe("Plan");
+  expect(host.querySelector("[role=tab]")?.textContent).toBe("A markdown");
 });
