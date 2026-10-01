@@ -14,12 +14,12 @@ export type Checkout = {
   path: string;
   branch: string;
   projectRoot: string;
-  /** Anything but `idle`. A checkout under a session that is doing something
-   *  is not moved, and its presence refuses the whole operation. */
+  /** Anything but `idle`: a turn is running in it, so it is not moved. */
   busy: boolean;
 };
 
 type SkipReason =
+  | "busy"
   /** Uncommitted or untracked files. Git refused, and we never force. */
   | "dirty"
   // The local branch is gone too (an old `gh pr merge --delete-branch`), so a re-cut would have nothing to add.
@@ -35,9 +35,6 @@ export type MoveOutcome = {
   skipped: Array<{ sessionId: string; path: string; reason: SkipReason; detail?: string }>;
 };
 
-/** The whole operation is refused rather than half-run. */
-export class WorktreeMoveError extends Error {}
-
 /** Git's own words when it will not remove a dirty checkout. Matched loosely:
  *  the point is to tell "the person has work here" from "something else went
  *  wrong", and only the first is a reason to say "commit it first". */
@@ -45,7 +42,7 @@ function refusedForChanges(message: string): boolean {
   return /modified or untracked files|contains modified/i.test(message);
 }
 
-// Refused wholesale if any session is busy. Each checkout moves on its own, so a partial move is safe
+// A busy session's checkout stays put. Each checkout moves on its own, so a partial move is safe
 // and re-runnable; `onMoved` runs right after its add succeeds.
 export async function moveCheckouts(
   git: AsyncGitRunner,
@@ -56,15 +53,6 @@ export async function moveCheckouts(
     onMoved: (sessionId: string, to: string) => void;
   },
 ): Promise<MoveOutcome> {
-  const busy = input.checkouts.filter((checkout) => checkout.busy);
-  if (busy.length > 0) {
-    throw new WorktreeMoveError(
-      busy.length === 1
-        ? "One session is still working in its checkout. Moving it now would pull the folder out from under a turn that is running — wait for it to finish, then try again."
-        : `${busy.length} sessions are still working in their checkouts. Moving them now would pull the folders out from under turns that are running — wait for them to finish, then try again.`,
-    );
-  }
-
   const destination = path.resolve(input.destination);
   fs.mkdirSync(destination, { recursive: true, mode: 0o700 });
 
@@ -72,6 +60,10 @@ export async function moveCheckouts(
   for (const checkout of input.checkouts) {
     // Already at the destination: skip, so a second press is cheap.
     if (path.dirname(path.resolve(checkout.path)) === destination) continue;
+    if (checkout.busy) {
+      outcome.skipped.push({ sessionId: checkout.sessionId, path: checkout.path, reason: "busy" });
+      continue;
+    }
     if (!checkout.branch) {
       outcome.skipped.push({ sessionId: checkout.sessionId, path: checkout.path, reason: "detached" });
       continue;
@@ -134,10 +126,12 @@ export function describeOutcome(outcome: MoveOutcome): string {
   const parts: string[] = [];
   if (outcome.moved.length > 0) parts.push(`Moved ${outcome.moved.length} checkout${outcome.moved.length === 1 ? "" : "s"}.`);
   const count = (reason: SkipReason) => outcome.skipped.filter((entry) => entry.reason === reason).length;
+  const busy = count("busy");
   const dirty = count("dirty");
   const gone = count("branch-gone");
   const detached = count("detached");
   const failed = count("failed");
+  if (busy > 0) parts.push(`${busy} ${busy === 1 ? "has a turn" : "have turns"} running and stayed put — run this again when ${busy === 1 ? "it finishes" : "they finish"}.`);
   if (dirty > 0) parts.push(`${dirty} ${dirty === 1 ? "has" : "have"} uncommitted changes and stayed put — commit them and run this again.`);
   if (gone > 0) parts.push(`${gone} ${gone === 1 ? "has a branch that" : "have branches that"} no longer exist, so ${gone === 1 ? "it" : "they"} could not be re-cut and stayed put.`);
   if (detached > 0) parts.push(`${detached} ${detached === 1 ? "is" : "are"} not on a branch and stayed put.`);

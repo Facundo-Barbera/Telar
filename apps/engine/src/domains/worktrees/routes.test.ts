@@ -133,3 +133,22 @@ test("the storage pane keeps counting the checkouts left behind by a change", as
   // setting in order to get rid of.
   expect(checkouts?.bytes ?? 0).toBeGreaterThanOrEqual(256 * 1024);
 });
+
+test("the summary answers with the current location, even before any worktree exists", async () => {
+  const { client } = await ready();
+  const chosen = path.join(root(), "checkouts");
+  await client.setWorktreesRoot(chosen);
+
+  const { summary } = await client.worktreeSummary();
+
+  expect(summary.locations).toEqual([{ folder: chosen, present: true, current: true, worktrees: { count: 0, bytes: 0, unmeasured: 0 } }]);
+  expect(summary.states.map((entry) => entry.state)).toEqual(["in-use", "archived", "orphaned", "unchanged", "idle", "recent"]);
+  expect(typeof summary.checkedAt).toBe("number");
+});
+
+test("moving out of the current location is refused by name", async () => {
+  const { client } = await ready();
+  const chosen = path.join(root(), "checkouts");
+  await client.setWorktreesRoot(chosen);
+  await expect(client.moveWorktrees(chosen)).rejects.toThrow(/already at the current location/);
+});

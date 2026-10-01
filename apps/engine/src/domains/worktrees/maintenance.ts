@@ -4,10 +4,12 @@ import {
   isShelved,
   settlingActivityOf,
   type Project,
+  type ReleasableState,
   type Session,
   type WorktreeInventory,
   type WorktreeReclaimItem,
   type WorktreeReclaimResult,
+  type WorktreeSummary,
 } from "@telar/engine-client";
 import type { AsyncGitRunner } from "../../platform/git/runner";
 import type { Kernel } from "../../platform/kernel";
@@ -20,6 +22,10 @@ import { defaultWorktreesRoot, readWorktreesRoot, rootOf, worktreesRootBlocker }
 import { moveCheckouts, type Checkout, type MoveOutcome } from "./move";
 import { checkoutsWithProcesses, reattachSessionWorktreeAsync, releaseRefusal, type ReleaseRefusal } from "./release";
 import { removeSessionWorktreeAsync, type WorktreeQueue } from "./session-worktree";
+import { countedRows, stateOf, summarizeWorktrees, type SessionFacts } from "./summary";
+
+const SUMMARY_TTL_MS = 60_000;
+const DEFAULT_IDLE_DAYS = 7;
 
 type MaintenanceDeps = {
   records: SessionRecords;
@@ -42,6 +48,8 @@ type MaintenanceDeps = {
 /** The checkouts a store holds after they are cut: release, restore, sweep, lock, move, inventory and reclaim. */
 export class WorktreeMaintenance {
   private cleanupRunning = false;
+  private checked?: { inventory: WorktreeInventory; at: number };
+  private checking?: Promise<WorktreeInventory>;
 
   constructor(
     private readonly kernel: Kernel,
@@ -277,11 +285,14 @@ export class WorktreeMaintenance {
     return { locked };
   }
 
-  /** Re-cuts every checkout on disk under a new root, on the per-project queues so a move never races a cut. */
-  async move(destination: string): Promise<MoveOutcome> {
+  /** Re-cuts the checkouts on disk (only those directly under `from`, when given) under a new root, on the per-project queues so a move never races a cut. */
+  async move(destination: string, from?: string): Promise<MoveOutcome> {
+    this.forgetSummary();
+    const source = from === undefined ? undefined : path.resolve(from);
     const checkouts: Checkout[] = [];
     for (const session of this.deps.records.read()) {
       if (session.workspace.mode !== "worktree" || !session.projectId) continue;
+      if (source !== undefined && path.dirname(path.resolve(session.workspace.path)) !== source) continue;
       if (!fs.existsSync(session.workspace.path)) continue;
       let project: Project;
       try {
@@ -366,8 +377,61 @@ export class WorktreeMaintenance {
     );
   }
 
+  forgetSummary(): void {
+    this.checked = undefined;
+  }
+
+  /** Counts and sizes per location and state. Git is asked at most once a minute; sizes are re-read every time. */
+  async summary(options: { refresh?: boolean } = {}): Promise<WorktreeSummary> {
+    const inventory = await this.checkedInventory(options.refresh === true);
+    return summarizeWorktrees(this.summaryInput(inventory));
+  }
+
+  /** Gives back every worktree in `state` that is proven safe to lose; nothing that needs a typed confirmation. */
+  async releaseState(state: ReleasableState): Promise<WorktreeReclaimResult[]> {
+    const input = this.summaryInput(await this.inventory());
+    const rows = countedRows(input).filter((row) => row.verdict.kind === "reclaimable" && stateOf(row, input) === state);
+    return this.reclaim(rows.map((row) => ({ path: row.path })));
+  }
+
+  private async checkedInventory(refresh: boolean): Promise<WorktreeInventory> {
+    if (!refresh && this.checked && this.kernel.now() - this.checked.at < SUMMARY_TTL_MS) return this.checked.inventory;
+    this.checking ??= this.inventory()
+      .then((inventory) => {
+        this.checked = { inventory, at: this.kernel.now() };
+        return inventory;
+      })
+      .finally(() => (this.checking = undefined));
+    return this.checking;
+  }
+
+  private summaryInput(inventory: WorktreeInventory) {
+    const sessions = new Map<string, SessionFacts>();
+    for (const session of this.deps.records.read()) {
+      if (session.workspace.mode !== "worktree") continue;
+      sessions.set(session.id, {
+        lastActiveAt: Math.max(session.updatedAt, session.lastTurnEndedAt ?? 0, session.activityAt ?? 0),
+        released: session.workspace.released !== undefined,
+      });
+    }
+    const rows = inventory.rows.map((row) => {
+      const bytes = this.deps.checkoutSizes.peek(row.path, inventory.roots).bytes ?? row.bytes;
+      return bytes === undefined ? row : { ...row, bytes };
+    });
+    const current = rootOf(readWorktreesRoot(this.kernel.paths.root));
+    return {
+      inventory: { ...inventory, rows },
+      sessions,
+      ...(current ? { current } : {}),
+      idleDays: this.deps.cleanup.policy().inactiveDays ?? DEFAULT_IDLE_DAYS,
+      now: this.kernel.now(),
+      exists: (folder: string) => fs.existsSync(folder),
+    };
+  }
+
   /** Releases, archives or removes each item, re-proving every refusal here rather than trusting the listing. */
   async reclaim(items: readonly WorktreeReclaimItem[]): Promise<WorktreeReclaimResult[]> {
+    this.forgetSummary();
     const inventory = await this.inventory();
     const byPath = new Map(inventory.rows.map((row) => [path.resolve(row.path), row]));
     const results: WorktreeReclaimResult[] = [];

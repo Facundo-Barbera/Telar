@@ -13,7 +13,7 @@ export type WorktreesRoot = {
 export type WorktreeMoveSkip = {
   sessionId: string;
   path: string;
-  reason: "dirty" | "branch-gone" | "detached" | "failed";
+  reason: "busy" | "dirty" | "branch-gone" | "detached" | "failed";
   /** Git's own words: diagnostic, never UI copy. */
   detail?: string;
 };
@@ -68,7 +68,45 @@ export type WorktreeInventory = {
   measuredAt: number;
 };
 
-export type WorktreeReclaimItem = { path: string; confirm?: string; settled?: "release" | "archive" };
+/** `unmeasured` of `count` have no size yet, so `bytes` is a floor. */
+export type WorktreeTally = { count: number; bytes: number; unmeasured: number };
+
+export type WorktreeState = "in-use" | "archived" | "orphaned" | "unchanged" | "idle" | "recent";
+
+export const RELEASABLE_STATES = ["archived", "orphaned", "unchanged", "idle"] as const satisfies readonly WorktreeState[];
+export type ReleasableState = (typeof RELEASABLE_STATES)[number];
+
+export type WorktreeLocationMove = {
+  movable: WorktreeTally;
+  staying: { busy: number; dirty: number; unowned: number; detached: number };
+};
+
+export type WorktreeLocation = {
+  folder: string;
+  /** The drive's name when the folder is on one; absent means this Mac's own disk. */
+  volume?: string;
+  present: boolean;
+  current: boolean;
+  worktrees: WorktreeTally;
+  /** Only for a connected folder that is not the current location. */
+  move?: WorktreeLocationMove;
+};
+
+export type WorktreeStateSummary = { state: WorktreeState; worktrees: WorktreeTally; releasable: WorktreeTally };
+
+export type WorktreeSummary = {
+  locations: WorktreeLocation[];
+  /** Every worktree falls in exactly one state. */
+  states: WorktreeStateSummary[];
+  idleDays: number;
+  /** When git was last asked; sizes refresh on every read. */
+  checkedAt: number;
+  measuring: boolean;
+  partial: boolean;
+  blocker?: string;
+};
+
+export type WorktreeReclaimItem ={ path: string; confirm?: string; settled?: "release" | "archive" };
 
 export type WorktreeReclaimRefusal =
   | "not-found"

@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { defaultAsyncGitRunner } from "../../platform/git/runner";
-import { describeOutcome, moveCheckouts, WorktreeMoveError, type Checkout } from "./move";
+import { describeOutcome, moveCheckouts, type Checkout } from "./move";
 
 const made: string[] = [];
 const tmp = (prefix: string): string => {
@@ -141,21 +141,19 @@ test("a checkout whose branch is gone is left alone — the branch is checked BE
   expect(fs.readdirSync(to)).toEqual([]);
 });
 
-test("one session still working refuses the WHOLE operation, before anything is touched", async () => {
+test("a checkout with a turn running stays put while the quiet ones move", async () => {
   const projectRoot = repo();
   const from = tmp("telar-move-from-");
   const to = tmp("telar-move-to-");
   const quiet = cut(projectRoot, from, "telar/quiet");
   const working = { ...cut(projectRoot, from, "telar/working"), busy: true };
 
-  await expect(
-    moveCheckouts(defaultAsyncGitRunner, { checkouts: [quiet, working], destination: to, onMoved: () => undefined }),
-  ).rejects.toThrow(WorktreeMoveError);
+  const outcome = await moveCheckouts(defaultAsyncGitRunner, { checkouts: [quiet, working], destination: to, onMoved: () => undefined });
 
-  // "A half-migrated worktrees root loses uncommitted work in every open
-  // session" — so not even the quiet one moves while a turn is in flight.
-  expect(fs.existsSync(quiet.path)).toBe(true);
+  expect(outcome.moved.map((entry) => entry.sessionId)).toEqual([quiet.sessionId]);
+  expect(outcome.skipped).toEqual([{ sessionId: working.sessionId, path: working.path, reason: "busy" }]);
   expect(fs.existsSync(working.path)).toBe(true);
+  expect(describeOutcome(outcome)).toBe("Moved 1 checkout. 1 has a turn running and stayed put — run this again when it finishes.");
 });
 
 test("a partial move is safe: the clean ones go, the dirty one stays, and it can be run again", async () => {
