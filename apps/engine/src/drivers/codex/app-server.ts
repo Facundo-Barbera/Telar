@@ -1,5 +1,4 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface } from "node:readline";
 import { requireCli } from "../../domains/providers";
 import { OWN_GROUP, stopGroup } from "../../platform/process/group";
 import { ProviderUnavailableError } from "../contract";
@@ -41,6 +40,8 @@ class AsyncChannel<T> {
   }
 }
 
+const MAX_LINE_BYTES = 64 * 1024 * 1024;
+
 /** One `codex app-server` subprocess (newline-delimited JSON-RPC over stdio) for one turn. */
 export class CodexAppServer {
   private readonly child: ChildProcessWithoutNullStreams;
@@ -56,7 +57,7 @@ export class CodexAppServer {
   // Returning false answers -32601, because an unanswered server request hangs the turn.
   onServerRequest?: (request: CodexServerRequest) => boolean;
 
-  constructor(bin: string, env: Record<string, string | undefined>) {
+  constructor(bin: string, env: Record<string, string | undefined>, maxLineBytes = MAX_LINE_BYTES) {
     // Exactly one argument: argv is readable through `ps` by every process of this user.
     this.child = spawn(bin, ["app-server"], {
       env: Object.fromEntries(Object.entries(env).filter(([, value]) => value !== undefined)) as NodeJS.ProcessEnv,
@@ -65,8 +66,18 @@ export class CodexAppServer {
     });
     this.child.on("error", (error) => this.close(error));
 
-    const lines = createInterface({ input: this.child.stdout });
-    lines.on("line", (line) => this.consume(line));
+    let partial = "";
+    this.child.stdout.setEncoding("utf8");
+    this.child.stdout.on("data", (chunk: string) => {
+      const lines = (partial + chunk).split("\n");
+      partial = lines.pop()!;
+      for (const line of lines) this.consume(line);
+      if (partial.length <= maxLineBytes) return;
+      partial = "";
+      this.close(new Error(`codex app-server sent a line over ${Math.round(maxLineBytes / 1024 / 1024)} MB`));
+      this.kill();
+    });
+    this.child.stdout.on("end", () => this.consume(partial));
     this.child.stderr.resume();
     this.child.on("exit", (code, signal) =>
       this.close(new Error(`codex app-server exited (code=${code ?? "null"}, signal=${signal ?? "null"})`)),
