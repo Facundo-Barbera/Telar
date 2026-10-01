@@ -208,10 +208,12 @@ export function signals(sessions: readonly LiveSessionRow[], assignments: Record
   return sessions.map(session => {
     const { id, title, activity, activityAt, lastTurnEndedAt, lastTurnFailed, lastTurnOrigin, startedFrom, projectId, lastTurnSequence, lastReadTurnSequence } = session;
     const parentId = liveParent(session, rows, assignments[id], now);
+    const settled = session.state === "archived" || session.settledOverride === "settled" || (session.snoozedUntil ?? 0) > now;
     return {
       id, title, activity,
       ...(startedFrom !== undefined || assignments[id]?.some(task => task.outcome !== "detached") ? { hasParent: true } : {}),
       ...(parentId === undefined ? {} : { parentId }),
+      ...(settled ? { settled } : {}),
       ...(delegating.has(id) ? { delegating: true } : {}),
       ...(lastTurnOrigin === undefined ? {} : { lastTurnOrigin }),
       ...(projectId === undefined ? {} : { projectId }),
