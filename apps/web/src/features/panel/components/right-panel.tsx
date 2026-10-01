@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import dynamic from "next/dynamic";
 import type { EngineEvent, Item, Turn, TurnState } from "@telar/engine-client";
 import type { Artifact } from "@telar/engine-client";
@@ -12,6 +12,7 @@ import type { TelarReference } from "@/features/composer";
 import type { EditorState, OpenIntent } from "@/features/files";
 import type { JournalTask } from "@/platform/engine";
 import { forgeParams, readForgeOpen, type ForgeOpen } from "@/features/github";
+import { useSuspendSidebar } from "@/ui/sidebar";
 import { useSidebarPrefs } from "@/ui/sidebar-width";
 import { useCommandHandlers } from "@/features/commands";
 import { cn } from "@/ui/utils";
@@ -220,6 +221,12 @@ export function RightPanel(props: RightPanelProps) {
   const [fullscreen, setFullscreen] = useState(false);
   const toggleFullscreen = () => setFullscreen((current) => !current);
   useCommandHandlers(open ? { "panel-fullscreen": toggleFullscreen } : {}, [open]);
+  const suspendRail = useSuspendSidebar();
+  useEffect(() => {
+    if (!suspendRail || !open || !fullscreen) return;
+    suspendRail(true);
+    return () => suspendRail(false);
+  }, [suspendRail, open, fullscreen]);
   const panelRef = useRef<HTMLElement | null>(null);
   const prefs = useSidebarPrefs(RIGHT_PANEL_WIDTH_STORAGE_KEY);
   const width = prefs.width ?? defaultRightPanelWidth(tabs);
