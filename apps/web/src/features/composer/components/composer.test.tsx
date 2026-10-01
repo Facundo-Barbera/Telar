@@ -33,14 +33,15 @@ type BoxProps = {
 
 function Box({ initial = "", files = [], busy = false, compact = false, fresh = false, projectId, session, onSubmit = () => {}, onStop = () => {} }: BoxProps) {
   const [draft, setDraft] = useState(initial);
+  const [attachments, setAttachments] = useState(files);
   return (
     <>
       <p data-testid="draft">{draft}</p>
       <Composer
         draft={draft}
         ready
-        attachments={files}
-        onAttach={() => {}}
+        attachments={attachments}
+        onAttach={setAttachments}
         busy={busy}
         compact={compact}
         fresh={fresh}
@@ -144,6 +145,22 @@ describe("⌘S", () => {
     expect(event.defaultPrevented).toBe(true);
     expect(draft()).toBe("");
     expect(stashed().map((entry) => entry.prompt)).toEqual(["later"]);
+  });
+
+  test("takes a file with the words and gives both back on restore", async () => {
+    const pdf = new File(["%PDF notes"], "notes.pdf", { type: "application/pdf" });
+    const { host, editor, draft, stashList } = await composer({ initial: "read this", files: [pdf] });
+    key(editor, saveChord);
+    await flush(() => stashed().length > 0);
+    expect(draft()).toBe("");
+    expect(host.textContent).not.toContain("notes.pdf");
+    key(editor, saveChord);
+    await flush();
+    const row = [...stashList()!.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent?.includes("read this"))!;
+    await act(async () => row.querySelector("button")!.click());
+    await flush(() => Boolean(host.textContent?.includes("notes.pdf")));
+    expect(draft()).toBe("read this");
+    expect(host.textContent).toContain("notes.pdf");
   });
 
   test("on an empty box opens the stash list, and is still prevented", async () => {

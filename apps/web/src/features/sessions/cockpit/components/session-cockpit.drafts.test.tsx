@@ -199,6 +199,35 @@ describe("switching conversations", () => {
   });
 });
 
+describe("attachments in an unsent draft", () => {
+  test("stay with their conversation when you switch away and come back", async () => {
+    wire();
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const show = async (id: string) => {
+      window.history.replaceState(null, "", `/projects/project_1/sessions/${id}`);
+      installNavigation();
+      await act(async () => root.render(cockpit(id)));
+      await settle();
+    };
+    try {
+      await show("session_files_a");
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [new File(["png"], "diagram.png", { type: "image/png" })] });
+      await act(async () => input.dispatchEvent(new Event("change", { bubbles: true })));
+      expect(host.textContent).toContain("diagram.png");
+      await show("session_files_b");
+      expect(host.textContent).not.toContain("diagram.png");
+      await show("session_files_a");
+      expect(host.textContent).toContain("diagram.png");
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+    }
+  });
+});
+
 describe("⌘P over the conversation you are reading", () => {
   const pinPatches = (id: string) =>
     calls.filter((call) => call.method === "PATCH" && call.url.endsWith(`/api/sessions/${id}`)).map((call) => call.body);

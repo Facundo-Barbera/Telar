@@ -3,7 +3,7 @@
 import type { RefObject } from "react";
 import { seedSessionTitle, turnHasContent, type ClaudeConversation, type TurnModelSelection } from "@telar/engine-client";
 import { asEngineError, createEngineApi, EngineApiError, newRunId } from "@/platform/engine";
-import { isCompactDraft, writeDraft } from "@/features/composer";
+import { isCompactDraft, writeDraft, writeDraftFiles } from "@/features/composer";
 import { splitImages } from "@/features/prompts";
 import { choiceNamesAnything, choiceOf, sessionModelSelection } from "@/features/providers";
 import type { ConversationFollowHandle } from "@/ui/conversation";
@@ -81,6 +81,7 @@ export function useSubmit(args: Args) {
     const files = attachments;
     composer.setDraft("");
     writeDraft(sessionId ?? browserTarget, projectId, "");
+    writeDraftFiles(sessionId ?? browserTarget, projectId, []);
     composer.setDraftRunId(undefined);
     composer.setAttachments([]);
     try {
