@@ -294,7 +294,7 @@ export function RightPanel(props: RightPanelProps) {
         )}
         {activeTab && sessionId && (
           <Suspense fallback={null}>
-            <ImageLightbox {...(lightbox ? { src: attachmentUrl(sessionId, lightbox) } : {})} onClose={() => setLightbox(undefined)} />
+            <ImageLightbox {...(lightbox ? { src: attachmentUrl(sessionId, lightbox, props.hostId ? { hostId: props.hostId } : {}) } : {})} onClose={() => setLightbox(undefined)} />
           </Suspense>
         )}
       </div>

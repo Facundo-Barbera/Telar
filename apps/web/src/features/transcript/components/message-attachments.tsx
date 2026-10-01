@@ -5,8 +5,8 @@ import { PaperclipIcon } from "lucide-react";
 import type { TurnAttachment } from "@telar/engine-client";
 import { attachmentUrl, humanBytes, ImageLightbox } from "@/features/plugins";
 
-/** The session whose attachment route serves the files drawn below it. */
-export const TranscriptSession = createContext<string | undefined>(undefined);
+/** The session, and the host it lives on, whose attachment route serves the files drawn below it. */
+export const TranscriptSession = createContext<{ sessionId: string; hostId?: string } | undefined>(undefined);
 
 const CHIP = "flex items-center gap-1.5 rounded-md bg-background/60 px-2 py-1 text-2xs text-muted-foreground";
 
@@ -21,19 +21,19 @@ function ChipBody({ attachment }: { attachment: TurnAttachment }) {
 }
 
 export function MessageAttachments({ attachments }: { attachments?: readonly TurnAttachment[] }) {
-  const sessionId = useContext(TranscriptSession);
+  const source = useContext(TranscriptSession);
   const [open, setOpen] = useState<TurnAttachment>();
   const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
   if (!attachments?.length) return null;
   const fail = (id: string) => setFailed((prior) => new Set(prior).add(id));
   const url = (attachment: TurnAttachment, display = false) =>
-    attachmentUrl(sessionId!, attachment.id, { display });
+    attachmentUrl(source!.sessionId, attachment.id, { display, ...(source!.hostId ? { hostId: source!.hostId } : {}) });
   return (
     <>
       <ul className="mt-2 flex flex-wrap gap-1.5">
         {attachments.map((attachment) => (
           <li key={attachment.id}>
-            {!sessionId ? (
+            {!source ? (
               <span title={attachment.path} className={CHIP}>
                 <ChipBody attachment={attachment} />
               </span>
@@ -56,7 +56,7 @@ export function MessageAttachments({ attachments }: { attachments?: readonly Tur
           </li>
         ))}
       </ul>
-      {sessionId && (
+      {source && (
         <ImageLightbox
           {...(open ? { src: url(open, true), alt: open.name } : {})}
           onClose={() => setOpen(undefined)}
