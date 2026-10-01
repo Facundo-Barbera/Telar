@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type { DiffBaseOption, SessionDiff, TurnState } from "@telar/engine-client";
 import { EngineApiError } from "@/platform/engine";
 import { usePoll } from "@/ui/hooks/use-poll";
@@ -12,10 +12,16 @@ const REFRESH_MS = 15_000;
 export function useDiffRead(sessionId: string | undefined, projectId: string | undefined, base: DiffBaseOption | undefined) {
   const [diff, setDiff] = useState<SessionDiff>();
   const [error, setError] = useState<string>();
+  const last = useRef<{ read: string; etag?: string }>(undefined);
   const load = useCallback(async () => {
+    const read = `${sessionId}:${base?.base}:${base?.to}`;
     try {
-      if (sessionId) setDiff((await api.sessionDiff(sessionId, base ?? {})).diff);
-      else if (projectId) setDiff((await api.projectDiff(projectId)).diff);
+      if (sessionId) {
+        const status = await api.sessionGitStatus(sessionId, last.current?.read === read ? last.current.etag : undefined).catch(() => undefined);
+        if (status?.unchanged) return;
+        setDiff((await api.sessionDiff(sessionId, base ?? {})).diff);
+        last.current = { read, ...(status?.etag ? { etag: status.etag } : {}) };
+      } else if (projectId) setDiff((await api.projectDiff(projectId)).diff);
       else return;
       setError(undefined);
     } catch (cause) {

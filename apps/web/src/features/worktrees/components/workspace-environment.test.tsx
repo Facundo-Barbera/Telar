@@ -153,6 +153,22 @@ describe("the uncommitted count", () => {
     expect((await readWorkspaceGit(engine([]), "p1")).dirtyFiles).toBe(7);
   });
 
+  test("an unchanged worktree answers 304 and keeps its count", async () => {
+    const asked: Array<string | undefined> = [];
+    const conditional = createEngineApi(async (url, init) => {
+      const path = String(url);
+      if (path === "/api/projects/p1/git") return Response.json({ git: git({ dirtyFiles: 7 }) });
+      const tag = (init?.headers as Record<string, string> | undefined)?.["if-none-match"];
+      asked.push(tag);
+      if (tag === '"t1"') return new Response(null, { status: 304, headers: { etag: '"t1"' } });
+      return Response.json({ dirtyFiles: 4 }, { headers: { etag: '"t1"' } });
+    });
+    const own = {};
+    expect((await readWorkspaceGit(conditional, "p1", "session_1", own)).dirtyFiles).toBe(4);
+    expect((await readWorkspaceGit(conditional, "p1", "session_1", own)).dirtyFiles).toBe(4);
+    expect(asked).toEqual([undefined, '"t1"']);
+  });
+
   test("an unreadable worktree draws no count rather than the checkout's", async () => {
     const read = await readWorkspaceGit(engine("gone"), "p1", "session_1");
     expect(read.dirtyFiles).toBeUndefined();

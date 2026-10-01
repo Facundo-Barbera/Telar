@@ -18,7 +18,7 @@ Subscription,
 WakeKind,TaskOutputPage
 } from "@telar/engine-client";
 import { snapshotQuery } from "@telar/engine-client";
-import { answeringHost, EngineApiError, opens, reads, request, type EngineApiErrorCode } from "./transport";
+import { EngineApiError, opens, request, requestIfChanged, type EngineApiErrorCode } from "./transport";
 import type { Fetcher } from "./host-client";
 import type { LiveSessionsPage } from "./client";
 import { randomUuid } from "@/platform/random-uuid";
@@ -70,42 +70,9 @@ export function sessionCalls(fetcher: Fetcher) {
     liveSessionsMatching: async (
       options: LiveScope & { etag?: string } = {},
     ): Promise<{ notModified: true; etag: string } | (LiveSessionsPage & { notModified?: false; etag?: string })> => {
-      const pathname = livePath(options);
-      await reads.take();
-      let response: Response;
-      try {
-        response = await fetcher(pathname, {
-          method: "GET",
-          cache: "no-store",
-          ...(options.etag === undefined ? {} : { headers: { "if-none-match": options.etag } }),
-        });
-      } catch (cause) {
-        if (cause instanceof DOMException && cause.name === "AbortError") throw cause;
-        const host = answeringHost(fetcher);
-        throw new EngineApiError(
-          "engine_unavailable",
-          host ? `The cockpit cannot reach ${host.name ?? "that computer"}.` : "The cockpit cannot reach its local adapter.",
-          undefined,
-          host,
-        );
-      } finally {
-        reads.give();
-      }
-      const etag = response.headers.get("etag") ?? undefined;
-      // 304 FIRST, AND WITHOUT TOUCHING THE BODY: there is none.
-      if (response.status === 304) return { notModified: true, etag: etag ?? options.etag ?? "" };
-      const host = answeringHost(fetcher, response);
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        throw new EngineApiError("engine_unavailable", "The engine adapter returned an invalid response.", response.status, host);
-      }
-      if (!response.ok) {
-        const error = (payload as { error?: { code?: EngineApiErrorCode; message?: string } } | null)?.error;
-        throw new EngineApiError(error?.code ?? "internal_error", error?.message ?? "The engine request failed.", response.status, host);
-      }
-      return { ...(payload as LiveSessionsPage), ...(etag === undefined ? {} : { etag }) };
+      const read = await requestIfChanged<LiveSessionsPage>(fetcher, livePath(options), options.etag);
+      if (read.unchanged) return { notModified: true, etag: read.etag ?? options.etag ?? "" };
+      return { ...read.payload, ...(read.etag === undefined ? {} : { etag: read.etag }) };
     },
     createSession: (
       projectId: string,
