@@ -108,7 +108,7 @@ import Testing
     }
 
     @Test func aProviderCommandInsertsItsSlashName() {
-        #expect(command("review").first?.action == .insert("/review"))
+        #expect(command("review").first { $0.group == ComposerCompletions.providerGroup }?.action == .insert("/review"))
     }
 
     @Test func aSkillInsertsItsReferenceAndFallsBackToItsSourceForADetail() {
