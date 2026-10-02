@@ -1,7 +1,7 @@
 import { defaultInstanceIdForDriver, type Item, type ProviderDriverKind, type TextGenPolicy } from "@telar/engine-client";
 import { EngineStateError } from "../../platform/kernel";
 import { providerProcessEnv } from "./instances";
-import { runStructured, type TextGenDriverInput, type TextGenEffort } from "./textgen-run";
+import { runStructured, runStructuredOrThrow, TextGenFailure, type TextGenDriverInput, type TextGenEffort } from "./textgen-run";
 import { titleContext, titleMessages } from "./title-context";
 import { buildRegenerateTitlePrompt, buildTitlePrompt } from "./title-prompts";
 
@@ -138,8 +138,8 @@ export type RegenerateStore = RetitleStore & { queries: { items(sessionId: strin
 export async function regenerateSessionTitle(
   store: RegenerateStore,
   sessionId: string,
-  run: typeof runStructured = runStructured,
-): Promise<{ title: string; changed: boolean } | undefined> {
+  run: typeof runStructuredOrThrow = runStructuredOrThrow,
+): Promise<{ title: string; changed: boolean }> {
   const previous = store.records.get(sessionId).title;
   const context = titleContext(titleMessages(store.queries.items(sessionId)));
   if (!context) throw new EngineStateError("conflict", "the session has no messages to title");
@@ -147,9 +147,11 @@ export async function regenerateSessionTitle(
   const policy = store.settings.textGen();
   const driver = driverInput(store, policy);
   if (!driver) throw new EngineStateError("conflict", "the text generation provider is disabled");
-  const result = await run(driver, buildRegenerateTitlePrompt(previous, context), oneStringSchema("title"));
+  const result = await run(driver, buildRegenerateTitlePrompt(previous, context), oneStringSchema("title")).catch((error: unknown) => {
+    throw new TextGenFailure(`the title model returned an error: ${error instanceof Error ? error.message : String(error)}`);
+  });
   const title = sanitizeTitle(result?.["title"]);
-  if (title === undefined) return undefined;
+  if (title === undefined) throw new TextGenFailure("the title model answered without a title");
   if (title === previous) return { title, changed: false };
   if (store.records.get(sessionId).title !== previous) throw new EngineStateError("conflict", "the session was renamed while its title was regenerated");
   store.lifecycle.updateSession(sessionId, { title });

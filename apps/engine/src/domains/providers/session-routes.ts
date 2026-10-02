@@ -5,6 +5,7 @@ import { ok, sessionRoute, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { readProviderSkillsCached, type LoadProviderCommands } from "./skills";
 import { regenerateSessionTitle } from "./textgen";
+import { TextGenFailure } from "./textgen-run";
 
 export type ProviderSkillsOptions = { env?: NodeJS.ProcessEnv; loadProviderCommands?: LoadProviderCommands };
 
@@ -35,8 +36,9 @@ export function sessionProviderRoutes(store: EngineStore, skills: ProviderSkills
       path: sessionRoute("/regenerate-title"),
       auth: "engine",
       async handle({ params: [sessionId] }) {
-        const regenerated = await regenerateSessionTitle(store, sessionId!);
-        if (regenerated === undefined) throw new HttpError(502, "textgen_failed", "the provider did not answer with a title");
+        const regenerated = await regenerateSessionTitle(store, sessionId!).catch((error: unknown) => {
+          throw error instanceof TextGenFailure ? new HttpError(502, "textgen_failed", error.message) : error;
+        });
         return ok({ session: store.records.get(sessionId!), changed: regenerated.changed });
       },
     },

@@ -7,6 +7,7 @@ import { DEFAULT_TEXT_GEN_POLICY, type Item, type TextGenPolicy } from "@telar/e
 import { EngineStore } from "../../state";
 import { EngineStateError } from "../../platform/kernel";
 import { cheapModel, generateSessionTitle, maybeRetitleSession, maybeRetitleWithContext, regenerateSessionTitle, sanitizeTitle, titleIsSeed, type RegenerateStore, type RetitleStore } from "./textgen";
+import { TextGenFailure } from "./textgen-run";
 import { buildTitlePrompt } from "./title-prompts";
 import { OPENCODE_VERSION } from "../../drivers/opencode/version";
 import { worktreeReady } from "../../../test/worktree-ready";
@@ -363,7 +364,7 @@ describe("regenerateSessionTitle", () => {
     else process.env.TELAR_TEXTGEN = previous;
   });
 
-  type Overrides = Partial<{ title: string; titleAfter: string; answer: Record<string, unknown> | undefined; items: Item[]; renameBranches: boolean }>;
+  type Overrides = Partial<{ title: string; titleAfter: string; answer: Record<string, unknown> | undefined; failure: string; items: Item[]; renameBranches: boolean }>;
 
   const item = (index: number, detail: Item["detail"]): Item =>
     ({ id: `item_${index}`, runId: "run_one", sessionId: "session_one", status: "completed", detail, startedAt: index }) as Item;
@@ -396,6 +397,7 @@ describe("regenerateSessionTitle", () => {
       calls.inputs.push(input);
       calls.prompts.push(prompt);
       if (overrides.titleAfter !== undefined) title = overrides.titleAfter;
+      if (overrides.failure !== undefined) return Promise.reject(new TextGenFailure(overrides.failure));
       return Promise.resolve("answer" in overrides ? overrides.answer : { title: "Rail Settle Flicker" });
     };
     return { calls, run: () => regenerateSessionTitle(store, "session_one", run as never) };
@@ -419,9 +421,15 @@ describe("regenerateSessionTitle", () => {
     expect(calls.updates).toHaveLength(0);
   });
 
-  test("a failed generation is undefined and touches nothing", async () => {
-    const { calls, run } = harness({ answer: undefined });
-    expect(await run()).toBeUndefined();
+  test("an answer without a title says so and touches nothing", async () => {
+    const { calls, run } = harness({ answer: { other: "x" } });
+    await expect(run()).rejects.toThrow(new TextGenFailure("the title model answered without a title"));
+    expect(calls.updates).toHaveLength(0);
+  });
+
+  test("a provider failure carries its reason and touches nothing", async () => {
+    const { calls, run } = harness({ failure: "API Error: 400 unknown provider for model x" });
+    await expect(run()).rejects.toThrow(new TextGenFailure("the title model returned an error: API Error: 400 unknown provider for model x"));
     expect(calls.updates).toHaveLength(0);
   });
 
