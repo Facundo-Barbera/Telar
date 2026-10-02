@@ -6,6 +6,7 @@ import type { EngineStore } from "../../state";
 import { readUsageReport } from "./scan";
 import { readUsageLimitSource } from "./limits";
 import { usageDigestFor } from "./digest-source";
+import { UsageDiagnoses } from "./diagnosis-runner";
 
 const LIMITS_TTL_MS = 5 * 60_000;
 
@@ -17,7 +18,17 @@ export function usageRoutes(store: EngineStore): Route[] {
       .then((sources) => (limits.snapshot = { sources, readAt: Date.now() }))
       .finally(() => (limits.inFlight = undefined)));
   const sourcePath = /^\/v2\/usage\/sources\/([A-Za-z][A-Za-z0-9_-]*)$/;
+  const diagnoses = new UsageDiagnoses(store);
   return [
+    { method: "GET", path: "/v2/usage/diagnosis", auth: "engine", handle: () => ok({ diagnosis: diagnoses.current() ?? null }) },
+    {
+      method: "POST",
+      path: "/v2/usage/diagnosis",
+      auth: "engine",
+      handle: async ({ body }) =>
+        ok({ diagnosis: await diagnoses.start({ ...(typeof body.model === "string" ? { model: body.model } : {}), ...(typeof body.effort === "string" ? { effort: body.effort } : {}) }) }),
+    },
+    { method: "POST", path: "/v2/usage/diagnosis/stop", auth: "engine", handle: () => ok({ diagnosis: diagnoses.stop() ?? null }) },
     {
       method: "GET",
       path: "/v2/usage",

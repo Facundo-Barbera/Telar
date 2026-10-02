@@ -24,6 +24,7 @@ const MAX_READ_LINES = 2000;
 const MAX_OUTPUT_CHARS = 60_000;
 const MAX_MATCHES = 200;
 const MAX_FILES = 500;
+const MAX_WALKED = 20_000;
 const MAX_GREP_FILE_BYTES = 5_000_000;
 const MAX_SQL_ROWS = 200;
 const MAX_CELL_CHARS = 2000;
@@ -55,7 +56,8 @@ function inside(realRoot: string, requested: unknown): { full: string; relative:
 
 function walk(root: string, start: string, visit: (full: string, relative: string, size: number) => boolean): void {
   const stack = [start];
-  while (stack.length > 0) {
+  let walked = 0;
+  while (stack.length > 0 && walked < MAX_WALKED) {
     const dir = stack.pop()!;
     let entries: fs.Dirent[];
     try {
@@ -68,7 +70,7 @@ function walk(root: string, start: string, visit: (full: string, relative: strin
       const relative = path.relative(root, full);
       if (isSecretPath(relative) || entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile() && !visit(full, relative, fs.statSync(full).size)) return;
+      else if (entry.isFile() && (++walked > MAX_WALKED || !visit(full, relative, fs.statSync(full).size))) return;
     }
   }
 }
