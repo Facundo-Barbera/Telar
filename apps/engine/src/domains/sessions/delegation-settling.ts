@@ -24,6 +24,7 @@ type DelegationSettleInput = {
   settledOverride?: "settled" | "active";
   archived: boolean;
   unsettledAssignments: readonly string[];
+  personTurnAt?: number;
 };
 
 type DelegationSettleResult = {
@@ -78,6 +79,7 @@ export function delegationSettle(input: DelegationSettleInput): DelegationSettle
 
   if (input.unsettledAssignments.includes(newest.taskRunId)) return {};
   if (input.settledOverride !== undefined) return {};
+  if (input.personTurnAt !== undefined && input.personTurnAt > newest.receivedAt) return {};
 
   const delivered = deliveryOf(newest, input.delegateSessionId, input.coordinatorTurns);
   if (delivered === undefined) return {};
