@@ -1,5 +1,3 @@
-// Agent input reaches a page over CDP and needs no OS focus, but Chromium still moves native
-// focus into a page whose element takes focus. Only the person may put focus in a page.
 module.exports = {
   async keepCockpitFocus(scope, work) {
     if (this.window.isDestroyed() || !this.window.webContents.isFocused?.()) return work();

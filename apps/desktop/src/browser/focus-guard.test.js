@@ -2,7 +2,6 @@ const { describe, expect, test } = require("bun:test");
 
 const { makeHarness, textOf } = require("../../test/browser-manager-harness");
 
-// Models the one OS focus the window has: the cockpit (where the composer lives) or a page.
 function focusOf(manager) {
   const cockpit = manager.window.webContents;
   const calls = { cockpit: 0, page: 0, window: 0 };
@@ -18,7 +17,6 @@ function focusOf(manager) {
     wc.focus = () => { calls.page += 1; };
     return wc;
   };
-  // What Chromium does when a page's element takes focus: native focus moves into the page.
   const steal = (wc) => {
     holder = wc;
     wc.emit("focus");
