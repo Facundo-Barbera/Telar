@@ -4,6 +4,7 @@ import { ok, type Route } from "../../platform/http/route";
 import type { EngineStore } from "../../state";
 import { readUsageReport } from "./scan";
 import { readUsageLimitSource } from "./limits";
+import { usageDigestFor } from "./digest-source";
 
 const LIMITS_TTL_MS = 5 * 60_000;
 
@@ -30,6 +31,7 @@ export function usageRoutes(store: EngineStore): Route[] {
         return ok({ usage: await readUsageReport(window, { ratesCachePath: store.paths.usageModelRates, scanCachePath: store.paths.usageScanCache }) });
       },
     },
+    { method: "GET", path: "/v2/usage/digest", auth: "engine", handle: async () => ok({ digest: (await usageDigestFor(store)).digest }) },
     // Management keys are write-only: this list is the redacting read.
     { method: "GET", path: "/v2/usage/sources", auth: "engine", handle: () => ok({ sources: store.usageSources.list() }) },
     {

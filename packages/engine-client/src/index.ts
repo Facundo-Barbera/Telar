@@ -26,6 +26,7 @@ export * from "./terminal/schema";
 export * from "./turns/schema";
 export * from "./updates/schema";
 export * from "./usage/schema";
+export * from "./usage/diagnosis";
 export * from "./worktrees/schema";
 export { diffBaseQuery, filePatchQuery, parseDiffBaseQuery, parseFilePatchQuery, type DiffBaseOption, type FilePatchOptions } from "./git/diff-query";
 export { mountRootsFor, volumeSupportOn, type VolumeSupport } from "./mounts";
