@@ -160,7 +160,7 @@ describe("named, reusable profiles", () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test("any profile but the default is deleted, its projects fall back to the default, and the jar on disk is left alone", () => {
+  test("any profile but the default is deleted, and its projects point at the default", () => {
     const dir = tmp();
     const store = registry(dir);
     const spare = store.create({ label: "Spare" });
@@ -169,34 +169,43 @@ describe("named, reusable profiles", () => {
     store.assign(B, used.id);
 
     expect(() => store.remove(store.defaultProfileId)).toThrow(/default profile/);
+    expect(store.get(store.defaultProfileId)).not.toBeNull();
 
     expect(store.remove(spare.id).label).toBe("Spare");
     expect(store.get(spare.id)).toBeNull();
 
     const removed = store.remove(used.id);
-    expect(removed.label).toBe("Used");
+    expect(removed).toMatchObject({ label: "Used", partition: used.partition });
     expect(removed.projects.sort()).toEqual([A, B].sort());
-    expect(store.get(used.id)).toBeNull();
-
-    expect(store.assignmentOf(A)).toBeNull();
-    expect(store.resolve(A).id).toBe(store.defaultProfileId);
-    expect(store.resolve(B).id).toBe(store.defaultProfileId);
+    expect(store.assignmentOf(A)).toBe(store.defaultProfileId);
+    expect(store.assignmentOf(B)).toBe(store.defaultProfileId);
 
     expect(readProfileRegistry(dir).list().map((profile) => profile.label)).toEqual([DEFAULT_PROFILE_LABEL]);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  test("deleting a profile leaves a migrated project on its own jar, not on the default", () => {
+  test("deleting a migrated project's own jar moves the project to the default instead of adopting the jar again", () => {
     const dir = tmp();
-    const store = registry(dir, ["persist:telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+    const jar = path.join(dir, "Partitions", "telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    fs.mkdirSync(jar, { recursive: true });
+    const store = new ProfileRegistry(dir);
     const adopted = store.resolve(A);
-    const work = store.create({ label: "Work" });
-    store.assign(A, work.id);
+    expect(adopted.label).toBe("Earlier sign-ins");
 
-    store.remove(work.id);
-    expect(store.resolve(A).id).toBe(adopted.id);
-    expect(store.resolve(A).id).not.toBe(store.defaultProfileId);
+    store.eraseData(store.remove(adopted.id).partition);
+
+    expect(fs.existsSync(jar)).toBe(false);
+    expect(store.resolve(A).id).toBe(store.defaultProfileId);
+    expect(readProfileRegistry(dir).resolve(A).id).toBe(store.defaultProfileId);
+    expect(store.list().map((profile) => profile.label)).toEqual([DEFAULT_PROFILE_LABEL]);
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("an assignment to a profile that is gone resolves to the default without creating one", () => {
+    const store = registry(null, ["persist:telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+    store.document.projects[A] = "bp_00000000000000ff";
+    expect(store.resolve(A).id).toBe(store.defaultProfileId);
+    expect(store.list()).toHaveLength(1);
   });
 
   test("the legacy jar migrates to a profile of its own, still owned by one project", () => {

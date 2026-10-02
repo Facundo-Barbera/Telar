@@ -80,11 +80,13 @@ function parseInventory(document, registry) {
         projectKey = cleanText(scope.profileKey);
         profile = registry.resolve(projectKey);
       } else {
-        profile = registry.require(cleanText(scope.profileId));
+        profile = registry.get(cleanText(scope.profileId));
       }
     } catch {
       continue;
     }
+    const overridden = Boolean(profile) && scope.overridden === true;
+    profile ||= registry.require(registry.defaultProfileId);
     const seen = new Set();
     const tabs = [];
     for (const tab of Array.isArray(scope.tabs) ? scope.tabs : []) {
@@ -114,7 +116,7 @@ function parseInventory(document, registry) {
       scopeKey,
       profile,
       ...(projectKey ? { projectKey } : {}),
-      overridden: scope.overridden === true,
+      overridden,
       activeTabId,
       tabs,
     });

@@ -117,40 +117,47 @@ describe("per-project browser profiles", () => {
     expect(() => manager.setScopeProfile("s", "bp_00000000000000ff")).toThrow(/No browser profile/);
   });
 
-  describe("deleteProfile — forgetting a profile moves what was browsing in it", () => {
-    test("a session with tabs in the profile moves to the default, and its tabs sleep there with their URLs", async () => {
+  describe("deleteProfile — what used the profile moves to the default", () => {
+    test("sessions and projects assigned to it point at the default, its tabs sleep there, and no profile appears in its place", async () => {
       const { manager } = makeHarness();
       const fallback = manager.profiles.get(manager.profiles.defaultProfileId);
       const work = manager.profiles.create({ label: "Work" });
-      manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+      manager.profiles.assign("project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", work.id);
+      manager.declareProfile("a", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+      manager.declareProfile("s", "project_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
       manager.setScopeProfile("s", work.id);
       await manager.createTab("s", "https://one.example");
       await manager.createTab("s", "https://two.example");
+      expect(manager.listProfiles().find((profile) => profile.id === work.id)).toMatchObject({ sessions: 2 });
 
       const removed = manager.deleteProfile(work.id);
 
-      expect(removed).toMatchObject({ id: work.id, label: "Work", sessions: 1, tabs: 2 });
-      expect(manager.profiles.get(work.id)).toBeNull();
+      expect(removed).toMatchObject({ id: work.id, sessions: 2, tabs: 2, projects: ["project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] });
+      expect(manager.listProfiles().map((profile) => profile.id)).toEqual([fallback.id]);
+      expect(manager.scopeProfiles.get("a")).toBe(fallback.id);
       expect(manager.scopeProfiles.get("s")).toBe(fallback.id);
       expect(manager.scopeProfileOverrides.has("s")).toBe(false);
       const tabs = manager.scopeTabs("s");
-      expect(tabs.map((tab) => tab.view)).toEqual([null, null]);
-      expect(tabs.every((tab) => tab.profileId === fallback.id && tab.partition === fallback.partition)).toBe(true);
-      expect(tabs.map((tab) => tab.url)).toEqual(["https://one.example/", "https://two.example/"]);
+      expect(tabs.map((tab) => [tab.view, tab.profileId, tab.partition, tab.url])).toEqual([
+        [null, fallback.id, fallback.partition, "https://one.example/"],
+        [null, fallback.id, fallback.partition, "https://two.example/"],
+      ]);
+      expect(manager.declareProfile("a2", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").profileId).toBe(fallback.id);
+      expect(manager.listProfiles()).toHaveLength(1);
     });
 
-    test("a tab left in the profile after its session switched away is re-homed in the session's current profile", async () => {
+    test("deleting a migrated project's jar does not adopt it again as a new profile", () => {
       const { manager } = makeHarness();
-      const old = manager.profiles.create({ label: "Old" });
-      const next = manager.profiles.create({ label: "Next" });
-      manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-      manager.setScopeProfile("s", old.id);
-      await manager.createTab("s", "https://one.example");
-      manager.setScopeProfile("s", next.id);
+      const jar = "persist:telar-project-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+      manager.profiles.partitionExists = (partition) => partition === jar;
+      const adopted = manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+      expect(adopted.partition).toBe(jar);
 
-      expect(manager.deleteProfile(old.id)).toMatchObject({ sessions: 1, tabs: 1 });
-      expect(manager.scopeProfiles.get("s")).toBe(next.id);
-      expect(manager.scopeTabs("s")[0]).toMatchObject({ profileId: next.id, partition: next.partition, view: null });
+      manager.deleteProfile(adopted.profileId);
+
+      expect(manager.scopeProfiles.get("s")).toBe(manager.profiles.defaultProfileId);
+      expect(manager.declareProfile("s2", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").profileId).toBe(manager.profiles.defaultProfileId);
+      expect(manager.listProfiles().map((profile) => profile.label)).toEqual(["Default"]);
     });
 
     test("a remembered session's hibernated tabs move too, and the saved inventory names a profile that exists", () => {
@@ -184,12 +191,13 @@ describe("per-project browser profiles", () => {
       });
     });
 
-    test("the default is still refused, and nothing moves", async () => {
+    test("the default cannot be deleted, and nothing moves", async () => {
       const { manager } = makeHarness();
       const fallback = manager.profiles.get(manager.profiles.defaultProfileId);
       manager.declareProfile("s", "project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
       await manager.createTab("s", "https://one.example");
       expect(() => manager.deleteProfile(fallback.id)).toThrow("Make another profile the default first.");
+      expect(manager.profiles.get(fallback.id)).not.toBeNull();
       expect(manager.scopeTabs("s")[0].view).not.toBeNull();
     });
   });

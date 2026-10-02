@@ -198,10 +198,14 @@ class ProfileRegistry {
       throw new Error(`“${record.label}” is the default profile. Make another profile the default first.`);
     }
     const moved = this.projectsOf(record.id);
-    for (const key of moved) delete this.document.projects[key];
+    for (const key of moved) this.document.projects[key] = this.document.defaultProfileId;
     delete this.document.profiles[record.id];
     this.save();
-    return { id: record.id, label: record.label, projects: moved };
+    return { id: record.id, label: record.label, partition: record.partition, projects: moved };
+  }
+
+  eraseData(partition) {
+    if (this.userDataDir) this.fs.rmSync(partitionDirectory(this.userDataDir, partition), { recursive: true, force: true });
   }
 
   assign(projectKey, profileId) {
@@ -220,7 +224,7 @@ class ProfileRegistry {
   resolve(projectKey) {
     const key = requireProjectKey(projectKey);
     const assigned = this.document.projects[key];
-    if (assigned) return this.require(assigned);
+    if (assigned) return this.get(assigned) || this.require(this.ensureDefault().id);
 
     const legacy = legacyPartitionFor(key, this.document);
     const existing = Object.values(this.document.profiles).find((profile) => profile.partition === legacy);
