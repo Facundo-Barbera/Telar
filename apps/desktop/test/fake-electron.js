@@ -152,7 +152,7 @@ const electron = {
   nativeTheme: Object.assign(new Emitter(), { shouldUseDarkColors: false, themeSource: "system" }),
   powerMonitor: Object.assign(new Emitter(), { getSystemIdleState: () => "active" }),
   session: { defaultSession: { cookies: { set: async () => {} }, webRequest: { onBeforeSendHeaders() {} } }, fromPartition: () => ({}) },
-  shell: { opened: [], openExternal: (url) => { electron.shell.opened.push(url); return Promise.resolve(); }, showItemInFolder: (target) => electron.shell.opened.push(target), openPath: (target) => { electron.shell.opened.push(target); return Promise.resolve(electron.shell.openPathError ?? ""); } },
+  shell: { opened: [], openExternal: (url) => { electron.shell.opened.push(url); return Promise.resolve(); }, showItemInFolder: (target) => electron.shell.opened.push(target), openPath: (target) => { electron.shell.opened.push(target); return Promise.resolve(""); } },
   webContents: { getAllWebContents: () => [] },
 };
 
@@ -165,7 +165,6 @@ function resetElectron() {
   ipcMain.handlers.clear();
   ipcMain.listeners.clear();
   electron.shell.opened = [];
-  electron.shell.openPathError = undefined;
   electron.dialog.shown = [];
   electron.app.quits = 0;
   electron.app.isQuitting = false;

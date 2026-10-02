@@ -108,7 +108,7 @@ export function Notices({ b }: { b: BrowserUi }) {
           <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-warning" />
           <span className="min-w-0 flex-1">{BROWSER_NOT_AUTHORIZED}</span>
           {b.bridge.openPasswordManagerApp && (
-            <button type="button" onClick={() => void b.bridge.openPasswordManagerApp?.()} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-warning/20">Open 1Password</button>
+            <button type="button" onClick={() => void b.bridge.openPasswordManagerApp?.()} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-warning/20">Open 1Password settings</button>
           )}
         </Strip>
       )}
