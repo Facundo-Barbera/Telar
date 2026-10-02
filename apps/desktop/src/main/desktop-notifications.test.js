@@ -85,23 +85,22 @@ describe("shouldNotifyDesktop", () => {
 });
 
 describe("presence", () => {
-  test("active is recent input and an unlocked screen; the viewed route only while active and focused", () => {
+  test("active is a focused cockpit, recent input and an unlocked screen", () => {
     const path = "/projects/p1/sessions/s1";
     expect(presenceMessage({ idleState: "active", locked: false, focused: true, viewingPath: path })).toEqual({ type: DESKTOP_PRESENCE, active: true, viewingPath: path });
-    expect(presenceMessage({ idleState: "active", locked: false, focused: false, viewingPath: path })).toEqual({ type: DESKTOP_PRESENCE, active: true, viewingPath: null });
 
-    for (const away of [{ idleState: "idle" }, { idleState: "locked" }, { idleState: "unknown" }, { idleState: "active", locked: true }]) {
-      expect(presenceMessage({ focused: true, viewingPath: path, ...away })).toEqual({ type: DESKTOP_PRESENCE, active: false, viewingPath: null });
+    for (const away of [{ focused: false }, { idleState: "idle" }, { idleState: "locked" }, { idleState: "unknown" }, { locked: true }]) {
+      expect(presenceMessage({ idleState: "active", locked: false, focused: true, viewingPath: path, ...away })).toEqual({ type: DESKTOP_PRESENCE, active: false, viewingPath: null });
     }
 
     expect(presenceMessage({ idleState: "active", focused: true, viewingPath: "https://evil.example" }).viewingPath).toBeNull();
-    expect(ACTIVE_IDLE_SECONDS).toBe(120);
+    expect(ACTIVE_IDLE_SECONDS).toBe(60);
   });
 
   test("the reporter sends at once, on every beat and on demand, and stops cleanly", () => {
     const sent = [];
     const timers = [];
-    let sample = { idleState: "active", locked: false, focused: false, viewingPath: null };
+    let sample = { idleState: "active", locked: false, focused: true, viewingPath: null };
     const reporter = createPresenceReporter({
       sample: () => sample,
       send: (message) => sent.push(message),

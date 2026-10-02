@@ -36,7 +36,7 @@ In the app, go to Settings → Notifications & activities and turn on Notificati
 
 There's nothing to set up on the Mac. The phone registers itself when you turn notifications on. The Mac then sends a test notification, and Settings → Remote access → Push notifications on the Mac shows whether it arrived. If the phone shows as not registered, open Telar on it.
 
-**Notify on** (on the Mac) chooses where alerts go. The default sends them to the Mac while you're using it and to the phone once you step away. You can also choose iPhone only, or Both. Neither device alerts you about a conversation you're looking at.
+**Notify on** (on the Mac) chooses where alerts go. The default sends them to the Mac while Telar is the window in front and you've used the Mac in the last minute, and to the phone otherwise. You can also choose iPhone only, or Both. Neither device alerts you about a conversation you're looking at.
 
 Notifications need a real iPhone that passes Apple's app check. If the app says notifications can't be set up on this device, everything else still works.
 

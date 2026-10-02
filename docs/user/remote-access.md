@@ -50,7 +50,7 @@ You can bring another Mac's conversations into this one's rail.
 
 That Mac's conversations appear in your rail, marked with its name, and you work on them from here. You can rename it here.
 
-Its alerts show on this Mac too, with this Mac's sounds, but only while you are using this Mac and not the other one. While this Mac is in use, the other Mac's phone push is held back as if it had shown the alert itself.
+Its alerts show on this Mac too, with this Mac's sounds, but only while Telar is in front on this Mac and you are using it, and not on the other one. While it is, the other Mac's phone push is held back as if it had shown the alert itself.
 
 Forgetting a Mac removes its conversations from your rail. The other Mac still lists this one as a paired device until you revoke it there.
 

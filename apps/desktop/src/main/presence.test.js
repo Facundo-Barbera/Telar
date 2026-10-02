@@ -8,6 +8,10 @@ afterEach(resetElectron);
 test("a lock, an unlock and a focus change each report at once, and a locked screen is not active", () => {
   const sent = [];
   const presence = createPresence({ send: (message) => sent.push(message) });
+  const cockpit = new FakeBrowserWindow();
+  const manager = { window: cockpit };
+  hosts.addHost(cockpit, manager);
+  cockpit.focus();
   presence.watch();
   const started = sent.length;
 
@@ -19,9 +23,10 @@ test("a lock, an unlock and a focus change each report at once, and a locked scr
   electron.app.emit("browser-window-focus");
   expect(sent.length - started).toBe(4);
   presence.stop();
+  hosts.removeHost(manager);
 });
 
-test("focus on a cockpit window reports the route it shows; focus elsewhere reports none", () => {
+test("focus on a cockpit window is active and reports its route; focus elsewhere is not active", () => {
   const sent = [];
   const presence = createPresence({ send: (message) => sent.push(message) });
   const cockpit = new FakeBrowserWindow();
@@ -35,7 +40,7 @@ test("focus on a cockpit window reports the route it shows; focus elsewhere repo
 
   new FakeBrowserWindow().focus();
   presence.report();
-  expect(sent.at(-1)).toMatchObject({ active: true, viewingPath: null });
+  expect(sent.at(-1)).toMatchObject({ active: false, viewingPath: null });
   hosts.removeHost(manager);
 });
 
