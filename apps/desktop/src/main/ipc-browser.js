@@ -2,8 +2,11 @@ const { ipcMain, BrowserWindow, shell } = require("electron");
 const { externalOpenTarget } = require("../browser/browser-manager");
 const { ONE_PASSWORD } = require("../browser/extension-host");
 const { readLoginOfferPrefs, writeLoginOfferPrefs } = require("../login/login-offer-prefs");
+const { passwordManagerEnabled, setPasswordManagerEnabled } = require("../login/password-manager-prefs");
 const { browserManagers, requireBrowserManager, requireCockpitSender } = require("./browser-hosts");
 const { openInSystemBrowser } = require("./window-links");
+
+const PASSWORD_MANAGER_OFF = "The password manager is turned off in Settings → Browser.";
 
 function registerViewIpc({ requireBrowserSuggestions }) {
   ipcMain.handle("telar:browser:suggestions", async (event, scopeKey) => {
@@ -27,6 +30,7 @@ function registerViewIpc({ requireBrowserSuggestions }) {
 
   ipcMain.handle("telar:browser:extension-status", (event, scopeKey) => {
     const manager = requireBrowserManager(event);
+    if (!passwordManagerEnabled()) return { phase: "unavailable", off: true };
     const host = manager.hostForScope(scopeKey);
     if (!host) return { phase: "unavailable", error: "Extensions are not enabled, or this session has no project profile yet." };
 
@@ -36,6 +40,7 @@ function registerViewIpc({ requireBrowserSuggestions }) {
 
   ipcMain.handle("telar:browser:extension-popup", async (event, input) => {
     const manager = requireBrowserManager(event);
+    if (!passwordManagerEnabled()) throw new Error(PASSWORD_MANAGER_OFF);
     const host = manager.hostForScope(input?.scopeKey);
     if (!host) throw new Error("Extensions are not enabled, or this session has no project profile yet.");
     const tab = manager.activeTab(input?.scopeKey);
@@ -166,6 +171,12 @@ function registerTabIpc({ requireLoginOffer }) {
     }
   });
 
+  ipcMain.handle("telar:browser:password-manager", (event, patch) => {
+    requireCockpitSender(event, "turn the password manager on or off");
+    if (typeof patch?.enabled === "boolean") setPasswordManagerEnabled(patch.enabled);
+    return { enabled: passwordManagerEnabled() };
+  });
+
   ipcMain.handle("telar:login-offer:prefs", (event, patch) => {
     requireCockpitSender(event, "change when Telar offers to remember a login");
     if (typeof patch?.offerAfterSignIn === "boolean") writeLoginOfferPrefs({ offerAfterSignIn: patch.offerAfterSignIn });
@@ -216,6 +227,7 @@ function registerTabIpc({ requireLoginOffer }) {
 
   ipcMain.handle("telar:login-offer:open", (event, scopeKey) => {
     const manager = requireCockpitSender(event, "open the login offer");
+    if (!passwordManagerEnabled()) return { ok: false, error: PASSWORD_MANAGER_OFF };
     const capture = manager.loginCaptureForScope(scopeKey);
     if (!capture) return { ok: false, error: "This page cannot carry a remembered login (open an http(s) page first)." };
     return requireLoginOffer().explicitOffer(capture);

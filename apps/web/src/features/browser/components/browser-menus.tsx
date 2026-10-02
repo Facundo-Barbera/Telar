@@ -144,7 +144,7 @@ export function ProfileMenu({ b, profile }: { b: BrowserUi; profile: DesktopBrow
           Make default
         </button>
       )}
-      {bridge.offerLoginMemory && (
+      {bridge.offerLoginMemory && !b.extension?.off && (
         <button
           type="button"
           title={"Already signed in on this page? Let agents reuse that login here.\nOpens Telar's own window; you pick the 1Password item there."}

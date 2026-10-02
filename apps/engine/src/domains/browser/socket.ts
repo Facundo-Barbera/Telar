@@ -13,6 +13,7 @@ export type BrowserSocketCapability = {
   state?(scopeKey: string): Promise<{ provider: BrowserProvider; tabs: BrowserTab[] }>;
   bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
   profileIdentity?(scopeKey: string): Promise<{ id: string; label?: string; account?: string } | null>;
+  passwordManagerEnabled?(): Promise<boolean>;
 };
 
 export type BrowserRunBinding = {
@@ -35,6 +36,7 @@ export type BrowserSocketLease = {
 };
 
 const SOCKET_PATH = "/v2/browser/mcp";
+const PASSWORD_MANAGER_OFF = "The password manager is turned off in Settings → Browser, so browser_fill_secret cannot fill credentials. Ask the person to turn it on there.";
 
 type Binding = {
   binding: BrowserRunBinding;
@@ -162,6 +164,9 @@ export class BrowserToolSocket {
         if (definition.name === "browser_fill_secret") {
           if (!binding.fillSecret) {
             return { content: [{ type: "text", text: "Credential fill is not available for this session." }], isError: true };
+          }
+          if (this.capability.passwordManagerEnabled && !(await this.capability.passwordManagerEnabled())) {
+            return { content: [{ type: "text", text: PASSWORD_MANAGER_OFF }], isError: true };
           }
           const identity = this.capability.profileIdentity;
           const result = await binding.fillSecret(

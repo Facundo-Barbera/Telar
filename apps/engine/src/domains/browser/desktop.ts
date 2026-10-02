@@ -70,6 +70,16 @@ export class DesktopBrowserClient {
     return ok;
   }
 
+  async passwordManagerEnabled(): Promise<boolean> {
+    try {
+      const response = await this.fetchImpl(this.url("/password-manager"), { headers: this.headers() });
+      const payload: unknown = await response.json().catch(() => undefined);
+      return !(response.ok && payload && typeof payload === "object" && (payload as { enabled?: unknown }).enabled === false);
+    } catch {
+      return true;
+    }
+  }
+
   async call(scopeKey: string, name: string, args: Record<string, unknown> = {}): Promise<BrowserToolResult> {
     if (name === "browser_fill_secret") {
       return errorResult("browser_fill_secret is handled by the session socket, not the browser host.");

@@ -82,6 +82,7 @@ export type DesktopExtensionStatus = {
   phase: "idle" | "installing" | "loading" | "ready" | "failed" | "unavailable";
   version?: string;
   error?: string;
+  off?: boolean;
   health?: {
     workerErrors: Record<string, number>;
     native: { state: "not attempted" | "available" | "unavailable"; helpers: number; lastExitCode?: number | null };
@@ -117,6 +118,7 @@ export type DesktopBrowserBridge = {
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
   openPasswordManagerApp?(): Promise<{ ok: boolean; error?: string }>;
+  passwordManager?(patch?: { enabled?: boolean }): Promise<{ enabled: boolean }>;
   loginOfferPrefs?(patch?: { offerAfterSignIn?: boolean }): Promise<{ offerAfterSignIn: boolean }>;
   clearBrowsingData?(scopeKey: string, kind: "cookies" | "cache"): Promise<{ ok: boolean; kind: string; partition: string; profile?: string | null }>;
   offerLoginMemory?(scopeKey: string): Promise<{ ok: boolean; error?: string }>;

@@ -2,7 +2,7 @@ const http = require("node:http");
 
 const MAX_BODY_BYTES = 1_000_000;
 
-const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open", "POST /release", "GET /metrics"]);
+const ROUTES = new Set(["GET /state", "POST /bind", "POST /tool", "POST /open", "POST /release", "GET /metrics", "GET /password-manager"]);
 
 function json(response, status, value) {
   response.writeHead(status, {
@@ -36,7 +36,7 @@ function readJson(request) {
   });
 }
 
-function startBrowserControlServer({ port, token, getBrowserManager, readProcessMetrics }) {
+function startBrowserControlServer({ port, token, getBrowserManager, readProcessMetrics, passwordManagerEnabled }) {
   if (!token) throw new Error("A browser control token is required.");
   const server = http.createServer(async (request, response) => {
     if (request.headers.authorization !== `Bearer ${token}`) {
@@ -58,6 +58,11 @@ function startBrowserControlServer({ port, token, getBrowserManager, readProcess
           return;
         }
         json(response, 200, await readProcessMetrics());
+        return;
+      }
+
+      if (route === "GET /password-manager") {
+        json(response, 200, { enabled: passwordManagerEnabled ? passwordManagerEnabled() : true });
         return;
       }
 

@@ -4,13 +4,13 @@ const path = require("node:path");
 const { createLoginOfferFlow, isTrustedOfferSender } = require("./login-offer-flow");
 const { listLoginCandidates } = require("./vault-metadata");
 const { rememberLoginGrant } = require("./login-grant-writer");
-const { readLoginOfferPrefs } = require("./login-offer-prefs");
+const { autoOfferEnabled } = require("./login-offer-prefs");
 
 function wireLoginOffer({
   stateRoot,
   listCandidates = listLoginCandidates,
   remember = rememberLoginGrant,
-  autoOffer = () => readLoginOfferPrefs().offerAfterSignIn,
+  autoOffer = autoOfferEnabled,
 }) {
   let offerWindow = null;
 

@@ -1,4 +1,5 @@
 const { jsonPrefs } = require("../main/prefs");
+const { passwordManagerEnabled } = require("./password-manager-prefs");
 
 const prefs = jsonPrefs(
   "login-offer-prefs.json",
@@ -7,4 +8,6 @@ const prefs = jsonPrefs(
   "login offer prefs",
 );
 
-module.exports = { readLoginOfferPrefs: prefs.read, writeLoginOfferPrefs: prefs.write };
+const autoOfferEnabled = () => passwordManagerEnabled() && prefs.read().offerAfterSignIn;
+
+module.exports = { autoOfferEnabled, readLoginOfferPrefs: prefs.read, writeLoginOfferPrefs: prefs.write };

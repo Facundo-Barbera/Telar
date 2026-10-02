@@ -33,6 +33,7 @@ const { engineDiscoveryFile, markMainWindowShown, postToEngine, rememberEngine, 
 const { keepOccludedWindowsPainting, watchSchemeForVibrancy } = require("./appearance");
 const { buildApplicationMenu } = require("./app-menu");
 const { startExtensionHost } = require("./cockpit-extensions");
+const { passwordManagerEnabled } = require("../login/password-manager-prefs");
 const { adoptLegacyUpdatePrefs } = require("./update-prefs");
 const { browserManagers, currentHost, lastWindowUrl, persistAllHosts } = require("./browser-hosts");
 const { createCockpitWindow } = require("./cockpit-window");
@@ -468,6 +469,8 @@ if (SMOKE) {
           getBrowserManager: (scopeKey) => managerForScope(browserManagers, scopeKey, currentHost()),
 
           readProcessMetrics: () => processMetricsReader().summary(),
+
+          passwordManagerEnabled,
         });
 
         runTerminalConfig = { port: await findFreePort(), token: randomUUID() };

@@ -31,6 +31,7 @@ function browserCapability(browser: EngineBrowser): BrowserSocketCapability {
       return { provider: state.provider, tabs: state.tabs };
     },
     ...(browser.bindProfile ? { bindProfile: (scopeKey, profileKey) => browser.bindProfile!(scopeKey, profileKey) } : {}),
+    ...(browser.passwordManagerEnabled ? { passwordManagerEnabled: () => browser.passwordManagerEnabled!() } : {}),
     ...(browser.profileIdentity ? { profileIdentity: (scopeKey) => browser.profileIdentity!(scopeKey) } : {}),
   };
 }
