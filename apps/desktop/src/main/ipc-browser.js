@@ -1,5 +1,6 @@
-const { ipcMain, BrowserWindow } = require("electron");
+const { ipcMain, BrowserWindow, shell } = require("electron");
 const { externalOpenTarget } = require("../browser/browser-manager");
+const { ONE_PASSWORD } = require("../browser/extension-host");
 const { readLoginOfferPrefs, writeLoginOfferPrefs } = require("../login/login-offer-prefs");
 const { browserManagers, requireBrowserManager, requireCockpitSender } = require("./browser-hosts");
 const { openInSystemBrowser } = require("./window-links");
@@ -153,6 +154,12 @@ function registerTabIpc({ requireLoginOffer }) {
     if (!target) return { ok: false, error: "Only http and https pages open in the system browser." };
     openInSystemBrowser(target);
     return { ok: true };
+  });
+
+  ipcMain.handle("telar:browser:open-password-manager", async (event) => {
+    requireCockpitSender(event, "open the password manager app");
+    const error = await shell.openPath(ONE_PASSWORD.appPath);
+    return error ? { ok: false, error: `${ONE_PASSWORD.name} is not installed in Applications.` } : { ok: true };
   });
 
   ipcMain.handle("telar:login-offer:prefs", (event, patch) => {

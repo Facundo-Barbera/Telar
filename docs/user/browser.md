@@ -33,6 +33,8 @@ This needs the 1Password CLI, with "Integrate with 1Password CLI" turned on in t
 
 The request has an unticked box to let agents use that login again without asking. It covers only that login, in that profile, on that exact address. Settings → Browser → Remembered logins lists these and lets you revoke each one. Telar can also ask after you sign in yourself; that offer is off until you turn on "Offer to remember after you sign in" there.
 
+The 1Password button in the toolbar talks to the 1Password app only once 1Password accepts Telar as a browser. If the browser shows a warning that it hasn't, open 1Password → Settings → Browser → Add Browser and choose Telar in Applications. Do it again after Telar changes its app identity, as it did when it became `io.github.novarix.telar`.
+
 ## Viewport and appearance
 
 The device toolbar resizes the page to a preset: phones, tablets, desktops and foldables, in portrait or landscape. You can also drag the page's edges to any size, and zoom it to fit. You can make the page think the system is in light or dark mode, to check both.

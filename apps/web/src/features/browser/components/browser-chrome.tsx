@@ -6,7 +6,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import { cn } from "@/ui/utils";
 import type { BrowserUi } from "../hooks/use-browser-session";
-import { describeDownload, describeExtensionHealth } from "../model";
+import { BROWSER_NOT_AUTHORIZED, describeDownload, describeExtensionHealth, needsBrowserAuthorization } from "../model";
 
 export const menuRow =
   "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[0.75rem] text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50";
@@ -103,8 +103,18 @@ function Strip({ tone, onDismiss, children }: { tone: keyof typeof STRIP; onDism
 /** The action, extension, permission and download strips under the toolbar. */
 export function Notices({ b }: { b: BrowserUi }) {
   const { actionError, extensionError, permissionDenial, download } = b;
+  const [authorizationDismissed, setAuthorizationDismissed] = useState(false);
   return (
     <>
+      {needsBrowserAuthorization(b.extension) && !authorizationDismissed && (
+        <Strip tone="warning" onDismiss={() => setAuthorizationDismissed(true)}>
+          <TriangleAlertIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-warning" />
+          <span className="min-w-0 flex-1">{BROWSER_NOT_AUTHORIZED}</span>
+          {b.bridge.openPasswordManagerApp && (
+            <button type="button" onClick={() => void b.bridge.openPasswordManagerApp?.()} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-warning/20">Open 1Password</button>
+          )}
+        </Strip>
+      )}
       {actionError && (
         <Strip tone="error" onDismiss={() => b.setActionError(undefined)}>
           <span className="min-w-0 flex-1 truncate">{actionError}</span>

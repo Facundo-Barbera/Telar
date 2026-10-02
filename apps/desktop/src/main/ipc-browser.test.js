@@ -80,6 +80,21 @@ describe("the open-external handler", () => {
   });
 });
 
+describe("the password manager app", () => {
+  test("the cockpit can open it, to authorize this browser", async () => {
+    electron.shell.opened = [];
+    expect(await electron.ipcMain.invoke("telar:browser:open-password-manager", eventFrom(a.window))).toEqual({ ok: true });
+    expect(electron.shell.opened).toEqual(["/Applications/1Password.app"]);
+  });
+
+  test("a missing app is reported, not thrown", async () => {
+    electron.shell.openPathError = "not found";
+    const result = await electron.ipcMain.invoke("telar:browser:open-password-manager", eventFrom(a.window));
+    electron.shell.openPathError = undefined;
+    expect(result.ok).toBe(false);
+  });
+});
+
 describe("the login offer setting", () => {
   test("is off until the cockpit turns it on, and stays on", async () => {
     fs.rmSync(path.join(userData, "login-offer-prefs.json"), { force: true });

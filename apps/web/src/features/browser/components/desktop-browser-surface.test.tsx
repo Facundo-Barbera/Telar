@@ -412,6 +412,34 @@ describe("a previewed tab", () => {
   });
 });
 
+const extensionWithHelperExit = (lastExitCode: number) => ({
+  id: "ext",
+  name: "1Password",
+  phase: "ready" as const,
+  health: { workerErrors: {}, native: { state: "unavailable" as const, helpers: 0, lastExitCode } },
+});
+
+describe("a password manager that refuses this browser", () => {
+  test("says how to authorize Telar once, with a button that opens the app", async () => {
+    let opened = 0;
+    const { host } = await mount(panelState(), {
+      extensionStatus: async () => extensionWithHelperExit(1),
+      openPasswordManagerApp: async () => { opened += 1; return { ok: true }; },
+    });
+    await waitFor(() => Boolean(host.textContent?.includes("Add Browser")));
+    expect(host.textContent).toContain("open Settings → Browser → Add Browser and choose Telar");
+    const open = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Open 1Password")!;
+    await mouseClick(open);
+    expect(opened).toBe(1);
+  });
+
+  test("a helper that crashed some other way does not ask for authorization", async () => {
+    const { host } = await mount(panelState(), { extensionStatus: async () => extensionWithHelperExit(2) });
+    await act(async () => { await settle(); });
+    expect(host.textContent).not.toContain("Add Browser");
+  });
+});
+
 const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 function capturingBridge(patch: Record<string, unknown> = {}) {
