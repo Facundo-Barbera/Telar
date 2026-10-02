@@ -10,6 +10,7 @@ export type BrowserProfile = {
   color?: IdentityColor | string;
   isDefault?: boolean;
   projects?: string[];
+  sessions?: number;
 };
 
 type ProfilesAnswer = {
@@ -50,12 +51,15 @@ export function whyUndeletable(profile: BrowserProfile): string | undefined {
 }
 
 export function confirmProfileDeletion(profile: BrowserProfile, profiles: BrowserProfile[]): string {
-  const assigned = profile.projects?.length ?? 0;
+  const projects = profile.projects?.length ?? 0;
+  const sessions = profile.sessions ?? 0;
   const fallback = profiles.find((candidate) => candidate.isDefault)?.label;
-  const moved = assigned
-    ? ` ${assigned === 1 ? "1 project" : `${assigned} projects`} will use ${fallback ? `"${fallback}"` : "the default"} instead.`
-    : "";
-  return `Delete "${profile.label}"?${moved} Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.`;
+  const users = [
+    projects ? (projects === 1 ? "1 project" : `${projects} projects`) : "",
+    sessions ? (sessions === 1 ? "1 session" : `${sessions} sessions`) : "",
+  ].filter(Boolean);
+  const moved = users.length ? ` ${users.join(" and ")} will use ${fallback ? `"${fallback}"` : "the default"} instead.` : "";
+  return `Delete "${profile.label}"?${moved} Its cookies and site data are deleted.`;
 }
 
 export function profileNameProblem(label: string, existing: BrowserProfile[], ignoreId?: string): string | undefined {

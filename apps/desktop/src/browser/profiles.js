@@ -68,34 +68,38 @@ module.exports = {
   },
 
   listProfiles() {
-    return this.profiles.list().map((profile) => ({ ...profile, projects: this.profiles.projectsOf(profile.id) }));
+    return this.profiles.list().map((profile) => ({
+      ...profile,
+      projects: this.profiles.projectsOf(profile.id),
+      sessions: this.scopesUsing(profile.id).size,
+    }));
+  },
+
+  scopesUsing(profileId) {
+    const scopes = new Set();
+    for (const [scope, bound] of this.scopeProfiles) if (bound === profileId) scopes.add(scope);
+    for (const tab of this.tabs) if (tab.profileId === profileId) scopes.add(tab.scopeKey);
+    return scopes;
   },
 
   deleteProfile(profileId) {
     const removed = this.profiles.remove(profileId);
-    const id = removed.id;
     const fallback = this.profiles.require(this.profiles.defaultProfileId);
-    const scopes = new Set();
-    for (const [scope, bound] of this.scopeProfiles) {
-      if (bound !== id) continue;
-      if (this.scopeProfileOverrides.get(scope) === id) this.scopeProfileOverrides.delete(scope);
-      const override = this.scopeProfileOverrides.get(scope);
-      const project = this.scopeProjects.get(scope);
-      const profile = override ? this.profiles.require(override) : project ? this.profiles.resolve(project) : fallback;
-      this.scopeProfiles.set(scope, profile.id);
-      scopes.add(scope);
+    const scopes = this.scopesUsing(removed.id);
+    for (const scope of scopes) {
+      if (this.scopeProfiles.get(scope) !== removed.id) continue;
+      this.scopeProfileOverrides.delete(scope);
+      this.scopeProfiles.set(scope, fallback.id);
     }
-    this.drainProfileMigrations();
     let tabs = 0;
     for (const tab of this.tabs) {
-      if (tab.profileId !== id) continue;
+      if (tab.profileId !== removed.id) continue;
       this.hibernateTab(tab);
-      const profile = this.profiles.get(this.scopeProfiles.get(tab.scopeKey)) || fallback;
-      tab.profileId = profile.id;
-      tab.partition = profile.partition;
-      scopes.add(tab.scopeKey);
+      tab.profileId = fallback.id;
+      tab.partition = fallback.partition;
       tabs += 1;
     }
+    this.profiles.eraseData(removed.partition);
     this.persist();
     return { ...removed, sessions: scopes.size, tabs };
   },

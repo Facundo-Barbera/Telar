@@ -39,11 +39,12 @@ test("delete is refused for the default alone, and the confirm names what moves"
   expect(whyUndeletable(profile())).toBeUndefined();
 
   const fallback = profile({ id: "bp_default", label: "Default", isDefault: true });
-  expect(confirmProfileDeletion(profile({ projects: ["project_a", "project_b"] }), [fallback])).toBe(
-    'Delete "Work"? 2 projects will use "Default" instead. Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.',
+  expect(confirmProfileDeletion(profile({ projects: ["project_a", "project_b"], sessions: 1 }), [fallback])).toBe(
+    'Delete "Work"? 2 projects and 1 session will use "Default" instead. Its cookies and site data are deleted.',
   );
   expect(confirmProfileDeletion(profile({ projects: ["project_a"] }), [fallback])).toContain("1 project will use");
-  expect(confirmProfileDeletion(profile(), [fallback])).toBe('Delete "Work"? Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.');
+  expect(confirmProfileDeletion(profile({ sessions: 3 }), [fallback])).toContain("3 sessions will use");
+  expect(confirmProfileDeletion(profile(), [fallback])).toBe('Delete "Work"? Its cookies and site data are deleted.');
 });
 
 test("a profile name is required and may not repeat another", () => {

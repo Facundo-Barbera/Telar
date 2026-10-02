@@ -103,7 +103,7 @@ function ProfileRow({
               variant="ghost"
               disabled={busy || Boolean(whyUndeletable(profile))}
               {...(whyUndeletable(profile) ? { "aria-describedby": `profile-undeletable-${profile.id}` } : {})}
-              title={whyUndeletable(profile) ?? "Forget this profile. Its cookies stay on disk."}
+              title={whyUndeletable(profile) ?? "Delete this profile and its cookies."}
               className="text-destructive hover:text-destructive"
               onClick={() => {
                 if (!window.confirm(confirmProfileDeletion(profile, profiles))) return;

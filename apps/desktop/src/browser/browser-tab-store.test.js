@@ -145,7 +145,7 @@ describe("what a restore accepts", () => {
     expect(store.migrations).toEqual([{ from: PROJECT, to: scopes[0].profile.id }]);
   });
 
-  test("a scope whose profile the registry no longer has is dropped, never rehomed", () => {
+  test("a scope whose profile the registry no longer has comes back in the default, and nothing is created", () => {
     const store = registry();
     store.create({ label: "Kept" });
     const scopes = parseInventory(
@@ -153,12 +153,14 @@ describe("what a restore accepts", () => {
         version: INVENTORY_VERSION,
         scopes: {
           kept: { profileId: P1, activeTabId: "a", tabs: [{ id: "a", url: "https://kept.example/" }] },
-          dangling: { profileId: "bp_00000000000000ff", tabs: [{ id: "b", url: "https://gone.example/" }] },
+          dangling: { profileId: "bp_00000000000000ff", overridden: true, tabs: [{ id: "b", url: "https://gone.example/" }] },
         },
       },
       store,
     );
-    expect(scopes.map((scope) => scope.scopeKey)).toEqual(["kept"]);
+    expect(scopes.map((scope) => [scope.scopeKey, scope.profile.id])).toEqual([["kept", P1], ["dangling", store.defaultProfileId]]);
+    expect(scopes[1].overridden).toBe(false);
+    expect(store.list().map((profile) => profile.label)).toEqual(["Default", "Kept"]);
   });
 
   test("a tab remembers its own profile, so a session that switched identities comes back with both", () => {
@@ -179,7 +181,7 @@ describe("what a restore accepts", () => {
     expect(scopes[0].tabs.map((tab) => tab.profileId)).toEqual([P1, P2, undefined]);
   });
 
-  test("a hand-edited file cannot smuggle an extension page, a duplicate id, a bad viewport, or an unmappable profile", () => {
+  test("a hand-edited file cannot smuggle an extension page, a duplicate id, a bad viewport, or another profile's jar", () => {
     const store = registry();
     store.create({ label: "One" });
     store.create({ label: "Two" });
@@ -207,6 +209,7 @@ describe("what a restore accepts", () => {
     );
     expect(scopes).toEqual([
       { scopeKey: "good", profile: store.get(P1), overridden: false, activeTabId: "b", tabs: [{ id: "b", url: "https://ok.example/", title: "ok", openedBy: "agent" }] },
+      { scopeKey: "legacyGrab", profile: store.get(store.defaultProfileId), overridden: false, activeTabId: "x", tabs: [{ id: "x", url: "https://x.example/", title: "New tab", openedBy: "agent" }] },
       { scopeKey: "wrongShape", profile: store.get(P2), overridden: false, activeTabId: "y", tabs: [{ id: "y", url: "https://y.example/", title: "New tab", openedBy: "agent" }] },
     ]);
   });
