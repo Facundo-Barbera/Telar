@@ -25,15 +25,13 @@ type ControlTriggerProps = ComponentPropsWithoutRef<"button"> & {
   /** Shown only while the row is folded, so a folded pill's value stays visible. */
   detail?: string;
   ariaLabel: string;
-  /** The label is the provider's default rather than a pick. */
-  muted?: boolean;
 };
 
 export const ControlTrigger = forwardRef<HTMLButtonElement, ControlTriggerProps>(
-  ({ open, icon, label, detail, ariaLabel, muted, className, ...props }, ref) => (
+  ({ open, icon, label, detail, ariaLabel, className, ...props }, ref) => (
     <button {...props} ref={ref} type="button" className={cn(controlClass(open, props.disabled), className)} aria-label={ariaLabel}>
       <span className="flex shrink-0 [&_svg]:size-3.5">{icon}</span>
-      <span className={cn("max-w-48 truncate", muted ? "text-muted-foreground" : "text-foreground")}>{label}</span>
+      <span className="max-w-48 truncate text-foreground">{label}</span>
       {detail ? (
         <>
           <span className="text-muted-foreground/40 @2xl/composer:hidden">·</span>

@@ -69,19 +69,31 @@ async function mount(choice: { model?: string; effort?: string }): Promise<HTMLB
 }
 
 describe("the reasoning pill", () => {
-  test("with no pick, it shows the model's default level, quieter than a pick", async () => {
+  test("with no pick, it shows the model's default level and stays open to a change", async () => {
     const pill = await mount({ model: "opus" });
     expect(pill?.textContent).toContain("High");
     expect(pill?.textContent).not.toContain("Reasoning");
     expect(pill?.getAttribute("aria-label")).toBe("Reasoning effort: High (default)");
-    expect(pill?.querySelector(".text-muted-foreground")?.textContent).toBe("High");
+    expect(pill?.title).toBe("The model's default. Pick a level to change it.");
+    expect(pill?.disabled).toBe(false);
   });
 
-  test("a pick shows the pick, drawn as one", async () => {
+  test("a pick shows the pick", async () => {
     const pill = await mount({ model: "opus", effort: "low" });
     expect(pill?.textContent).toContain("Low");
     expect(pill?.getAttribute("aria-label")).toBe("Reasoning effort: Low");
-    expect(pill?.querySelector(".text-foreground")?.textContent).toBe("Low");
+    expect(pill?.title).toBe("");
+    expect(pill?.disabled).toBe(false);
+  });
+
+  test("while the catalogue loads, the pill is already usable", async () => {
+    globalThis.fetch = (() => new Promise(() => undefined)) as unknown as typeof fetch;
+    await act(async () => {
+      root.render(<ReasoningControl driver="claude" choice={{ model: "opus" }} onChange={() => undefined} />);
+    });
+    const pill = host.querySelector<HTMLButtonElement>('button[aria-label^="Reasoning effort:"]');
+    expect(pill?.textContent).toContain("Auto");
+    expect(pill?.disabled).toBe(false);
   });
 
   test("a model whose default is unknown says Auto, never a guessed level", async () => {
