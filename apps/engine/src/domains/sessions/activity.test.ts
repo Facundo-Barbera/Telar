@@ -179,6 +179,29 @@ test("a session subscribed to one that is still going reads as waiting on it —
   expect(store.records.get("session_one").activity).not.toBe("waiting");
 });
 
+test("a subscriber read while waiting stops waiting once its peer goes quiet", () => {
+  const { store, root: stateRoot } = readyStore();
+  store.intake.submitTurn("session_one", { runId: "run_one", input: "Hand it out" });
+  const own = store.claims.claimNextTurn("worker_one")!;
+  store.turnLifecycle.markRunning("session_one", "run_one", own.turn.claim!.token);
+  store.turnLifecycle.completeTurn("session_one", "run_one", own.turn.claim!.token, { text: "Handed out" });
+  store.lifecycle.createSession({ id: "session_two", projectId: "project_one", title: "Fix the parser" });
+  store.subscriptions.subscribe("session_one", { targetSessionId: "session_two" });
+  store.intake.submitTurn("session_two", { runId: "run_two", input: "Go" });
+  const peer = store.claims.claimNextTurn("worker_one")!;
+  store.turnLifecycle.markRunning("session_two", "run_two", peer.turn.claim!.token);
+  expect(store.records.get("session_one")).toMatchObject({ activity: "waiting", activityDetail: { kind: "session", sessionId: "session_two" } });
+
+  store.records.markRead("session_one", "run_one");
+  const onDisk = JSON.parse(fs.readFileSync(path.join(stateRoot, "sessions", "session_one", "session.json"), "utf8"));
+  expect("activityDetail" in onDisk).toBe(false);
+
+  store.turnLifecycle.completeTurn("session_two", "run_two", peer.turn.claim!.token, { text: "Stopped short" });
+  const after = store.records.get("session_one");
+  expect(after.activity).not.toBe("waiting");
+  expect(after.activityDetail).toBeUndefined();
+});
+
 test("a running turn whose only open call is a wait reads as waiting on it", () => {
   const { store } = readyStore();
   store.intake.submitTurn("session_one", { runId: "run_one", input: "Start the server and wait" });

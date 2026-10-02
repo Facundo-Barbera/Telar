@@ -29,10 +29,11 @@ export function parseSession(value: unknown): Session {
 /** The half of a session that belongs on disk; the activity fields are folded from the queue on read. */
 export function storedSession(
   session: Session,
-): Omit<Session, "activity" | "activityAt" | "lastTurnEndedAt" | "lastTurnFailed" | "lastTurnOrigin" | "lastTurnSequence"> {
+): Omit<Session, "activity" | "activityAt" | "activityDetail" | "lastTurnEndedAt" | "lastTurnFailed" | "lastTurnOrigin" | "lastTurnSequence"> {
   const {
     activity: _activity,
     activityAt: _activityAt,
+    activityDetail: _activityDetail,
     lastTurnEndedAt: _lastTurnEndedAt,
     lastTurnFailed: _lastTurnFailed,
     lastTurnOrigin: _lastTurnOrigin,
