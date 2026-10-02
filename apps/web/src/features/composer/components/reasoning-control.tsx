@@ -87,7 +87,6 @@ export function ReasoningControl({
             open={open}
             icon={<GaugeIcon className="size-3.5" />}
             label={label}
-            muted={isDefault}
             {...(isDefault && defaultEffort ? { title: "The model's default. Pick a level to change it." } : {})}
             {...(detail ? { detail } : {})}
             ariaLabel={`Reasoning effort: ${spoken}${suffix ? `, ${suffix} context` : ""}`}
