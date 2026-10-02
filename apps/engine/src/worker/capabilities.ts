@@ -6,6 +6,7 @@ import { promptsForComposer, type PromptsCapability } from "../domains/prompts";
 import { createDisplayCapability } from "../domains/agent-tools";
 import { clientRunCapability } from "../domains/terminal";
 import type { SessionsCapability } from "../drivers";
+import type { UsageDiagnosisCapability } from "../domains/usage";
 import type { WorkerClient } from "./options";
 import type { TurnHost } from "./host";
 
@@ -46,6 +47,7 @@ function pluginCapabilities(host: TurnHost, sessionId: string, enabled: string[]
 export function telarCapabilities(host: TurnHost, claim: WorkerClaim, runId: string, claimToken: string) {
   const { client } = host.options;
   const { sessionId, projectId, projectRoot: cwd } = claim;
+  if (claim.readOnly) return { usageDiagnosis: { call: async (tool, args) => (await client.usageDiagnosisTool(sessionId, tool, args)).text } satisfies UsageDiagnosisCapability };
   const report = (observations: Parameters<WorkerClient["reportObservations"]>[3]) => client.reportObservations(sessionId, runId, claimToken, observations);
   const shared = sessionsCapability(client, { sessionId, proof: () => host.liveClaims.get(sessionId) ?? { runId, claimToken } }, windowedReads(client));
   const sessions: SessionsCapability = {

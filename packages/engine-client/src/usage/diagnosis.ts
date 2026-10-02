@@ -3,16 +3,17 @@ import type { TokenUsage } from "../protocol/common";
 
 export type UsageDigestWindow = "24h" | "7d" | "30d";
 
+export const USAGE_DIAGNOSIS_TOOLS = ["read", "grep", "glob", "sql"] as const;
+export type UsageDiagnosisTool = (typeof USAGE_DIAGNOSIS_TOOLS)[number];
+
 export type UsageDigestTotals = {
   tokens: TokenUsage;
   costUsd: number;
   turns: number;
   sessions: number;
-  /** cacheRead ÷ (input + cacheRead + cacheCreate). */
   cacheHit: number;
 };
 
-/** A session as the digest names it: `s1…sN` by tokens, never its id or title. */
 export type UsageDigestSession = {
   id: string;
   project?: string;
@@ -27,7 +28,6 @@ export type UsageDigestSession = {
   maxTokensPerTurn: number;
   contextUsed?: number;
   contextMax?: number;
-  /** Turn counts by what started them: user, session, schedule, restart, provider. */
   origins: Record<string, number>;
   compactions: number;
   largeToolOutputs: number;
@@ -46,7 +46,6 @@ export type UsageDigest = {
   version: 1;
   createdAt: number;
   windows: Record<UsageDigestWindow, { totals: UsageDigestTotals; byModel: Array<{ model: string; tokens: number; costUsd: number; turns: number }> }>;
-  /** Provider logs over 30 days, Telar or not; the gap to Telar's own totals is use outside Telar. */
   providerLogs: Array<{ provider: string; tokens: number; costUsd: number; telarTokens: number }>;
   topSessions: UsageDigestSession[];
   trees: UsageDigestTree[];
@@ -101,12 +100,9 @@ export type UsageDiagnosis = {
   finishedAt?: number;
   model?: string;
   promptVersion: number;
-  /** The digest's headline numbers, shown with the report. */
   totals?: UsageDigestTotals;
   report?: UsageDiagnosisReport;
-  /** True when the agent's answer failed validation and the report was built from signals alone. */
   fallback?: boolean;
   error?: string;
-  /** Local display only, never sent: `s3` → its session title. */
   names?: Record<string, string>;
 };

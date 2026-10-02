@@ -5,6 +5,7 @@ import type { PromptsCapability } from "../domains/prompts";
 import type { DisplayCapability } from "../domains/agent-tools";
 import type { RunCapability } from "../domains/terminal";
 import type { SteerMailbox } from "../domains/turns";
+import type { UsageDiagnosisCapability } from "../domains/usage";
 
 export type { SessionsCapability };
 
@@ -45,6 +46,8 @@ export type DriverRun = {
   ultracode?: boolean;
   orientation?: string;
   mainBriefing?: string;
+  readOnly?: boolean;
+  usageDiagnosis?: UsageDiagnosisCapability;
   attachments?: TurnAttachment[];
   mcpServers?: McpServer[];
   env?: Record<string, string | undefined>;

@@ -122,7 +122,7 @@ export class LiveSessions {
     const open = scope === "shelf" ? [] : [...indexed.chosen].filter((id) => !indexed.shelved.has(id));
     const live = this.all(new Set(open));
     const shelf = scope === "lean" ? { sessions: [], assignments: {} } : this.deps.activity.foldShelved(indexed.shelved, (id) => this.deps.index.stamp(id));
-    const sessions = [...live.sessions, ...shelf.sessions].sort(newestFirst);
+    const sessions = [...live.sessions, ...shelf.sessions].filter((session) => session.purpose === undefined).sort(newestFirst);
     return {
       ...live,
       sessions: sessions.map(liveRow),

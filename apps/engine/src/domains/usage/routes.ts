@@ -1,6 +1,7 @@
-import type { UsageLimits } from "@telar/engine-client";
+import type { UsageDiagnosisTool, UsageLimits } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
-import { ok, type Route } from "../../platform/http/route";
+import { ok, sessionRoute, type Route } from "../../platform/http/route";
+import { runDiagnosisTool } from "./diagnosis-access";
 import type { EngineStore } from "../../state";
 import { readUsageReport } from "./scan";
 import { readUsageLimitSource } from "./limits";
@@ -29,6 +30,17 @@ export function usageRoutes(store: EngineStore): Route[] {
         }
         const window = { sinceMs, untilMs, resolution: query.get("resolution") === "hour" ? ("hour" as const) : ("day" as const), timeZone: query.get("tz")?.trim() || "UTC" };
         return ok({ usage: await readUsageReport(window, { ratesCachePath: store.paths.usageModelRates, scanCachePath: store.paths.usageScanCache }) });
+      },
+    },
+    {
+      method: "POST",
+      path: sessionRoute("/usage-diagnosis/(read|grep|glob|sql)"),
+      auth: "engine",
+      handle({ params: [sessionId, tool], body }) {
+        const session = store.records.get(sessionId!);
+        const running = store.queries.turns(sessionId!).some((turn) => turn.state === "running");
+        if (session.purpose !== "usage-diagnosis" || !running) throw new HttpError(409, "conflict", "only a running usage diagnosis has these tools");
+        return ok({ text: runDiagnosisTool(store.paths.root, tool as UsageDiagnosisTool, body as Record<string, unknown>) });
       },
     },
     { method: "GET", path: "/v2/usage/digest", auth: "engine", handle: async () => ok({ digest: (await usageDigestFor(store)).digest }) },

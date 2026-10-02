@@ -45,11 +45,12 @@ export async function executeClaim(host: TurnHost, claim: WorkerClaim): Promise<
     await client.markTurnRunning(sessionId, runId, claimToken).catch(() => undefined);
   };
   try {
+    if (claim.readOnly && claim.driver !== "claude") throw new ProviderUnavailableError("A usage diagnosis runs on Claude Code for now.");
     const driver = host.driverFor(claim.driver);
     if (claim.projectRoot !== undefined) assertProjectRoot(claim.projectRoot, {}, claim.worktree);
     // No await on the paths that need none: `markTurnRunning` must go out before the pump's next claim.
     const { browserSocket, telarSocket } = host.options;
-    const lease = browserSocket ? await bindBrowser(host, browserSocket, turn) : undefined;
+    const lease = browserSocket && !claim.readOnly ? await bindBrowser(host, browserSocket, turn) : undefined;
     const capabilities = telarCapabilities(host, claim, runId, claimToken);
     const telarLease = (reuseTelarLease(host, claim, capabilities) ?? (await bindTelarLease(host, telarSocket!, claim, capabilities))).lease;
     // Marked only now, so a Stop during setup settles a `claimed` turn instead of a running one.
@@ -189,6 +190,7 @@ function driverRun(
     ...(claim.mcpServers?.length ? { mcpServers: claim.mcpServers } : {}),
     ...(claim.tasks?.length ? { tasks: claim.tasks } : {}),
     ...(claim.orientation ? { orientation: claim.orientation } : {}),
+    ...(claim.readOnly ? { readOnly: true } : {}),
     ...(providerInstance ? { env: providerProcessEnv(providerInstance) } : {}),
     ...(providerInstance?.binaryPath ? { binaryPath: providerInstance.binaryPath } : {}),
     ...(providerInstance?.autoCompact ? { autoCompact: providerInstance.autoCompact } : {}),

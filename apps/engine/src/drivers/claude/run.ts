@@ -195,7 +195,7 @@ async function openTurn(deps: DriverDeps, input: DriverRun) {
 
 // The query options and the reuse fingerprint are computed together so they cannot disagree.
 function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void {
-  const { signal, fastMode, ultracode, mcpServers: userMcpServers, env, binaryPath, providerInstanceId, browserSocket, orientation, mainBriefing, run, plugins, sessions, notes, prompts, display } = input;
+  const { signal, fastMode, ultracode, mcpServers: userMcpServers, env, binaryPath, providerInstanceId, browserSocket, orientation, mainBriefing, run, plugins, sessions, notes, prompts, display, usageDiagnosis } = input;
   const { resolveExecutable } = deps;
   /** The `claude` binary this turn runs on, resolved once: the query below
    *  takes it as `pathToClaudeCodeExecutable`, and the fingerprint records
@@ -213,7 +213,9 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
     display,
     run,
     plugins,
+    usageDiagnosis,
   };
+  turn.readOnly = input.readOnly === true;
 
   turn.streaming = claudeStreamingInputEnabled();
 
@@ -254,6 +256,7 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
     plugins: Object.keys(plugins ?? {}).sort(),
     gate: Boolean(turn.canUseTool),
     instance: providerInstanceId ?? null,
+    readOnly: turn.readOnly,
   };
   /** CANONICAL, not `JSON.stringify`: key order is not identity, and an
    *  explicit deletion is. See ./claude-identity.ts. */

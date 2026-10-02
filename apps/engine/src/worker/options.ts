@@ -49,6 +49,7 @@ export type WorkerClient = Pick<
   | "writeRun"
   | "resizeRun"
   | "plugin"
+  | "usageDiagnosisTool"
   | "createSession"
   | "submitAgentTurn"
   | "events"

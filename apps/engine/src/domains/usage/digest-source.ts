@@ -6,7 +6,6 @@ import { readUsageReport } from "./scan";
 
 const MONTH_MS = 30 * 86_400_000;
 
-/** The digest over this engine's own store and the provider logs on this machine. */
 export async function usageDigestFor(store: EngineStore, exclude?: (sessionId: string) => boolean): Promise<{ digest: UsageDigest; names: Record<string, string> }> {
   const now = store.kernel.now();
   const [rates, report] = await Promise.all([

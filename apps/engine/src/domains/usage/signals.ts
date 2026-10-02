@@ -3,7 +3,6 @@ import type { TokenUsage, UsageDigest, UsageSignal } from "@telar/engine-client"
 const total = (tokens: TokenUsage): number => tokens.input + tokens.output + tokens.cacheRead + tokens.cacheCreate;
 const share = (part: number, whole: number): number => (whole === 0 ? 0 : Math.round((part / whole) * 1000) / 1000);
 
-/** Fixed thresholds, so the agent explains patterns rather than discovering them. */
 export function usageSignals(digest: Omit<UsageDigest, "signals">): UsageSignal[] {
   const month = digest.windows["30d"].totals;
   const all = total(month.tokens);

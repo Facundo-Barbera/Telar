@@ -169,6 +169,7 @@ export const Session = z.object({
   state: SessionState,
   /** Provenance, never a link — see `SessionOrigin`. Absent is "human". */
   origin: SessionOrigin.optional(),
+  purpose: z.literal("usage-diagnosis").optional(),
   startedFrom: z
     .object({ sessionId: Id, runId: Id.optional() })
     .optional(),

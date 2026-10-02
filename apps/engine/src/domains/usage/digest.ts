@@ -9,11 +9,9 @@ export type DigestInput = {
   db: Db;
   now: number;
   rates: RatesTable;
-  /** Provider-log totals over 30 days, whatever ran them. */
   providerLogs: Array<{ provider: string; tokens: number; costUsd: number }>;
   config: UsageDigest["config"];
   projectName: (projectId: string) => string | undefined;
-  /** Sessions the digest leaves out, such as a running diagnosis. */
   exclude?: (sessionId: string) => boolean;
 };
 
@@ -162,7 +160,6 @@ function rootOf(id: string, sessions: Map<string, SessionDoc>): { root: string; 
   return { root: current, depth };
 }
 
-/** Aggregates only: sessions become `s1…sN` and projects `p1…pN`; `names` maps them back for local display. */
 export function buildUsageDigest(input: DigestInput): { digest: UsageDigest; names: Record<string, string> } {
   const { db, now, rates } = input;
   const sessions = readSessions(db);

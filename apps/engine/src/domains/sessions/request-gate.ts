@@ -19,6 +19,7 @@ import type { EngineNotifier } from "../../state";
 import type { SessionQueue } from "./queue";
 import type { SessionRecords } from "./records";
 import type { SessionRequests } from "./requests";
+import { diagnosisRequestDecision } from "../usage";
 
 /**
  * What a timed-out request tells the model that asked, via `reason`: without it a declined default reads like a
@@ -81,7 +82,6 @@ export class RequestGate {
   }
 
   /**
-   * The engine decides, from the contract's `autoResolution`, so the settings screen and the engine cannot disagree.
    * Idempotent on `requestId`. A deadline and default are the asker's own terms, refused rather than dropped.
    */
   open(sessionId: string, runId: string, claimToken: string, input: OpenRequestInput): RequestOpenResult {
@@ -108,7 +108,7 @@ export class RequestGate {
       }
 
       const at = this.kernel.now();
-      const automatic = autoResolution(session.runtimeMode, input.kind);
+      const automatic = session.purpose === "usage-diagnosis" ? diagnosisRequestDecision(input.detail) : autoResolution(session.runtimeMode, input.kind);
       const request: EngineRequest = {
         id: input.requestId,
         runId: turn.runId,

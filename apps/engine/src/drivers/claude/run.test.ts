@@ -467,3 +467,25 @@ test("a user message echoed with STRING content does not fail the turn", async (
   }));
   await expect(run(driver).result).resolves.toMatchObject({ text: expect.stringContaining("hello") });
 });
+
+test("a read-only turn runs with no built-in tools, no user settings and only the usage read tools", async () => {
+  const seen: Record<string, unknown> = {};
+  const names: string[] = [];
+  const sdk = async () => ({
+    tool: (name: string) => {
+      names.push(name);
+      return { name };
+    },
+    createSdkMcpServer: (input: unknown) => input,
+    async *query(input: { options: Record<string, unknown> }) {
+      Object.assign(seen, input.options);
+      yield { type: "result", subtype: "success" };
+    },
+  });
+
+  await run(createClaudeDriver(sdk), { readOnly: true, usageDiagnosis: { call: async () => "" } }).result;
+
+  expect(seen).toMatchObject({ tools: [], settingSources: [], strictMcpConfig: true, maxTurns: 40 });
+  expect(Object.keys(seen.mcpServers as object)).toEqual(["telar"]);
+  expect(names).toEqual(["usage_read", "usage_grep", "usage_glob", "usage_sql"]);
+});
