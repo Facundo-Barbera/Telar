@@ -50,7 +50,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 40));
  *  project is assigned to, and a spare nothing points at. */
 const PROFILES: BrowserProfile[] = [
   { id: "bp_default", label: "Default", partition: "persist:a", createdAt: 1, isDefault: true, projects: [] },
-  { id: "bp_work", label: "Work", partition: "persist:b", createdAt: 2, projects: ["project_aaaa"] },
+  { id: "bp_work", label: "Work", partition: "persist:b", createdAt: 2, projects: ["project_aaaa"], sessions: 2 },
   { id: "bp_spare", label: "Spare", partition: "persist:c", createdAt: 3, projects: [] },
 ];
 
@@ -131,7 +131,7 @@ describe("browser profiles — deleting one", () => {
     view.unmount();
   });
 
-  test("the confirm names how many projects move and where they move to", async () => {
+  test("the confirm names how many projects and sessions move and where they move to", async () => {
     stubBridge();
     const view = await mount();
     const asked: string[] = [];
@@ -142,12 +142,12 @@ describe("browser profiles — deleting one", () => {
 
     // Refused at the dialog: nothing is asked of the shell, and the row stays.
     await press(deleteButton(view.row("Work")));
-    expect(asked).toEqual(['Delete "Work"? 1 project will use "Default" instead. Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.']);
+    expect(asked).toEqual(['Delete "Work"? 1 project and 2 sessions will use "Default" instead. Its cookies and site data are deleted.']);
     expect(view.row("Work")).toBeTruthy();
 
     // A profile nothing is assigned to has no move to report, only the jar.
     await press(deleteButton(view.row("Spare")));
-    expect(asked[1]).toBe('Delete "Spare"? Sessions browsing in it move over, and its open tabs reload signed out. Its cookies stay on disk.');
+    expect(asked[1]).toBe('Delete "Spare"? Its cookies and site data are deleted.');
     view.unmount();
   });
 
