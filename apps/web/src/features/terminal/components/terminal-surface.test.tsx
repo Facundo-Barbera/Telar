@@ -573,6 +573,11 @@ describe("closing a chip ends its terminal", () => {
     expect(stop?.body).toEqual({ terminalId: "term_run" });
     // The engine owns a run's terminal; the host is not asked to close it.
     expect(bridge.closes).toEqual([]);
+    for (let turn = 0; turn < 20 && tabs(host).length > 1; turn += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
     expect(tabs(host).map((tab) => tab.textContent)).toEqual(["Shell 1"]);
   });
 });
