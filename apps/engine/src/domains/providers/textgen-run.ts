@@ -25,14 +25,20 @@ const DEFAULT_EFFORT: TextGenEffort = "low";
 const SYSTEM_PROMPT = "Answer with the requested JSON only.";
 
 export async function runStructured(input: TextGenDriverInput, prompt: string, schema: object): Promise<Structured | undefined> {
+  try {
+    return await runStructuredOrThrow(input, prompt, schema);
+  } catch (error) {
+    console.error(`[engine] ${input.driver} text generation failed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+export async function runStructuredOrThrow(input: TextGenDriverInput, prompt: string, schema: object): Promise<Structured | undefined> {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "telar-textgen-"));
   try {
     if (input.driver === "claude") return await runClaude(input, scratch, prompt, schema);
     if (input.driver === "codex") return await runCodex(input, scratch, prompt, schema);
     return await runOpenCode(input, scratch, prompt, schema);
-  } catch (error) {
-    console.error(`[engine] ${input.driver} text generation failed: ${error instanceof Error ? error.message : String(error)}`);
-    return undefined;
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }
@@ -85,9 +91,11 @@ function readOrEmpty(file: string): string {
 async function runClaude(input: TextGenDriverInput, scratch: string, prompt: string, schema: object): Promise<Structured | undefined> {
   const executable = requireCli("claude", input.binaryPath ? { binaryPath: input.binaryPath } : {});
   const env = { ...claudeSettingsEnv({ ...process.env, ...input.env }), ...input.env };
-  const stdout = await runToCompletion(executable, claudeTextGenArgs(input, schema), scratch, { ...input, env }, prompt);
-  if (stdout === undefined) return undefined;
-  const answer = parseJson(stdout);
+  const exit = await runToCompletion(executable, claudeTextGenArgs(input, schema), scratch, { ...input, env }, prompt);
+  if (exit === undefined) return undefined;
+  const answer = parseJson(exit.out);
+  if (answer?.["is_error"] === true && typeof answer["result"] === "string") throw new TextGenFailure(redactedTail(answer["result"]));
+  if (exit.code !== 0) throw exitFailure(exit);
   const structured = answer?.["structured_output"];
   if (typeof structured === "object" && structured !== null) return structured as Structured;
   throw new TextGenFailure(`no structured output (${String(answer?.["subtype"] ?? "unparsable answer")})`);
@@ -122,8 +130,10 @@ async function runCodex(input: TextGenDriverInput, scratch: string, prompt: stri
   fs.writeFileSync(schemaPath, JSON.stringify(schema));
   const work = path.join(scratch, "work");
   fs.mkdirSync(work);
-  const stdout = await runToCompletion(executable, codexTextGenArgs(input, schemaPath, outputPath), work, input, prompt);
-  return stdout === undefined ? undefined : parseJson(fs.readFileSync(outputPath, "utf8"));
+  const exit = await runToCompletion(executable, codexTextGenArgs(input, schemaPath, outputPath), work, input, prompt);
+  if (exit === undefined) return undefined;
+  if (exit.code !== 0) throw exitFailure(exit);
+  return parseJson(readOrEmpty(outputPath)) ?? noAnswer(exit);
 }
 
 function openCodeTextGenArgs(input: Pick<TextGenDriverInput, "model">): string[] {
@@ -144,8 +154,10 @@ function openCodeTextGenConfig(schema: object): string {
 async function runOpenCode(input: TextGenDriverInput, scratch: string, prompt: string, schema: object): Promise<Structured | undefined> {
   const executable = requireCli("opencode", input.binaryPath ? { binaryPath: input.binaryPath } : {});
   const env = { ...input.env, OPENCODE_CONFIG_CONTENT: openCodeTextGenConfig(schema), OPENCODE_DISABLE_PROJECT_CONFIG: "1" };
-  const stdout = await runToCompletion(executable, openCodeTextGenArgs(input), scratch, { ...input, env }, prompt);
-  return stdout === undefined ? undefined : parseOpenCodeAnswer(stdout);
+  const exit = await runToCompletion(executable, openCodeTextGenArgs(input), scratch, { ...input, env }, prompt);
+  if (exit === undefined) return undefined;
+  if (exit.code !== 0) throw exitFailure(exit);
+  return parseOpenCodeAnswer(exit.out) ?? noAnswer(exit);
 }
 
 function parseOpenCodeAnswer(stdout: string): Structured | undefined {
@@ -160,13 +172,23 @@ function parseOpenCodeAnswer(stdout: string): Structured | undefined {
   return start >= 0 && end > start ? parseJson(text.slice(start, end + 1)) : undefined;
 }
 
-class TextGenFailure extends Error {}
+export class TextGenFailure extends Error {}
+
+type Exit = { code: number | string; out: string; err: string };
 
 function redactedTail(text: string, max = 300): string {
   return text.replace(/\b(sk-[\w-]+|[A-Za-z0-9_-]{32,})/g, "[redacted]").replace(/\s+/g, " ").trim().slice(-max);
 }
 
-function runToCompletion(executable: string, args: string[], cwd: string, input: TextGenDriverInput, prompt: string): Promise<string | undefined> {
+function exitFailure(exit: Exit): TextGenFailure {
+  return new TextGenFailure(`exited ${exit.code}: ${redactedTail(exit.err || exit.out) || "no output"}`);
+}
+
+function noAnswer(exit: Exit): never {
+  throw new TextGenFailure(`no JSON answer${exit.err.trim() ? `: ${redactedTail(exit.err)}` : ""}`);
+}
+
+function runToCompletion(executable: string, args: string[], cwd: string, input: TextGenDriverInput, prompt: string): Promise<Exit | undefined> {
   return new Promise((resolve, reject) => {
     if (input.signal?.aborted) {
       resolve(undefined);
@@ -180,7 +202,7 @@ function runToCompletion(executable: string, args: string[], cwd: string, input:
     let out = "";
     let err = "";
     let settled = false;
-    const finish = (value: string | undefined, failure?: string) => {
+    const finish = (value: Exit | undefined, failure?: string) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
@@ -207,10 +229,7 @@ function runToCompletion(executable: string, args: string[], cwd: string, input:
     child.stderr.on("data", (chunk: Buffer) => {
       err = (err + chunk.toString("utf8")).slice(-4000);
     });
-    child.on("close", (code, signal) => {
-      if (code === 0) finish(out);
-      else finish(undefined, `exited ${code ?? signal}: ${redactedTail(err || out) || "no output"}`);
-    });
+    child.on("close", (code, signal) => finish({ code: code ?? signal ?? "unknown", out, err }));
     child.stdin.on("error", () => undefined);
     child.stdin.write(prompt);
     child.stdin.end();
