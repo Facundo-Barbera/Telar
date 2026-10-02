@@ -4,10 +4,12 @@ import * as React from "react"
 import { Menu as MenuPrimitive } from "@base-ui/react/menu"
 
 import { cn } from "@/ui/utils"
+import { useOverlayRootClaim } from "@/platform/desktop/native-view-overlay"
 import { ChevronRightIcon, CheckIcon } from "lucide-react"
 
 function DropdownMenu({ ...props }: MenuPrimitive.Root.Props) {
-  return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+  const onOpenChange = useOverlayRootClaim(props)
+  return <MenuPrimitive.Root data-slot="dropdown-menu" {...props} onOpenChange={onOpenChange} />
 }
 
 function DropdownMenuTrigger({ ...props }: MenuPrimitive.Trigger.Props) {

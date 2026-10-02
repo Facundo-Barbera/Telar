@@ -1,9 +1,7 @@
 "use client";
 
-import { useState } from "react";
 import { CameraIcon, CheckIcon, DownloadIcon, KeyRoundIcon, Loader2Icon, TriangleAlertIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/ui/context-menu";
-import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import { cn } from "@/ui/utils";
 import type { BrowserUi } from "../hooks/use-browser-session";
 import { BROWSER_NOT_AUTHORIZED, describeDownload, describeExtensionHealth, needsBrowserAuthorization } from "../model";
@@ -27,10 +25,8 @@ export function CheckRow({ on, onClick, children, ...rest }: { on: boolean; onCl
 
 /** A press takes the viewport; the right-click menu offers the full page too. */
 export function CameraButton({ busy, onCapture }: { busy: boolean; onCapture: (fullPage: boolean) => void }) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  useNativeViewOverlay(menuOpen);
   return (
-    <ContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
+    <ContextMenu>
       <ContextMenuTrigger className="contents">
         <button
           type="button"

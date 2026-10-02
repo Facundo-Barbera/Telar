@@ -3,9 +3,11 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover"
 
 import { cn } from "@/ui/utils"
+import { useOverlayRootClaim } from "@/platform/desktop/native-view-overlay"
 
 function Popover({ ...props }: PopoverPrimitive.Root.Props) {
-  return <PopoverPrimitive.Root data-slot="popover" {...props} />
+  const onOpenChange = useOverlayRootClaim(props)
+  return <PopoverPrimitive.Root data-slot="popover" {...props} onOpenChange={onOpenChange} />
 }
 
 function PopoverTrigger({ ...props }: PopoverPrimitive.Trigger.Props) {

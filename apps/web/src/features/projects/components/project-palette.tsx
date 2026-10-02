@@ -6,6 +6,7 @@ import { DirectoryBrowser } from "@/features/files";
 import { PaletteListPage } from "./palette-list-page";
 import { useProjectPalette, type ProjectPalettePage } from "../hooks/use-project-palette";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/ui/dialog";
+import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import { createEngineApi } from "@/platform/engine";
 import type { NewConversationTarget, PalettePage, Registered } from "../palette-model";
 
@@ -209,6 +210,7 @@ export function RegisteredToast({
 }) {
   const [undone, setUndone] = useState<string>();
   const key = toast?.projectId;
+  useNativeViewOverlay(Boolean(toast));
 
   useEffect(() => {
     if (!key) return undefined;

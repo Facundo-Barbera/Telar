@@ -371,11 +371,8 @@ export function DesktopBrowserSurface(props: BrowserProps) {
   const overlayRef = useRef(false);
   const s = useBrowserStore(props.scopeKey, props.projectId, addressRowRef, partitionRef);
   const { openOverlay, annotating } = s;
-  useNativeViewOverlay(openOverlay !== null);
   useNativeViewOverlay(Boolean(annotating));
   const view = browserView(s);
-  const { activePrompt } = view;
-  useNativeViewOverlay(Boolean(activePrompt));
   const hostSize = useHostSize(hostRef);
   const frozenFrame = useFrozenOverlay(props.bridge, props.scopeKey, hostRef, overlayRef);
   const sync = useBrowserSync(props, s, view, { intentAtRef, partitionRef, hostRef, overlayRef });

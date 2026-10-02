@@ -1,11 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { CodeXmlIcon, Loader2Icon, MoonIcon, PlusIcon, UserRoundIcon, XIcon } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
 import { describePermissionKinds } from "../desktop-site-permissions";
 import { browserPageReference, startReferenceDrag } from "@/features/composer";
-import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import { cn } from "@/ui/utils";
 import type { BrowserUi } from "../hooks/use-browser-session";
 import type { DesktopBrowserTab } from "../types";
@@ -16,10 +14,8 @@ function TabMenu({ tab, b, className, children }: { tab: DesktopBrowserTab; b: B
   const { act } = b;
   const onOpenExternal = b.bridge.openExternal;
   const web = /^https?:\/\//i.test(tab.url);
-  const [menuOpen, setMenuOpen] = useState(false);
-  useNativeViewOverlay(menuOpen);
   return (
-    <ContextMenu open={menuOpen} onOpenChange={setMenuOpen}>
+    <ContextMenu>
       <ContextMenuTrigger className={className}>{children}</ContextMenuTrigger>
       <ContextMenuContent className="w-auto">
         <ContextMenuItem onClick={() => void act({ action: "reload", index: tab.index })}>Reload</ContextMenuItem>
