@@ -265,8 +265,8 @@ describe("the Mac takes an alert, and the phone's seen still advances", () => {
     expect(next?.seen.s1).toBe(signalKey(blocked));
   });
 
-  test("idle, or no shell at all: no banner, and the phone is pushed", async () => {
-    for (const presence of [{ active: false, viewingPath: null, at: 10_000 }, undefined]) {
+  test("idle or unfocused, a beat gone stale, or no shell at all: no banner, and the phone is pushed", async () => {
+    for (const presence of [{ active: false, viewingPath: null, at: 10_000 }, { active: true, viewingPath: null, at: 11_000 - PRESENCE_STALE_MS - 1 }, undefined]) {
       reset(presence);
       const mac = recorder();
       notifyDesktop([blocked], moved, { channel: mac, notifyOn: "mac", now: 11_000 });

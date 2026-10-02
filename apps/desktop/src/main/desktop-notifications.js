@@ -35,13 +35,13 @@ function shouldNotifyDesktop(notice, context = {}) {
   return true;
 }
 
-const ACTIVE_IDLE_SECONDS = 120;
+const ACTIVE_IDLE_SECONDS = 60;
 
 const PRESENCE_BEAT_MS = 15_000;
 
 function presenceMessage({ idleState, locked, focused, viewingPath }) {
-  const active = !locked && idleState === "active";
-  return { type: DESKTOP_PRESENCE, active, viewingPath: active && focused && appPath(viewingPath) ? viewingPath : null };
+  const active = !locked && focused && idleState === "active";
+  return { type: DESKTOP_PRESENCE, active, viewingPath: active && appPath(viewingPath) ? viewingPath : null };
 }
 
 function createPresenceReporter({ sample, send, setInterval: every = setInterval, clearInterval: stopEvery = clearInterval }) {

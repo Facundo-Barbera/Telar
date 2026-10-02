@@ -144,7 +144,7 @@ export function PushNotificationsGroup() {
           label="Notify on"
           icon={BellIcon}
           hint="Which device each alert goes to."
-          info="Each alert goes to one device: this computer while you're using it, your iPhone once you step away. A session you're looking at alerts neither."
+          info="Each alert goes to one device: this computer while Telar is in front and in use, your iPhone otherwise. A session you're looking at alerts neither."
           {...(notifyError ? { error: notifyError } : {})}
           {...(notifyOn === "mac" ? {} : { onRevert: () => void saveNotifyOn("mac") })}
           control={
