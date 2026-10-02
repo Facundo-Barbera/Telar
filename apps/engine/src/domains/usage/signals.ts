@@ -44,8 +44,12 @@ export function usageSignals(digest: Omit<UsageDigest, "signals">): UsageSignal[
   const bigOutputs = top.filter((session) => session.largeToolOutputs > 0);
   flag("big_tool_outputs", bigOutputs.reduce((sum, session) => sum + session.largeToolOutputs, 0), 20, bigOutputs.map((session) => session.id));
 
-  const claude = digest.providerLogs.find((entry) => entry.provider === "claude");
-  if (claude) flag("outside_telar", share(Math.max(0, claude.tokens - claude.telarTokens), claude.tokens), 0.5);
+  const logs = digest.claudeLogs;
+  if (logs) {
+    const { store, telar, outside } = logs.buckets;
+    flag("outside_telar", share(outside.tokens, store.tokens + telar.tokens + outside.tokens), 0.5);
+    if (telar.tokens > 0 && logs.storeCoverage < 0.5) signals.push({ id: "store_misses_telar_runs", value: logs.storeCoverage, threshold: 0.5 });
+  }
 
   const fanOut = digest.trees.filter((tree) => tree.sessions >= 5);
   flag("wide_fan_out", share(fanOut.reduce((sum, tree) => sum + tree.tokens, 0), all), 0.3, fanOut.map((tree) => tree.root));

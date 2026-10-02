@@ -11,6 +11,13 @@ export function diagnosisFeedbackText(diagnosis: UsageDiagnosis): string {
     lines.push(`**30 days:** ${formatTokens(processed)} tokens · ${formatUsd(totals.costUsd)} · ${formatShare(totals.cacheHit)} cache reads · ${totals.turns} turns · ${totals.sessions} sessions`);
   }
   lines.push(`**Diagnosed with:** ${diagnosis.model ?? "unknown"}, prompt v${diagnosis.promptVersion}${diagnosis.fallback ? ", from the engine's checks alone" : ""}`);
+  const logs = diagnosis.logs;
+  const logged = logs ? logs.buckets.store.tokens + logs.buckets.telar.tokens + logs.buckets.outside.tokens : 0;
+  if (logs && logged > 0) {
+    const part = (tokens: number) => `${formatTokens(tokens)} (${formatShare(tokens / logged)})`;
+    lines.push(`**Claude logs, 30 days:** this Telar ${part(logs.buckets.store.tokens)} · Telar elsewhere ${part(logs.buckets.telar.tokens)} · outside Telar ${part(logs.buckets.outside.tokens)}`);
+    lines.push(`**Top models in the logs:** ${logs.models.slice(0, 4).map((model) => `${model.model} ${formatTokens(model.tokens)}`).join(", ")}`);
+  }
   if (report.topConsumers.length > 0) {
     lines.push("", "### Top consumers", ...report.topConsumers.map((entry) => `- ${entry.id}: ${formatShare(entry.share)}. ${entry.reason}`));
   }

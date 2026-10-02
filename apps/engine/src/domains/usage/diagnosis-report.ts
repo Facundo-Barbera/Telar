@@ -26,7 +26,8 @@ const FALLBACK: Record<string, { title: string; why: string; setting: UsageDiagn
   no_compaction: { title: "Large contexts never compact", why: "A context that never compacts is re-read whole on every call.", setting: "compaction", action: "Lower the compaction threshold." },
   rate_limit_loops: { title: "Turns keep meeting rate limits", why: "Retries after a limit spend the next window straight away.", setting: "continue-after-reset", action: "Run fewer sessions at once." },
   big_tool_outputs: { title: "Tool outputs are very large", why: "Large outputs stay in the context and are re-read on every call.", setting: "mcp-servers", action: "Use narrower commands and fewer MCP servers." },
-  outside_telar: { title: "Most use happens outside Telar", why: "The provider's own logs show more use than Telar's sessions account for.", setting: "none", action: "Check Claude Code runs started outside Telar." },
+  outside_telar: { title: "Most use carries no sign of Telar", why: "Most Claude transcripts on this computer have no Telar session, folder or tool in them.", setting: "none", action: "Check Claude Code runs started outside Telar." },
+  store_misses_telar_runs: { title: "This data holds little of your Telar use", why: "Most Telar runs in the logs belong to another data folder, another install, or sessions since deleted, so their details are not here.", setting: "none", action: "Run the diagnosis from the Telar you use most." },
   wide_fan_out: { title: "Wide fan-outs dominate", why: "Each builder brings its own context, model and effort.", setting: "new-sessions-model", action: "Fan out to fewer builders on a smaller model." },
 };
 

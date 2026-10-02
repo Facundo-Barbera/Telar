@@ -57,7 +57,7 @@ export class UsageDiagnoses {
     const session = this.store.lifecycle.createSession({ title: "Usage diagnosis", driver: "claude", purpose: "usage-diagnosis", detached: true, model: { model, effort } });
     const runId = `run_${crypto.randomUUID().replaceAll("-", "")}`;
     this.store.intake.submitTurn(session.id, { runId, input: usageDiagnosisPrompt(digestPath) });
-    return this.save({ id, sessionId: session.id, runId, state: "running", createdAt: this.store.kernel.now(), model: `${model} · ${effort}`, promptVersion: USAGE_DIAGNOSIS_PROMPT_VERSION, totals: digest.windows["30d"].totals, names });
+    return this.save({ id, sessionId: session.id, runId, state: "running", createdAt: this.store.kernel.now(), model: `${model} · ${effort}`, promptVersion: USAGE_DIAGNOSIS_PROMPT_VERSION, totals: digest.windows["30d"].totals, ...(digest.claudeLogs ? { logs: digest.claudeLogs } : {}), names });
   }
 
   current(): UsageDiagnosis | undefined {

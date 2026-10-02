@@ -1,6 +1,6 @@
 import { USAGE_FIX_SETTINGS } from "@telar/engine-client";
 
-export const USAGE_DIAGNOSIS_PROMPT_VERSION = 1;
+export const USAGE_DIAGNOSIS_PROMPT_VERSION = 2;
 
 const LAYOUT = `Telar's data folder (your working folder; every path below is relative to it):
 - execution.sqlite: the engine's database. Query it with usage_sql (one SELECT at a time, 200 rows at most). Tables:
@@ -23,7 +23,8 @@ const PATTERNS = `How Telar spends tokens:
 - An orchestrator fans out builders; each has its own context, model and effort.
 - A 1M-token context window lets a context grow far past 200k before it compacts.
 - Higher effort (high, xhigh, max) means more thinking and more tool calls.
-- Use outside Telar (Claude Code run directly) shows in the digest as providerLogs.tokens minus telarTokens.
+- The digest's claudeLogs sorts every Claude transcript on this computer by evidence: "store" (a session in this Telar data folder), "telar" (Telar ran it, but not from this data folder: another install, another data folder, or sessions since deleted), and "outside" (no sign of Telar at all). claudeLogs.projects and claudeLogs.models break the same usage down by folder (p1…) and model.
+- This data folder may hold only part of the person's Telar use. storeCoverage is the share of Telar-run usage it holds. When it is low, the sessions and turns tables miss most of the heavy runs: say so, and diagnose from claudeLogs.projects and claudeLogs.models instead.
 
 Known patterns and their fixes (fix.setting is one of ${USAGE_FIX_SETTINGS.join(", ")}):
 - long_lived_session, no_compaction: start a fresh session per task; lower the compaction threshold (compaction).
@@ -34,7 +35,8 @@ Known patterns and their fixes (fix.setting is one of ${USAGE_FIX_SETTINGS.join(
 - rate_limit_loops: turn off continuing after a reset, or run fewer sessions at once (continue-after-reset).
 - big_tool_outputs: narrower commands and fewer MCP servers (mcp-servers).
 - generated text on a large model: a small model for session names (generated-text-model).
-- outside_telar: say so plainly; Telar is not the cause (none).`;
+- outside_telar: only "outside" transcripts count, those with no Telar marker. Say what share that is; never conclude Telar is not the cause from the gap between the logs and this data folder (none).
+- store_misses_telar_runs: this data folder holds little of the Telar use in the logs. Say so plainly and base findings on claudeLogs (none).`;
 
 const OUTPUT = `Your final message is the report and nothing else: one JSON object, no prose, no code fence.
 {

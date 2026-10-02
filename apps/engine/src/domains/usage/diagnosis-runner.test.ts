@@ -42,7 +42,7 @@ test("starting writes the digest, opens a hidden read-only session and sends it 
 
   const started = await diagnoses.start({});
 
-  expect(started).toMatchObject({ state: "running", model: "sonnet · medium", promptVersion: 1, names: { s1: "Fix the login page" } });
+  expect(started).toMatchObject({ state: "running", model: "sonnet · medium", promptVersion: 2, names: { s1: "Fix the login page" } });
   expect(store.records.get(started.sessionId)).toMatchObject({ purpose: "usage-diagnosis", driver: "claude", model: { model: "sonnet", effort: "medium" } });
   const turn = store.queries.turns(started.sessionId).find((candidate) => candidate.runId === started.runId)!;
   expect(turn.input).toContain(`diagnostics/usage/${started.id}/digest.json`);

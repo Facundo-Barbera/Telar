@@ -41,8 +41,7 @@ function fixture() {
   return { store, session, turn, item };
 }
 
-const digestOf = (store: ExecutionStore, extra: { providerLogs?: Array<{ provider: string; tokens: number; costUsd: number }> } = {}) =>
-  buildUsageDigest({ db: store, now: NOW, rates: RATES, providerLogs: extra.providerLogs ?? [], config: { orientation: true }, projectName: (id) => `Project ${id}` });
+const digestOf = (store: ExecutionStore) => buildUsageDigest({ db: store, now: NOW, rates: RATES, providerLogs: [], config: { orientation: true }, projectName: (id) => `Project ${id}` });
 
 test("ranks sessions by tokens under anonymous ids and keeps their titles out of the digest", () => {
   const { store, session, turn } = fixture();
@@ -126,13 +125,34 @@ test("reports schedules with their period and leaves diagnosis sessions out", ()
   expect(JSON.stringify(digest)).not.toContain("secret prompt");
 });
 
-test("measures use outside Telar from the provider logs", () => {
+test("log usage is split by evidence, labelled by folder, and a small share of Telar runs is flagged rather than called outside", () => {
   const { store, session, turn } = fixture();
-  session("session_one", {});
-  turn("session_one", NOW - HOUR, { cacheRead: 850, input: 100, output: 50 });
+  session("session_one", { projectId: "project_one" });
+  turn("session_one", NOW - HOUR, { cacheRead: 10 });
+  const row = (bucket: "store" | "telar" | "outside", cwd: string, tokens: number, model = "claude-sonnet-5") => ({ file: `${bucket}-${cwd}`, bucket, cwd, model, tokens, costUsd: tokens / 1e6 });
 
-  const { digest } = digestOf(store, { providerLogs: [{ provider: "claude", tokens: 10_000, costUsd: 1.234 }] });
+  const { digest, names } = buildUsageDigest({
+    db: store,
+    now: NOW,
+    rates: RATES,
+    providerLogs: [{ provider: "claude", tokens: 1_000_000, costUsd: 1.234 }],
+    config: {},
+    projectName: (id) => `Project ${id}`,
+    projectRoots: [{ id: "project_one", root: "/code/acme" }],
+    claudeLogs: [
+      row("store", "/code/acme", 50_000),
+      row("telar", "/elsewhere/worktrees/acme-1234/src", 900_000, "claude-opus-5[1m]"),
+      row("outside", "/home/me/scratch", 50_000),
+    ],
+  });
 
-  expect(digest.providerLogs).toEqual([{ provider: "claude", tokens: 10_000, costUsd: 1.23, telarTokens: 1000 }]);
-  expect(digest.signals.find((signal) => signal.id === "outside_telar")?.value).toBe(0.9);
+  expect(digest.claudeLogs!.buckets).toMatchObject({ store: { tokens: 50_000, transcripts: 1 }, telar: { tokens: 900_000 }, outside: { tokens: 50_000 } });
+  expect(digest.claudeLogs!.storeCoverage).toBe(0.053);
+  expect(digest.claudeLogs!.projects.map((project) => [project.id, project.bucket])).toEqual([["p2", "telar"], ["p1", "store"], ["p3", "outside"]]);
+  expect(digest.claudeLogs!.models[0]).toMatchObject({ model: "claude-opus-5[1m]", tokens: 900_000 });
+  expect(names).toMatchObject({ p1: "Project project_one", p2: "acme-1234", p3: "scratch" });
+  expect(JSON.stringify(digest)).not.toMatch(/acme|scratch|elsewhere/);
+  const signals = digest.signals.map((signal) => signal.id);
+  expect(signals).toContain("store_misses_telar_runs");
+  expect(signals).not.toContain("outside_telar");
 });

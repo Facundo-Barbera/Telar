@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { StethoscopeIcon } from "lucide-react";
-import type { UsageDiagnosis, UsageDiagnosisReport } from "@telar/engine-client";
+import type { UsageDiagnosis, UsageDiagnosisReport, UsageLogAttribution, UsageLogBucket } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
 import { Badge } from "@/ui/badge";
 import { Button } from "@/ui/button";
@@ -98,6 +98,7 @@ function Report({ diagnosis, report }: { diagnosis: UsageDiagnosis; report: Usag
           ))}
         </ul>
       )}
+      {diagnosis.logs && <LogBreakdown logs={diagnosis.logs} names={diagnosis.names ?? {}} />}
       <ul aria-label="Findings" className="flex flex-col gap-3">
         {report.findings.map((finding) => (
           <li key={`${finding.signal}-${finding.title}`} className="rounded-lg border border-border p-3">
@@ -120,6 +121,36 @@ function Report({ diagnosis, report }: { diagnosis: UsageDiagnosis; report: Usag
               <span className="text-muted-foreground">{FIX_LABEL[finding.fix.setting]}: </span>
               {finding.fix.action}
             </p>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+const BUCKET_LABEL: Record<UsageLogBucket, string> = { store: "This Telar", telar: "Telar, elsewhere", outside: "Outside Telar" };
+
+function LogBreakdown({ logs, names }: { logs: UsageLogAttribution; names: Record<string, string> }) {
+  const all = logs.buckets.store.tokens + logs.buckets.telar.tokens + logs.buckets.outside.tokens;
+  if (all === 0) return null;
+  return (
+    <div aria-label="Claude logs" className="flex flex-col gap-2 text-sm">
+      <p className="text-xs text-muted-foreground">Claude usage on this computer, 30 days</p>
+      <div className="grid grid-cols-3 gap-4">
+        {(Object.keys(BUCKET_LABEL) as UsageLogBucket[]).map((bucket) => (
+          <Figure key={bucket} label={BUCKET_LABEL[bucket]} value={`${formatTokens(logs.buckets[bucket].tokens)} · ${formatShare(logs.buckets[bucket].tokens / all)}`} />
+        ))}
+      </div>
+      {logs.buckets.telar.tokens > 0 && logs.storeCoverage < 0.5 && (
+        <p className="text-xs text-muted-foreground">This Telar&apos;s data holds {formatShare(logs.storeCoverage)} of the Telar runs in your logs; the rest ran from another install or data folder.</p>
+      )}
+      <ul aria-label="Heaviest folders" className="flex flex-col gap-1">
+        {logs.projects.slice(0, 5).map((project) => (
+          <li key={`${project.id}-${project.bucket}`} className="flex items-baseline gap-2">
+            <span className="font-mono text-xs text-muted-foreground">{project.id}</span>
+            <span className="min-w-0 truncate">{names[project.id] ?? project.id}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{BUCKET_LABEL[project.bucket]}</span>
+            <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">{formatTokens(project.tokens)}</span>
           </li>
         ))}
       </ul>

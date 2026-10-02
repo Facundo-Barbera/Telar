@@ -101,3 +101,18 @@ test("a fallback report says it came from the engine's own checks", async () => 
 
   expect(document.body.textContent).toContain("this report comes from the engine's own checks");
 });
+
+test("the logs' usage shows by bucket and folder, and says when this Telar holds little of it", async () => {
+  const logs = {
+    buckets: { store: { tokens: 50_000, costUsd: 0, transcripts: 1 }, telar: { tokens: 900_000, costUsd: 0, transcripts: 9 }, outside: { tokens: 50_000, costUsd: 0, transcripts: 1 } },
+    storeCoverage: 0.053,
+    projects: [{ id: "p2", bucket: "telar" as const, tokens: 900_000, costUsd: 0, models: {} }],
+    models: [{ model: "claude-opus-5[1m]", tokens: 900_000, costUsd: 0 }],
+  };
+  await mount({ "GET /api/usage/diagnosis": { ...ready, logs, names: { ...ready.names, p2: "acme-1234" } } });
+
+  const section = document.querySelector('[aria-label="Claude logs"]')!.textContent!;
+  expect(section).toContain("Telar, elsewhere900K · 90.0%");
+  expect(section).toContain("holds 5.3% of the Telar runs in your logs");
+  expect(document.querySelector('[aria-label="Heaviest folders"]')!.textContent).toContain("acme-1234");
+});

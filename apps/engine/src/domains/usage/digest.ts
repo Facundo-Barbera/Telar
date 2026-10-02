@@ -1,7 +1,9 @@
+import path from "node:path";
 import type { TokenUsage, UsageDigest, UsageDigestSchedule, UsageDigestSession, UsageDigestTotals, UsageDigestTree, UsageDigestWindow } from "@telar/engine-client";
 import type { Statement } from "../../platform/db/schema";
 import { priceTokens, type RatesTable } from "./pricing";
 import { usageSignals } from "./signals";
+import { type AttributedTranscript, summarizeAttribution } from "./log-attribution";
 
 type Db = { statement(sql: string): Statement };
 
@@ -10,6 +12,8 @@ export type DigestInput = {
   now: number;
   rates: RatesTable;
   providerLogs: Array<{ provider: string; tokens: number; costUsd: number }>;
+  claudeLogs?: AttributedTranscript[];
+  projectRoots?: ReadonlyArray<{ id: string; root: string }>;
   config: UsageDigest["config"];
   projectName: (projectId: string) => string | undefined;
   exclude?: (sessionId: string) => boolean;
@@ -183,7 +187,7 @@ export function buildUsageDigest(input: DigestInput): { digest: UsageDigest; nam
   const projectLabel = (projectId: string | undefined) => {
     if (!projectId) return undefined;
     if (!projects.has(projectId)) {
-      const label = `p${projects.size + 1}`;
+      const label = nextProjectLabel(names);
       projects.set(projectId, label);
       names[label] = input.projectName(projectId) ?? label;
     }
@@ -276,15 +280,31 @@ export function buildUsageDigest(input: DigestInput): { digest: UsageDigest; nam
   }
 
   const schedules = readSchedules(db, label, turns30);
-  const byDriver = new Map<string, number>();
-  for (const [id, entry] of perSession) {
-    const driver = sessions.get(id)?.driver ?? "claude";
-    byDriver.set(driver, (byDriver.get(driver) ?? 0) + total(entry.tokens));
-  }
-  const providerLogs = input.providerLogs.map((entry) => ({ ...entry, costUsd: round(entry.costUsd), telarTokens: byDriver.get(entry.provider) ?? 0 }));
-  const digest: UsageDigest = { version: 1, createdAt: now, windows, providerLogs, topSessions, trees: fanOut, schedules, contextHistogram, config: input.config, signals: [] };
+  const providerLogs = input.providerLogs.map((entry) => ({ ...entry, costUsd: round(entry.costUsd) }));
+  const claudeLogs = input.claudeLogs ? summarizeAttribution(input.claudeLogs, cwdLabeller(input.projectRoots ?? [], projectLabel, names)) : undefined;
+  const digest: UsageDigest = { version: 1, createdAt: now, windows, providerLogs, ...(claudeLogs ? { claudeLogs } : {}), topSessions, trees: fanOut, schedules, contextHistogram, config: input.config, signals: [] };
   digest.signals = usageSignals(digest);
   return { digest, names };
 }
 
 const round = (value: number): number => Math.round(value * 100) / 100;
+
+const nextProjectLabel = (names: Record<string, string>): string => `p${Object.keys(names).filter((name) => /^p\d+$/.test(name)).length + 1}`;
+
+function cwdLabeller(roots: ReadonlyArray<{ id: string; root: string }>, projectLabel: (projectId: string) => string | undefined, names: Record<string, string>) {
+  const folders = new Map<string, string>();
+  return (cwd: string | undefined): string => {
+    if (!cwd) return "unknown";
+    const project = roots.find(({ root }) => cwd === root || cwd.startsWith(`${root}${path.sep}`));
+    if (project) return projectLabel(project.id) ?? "unknown";
+    const parts = cwd.split(path.sep);
+    const at = parts.indexOf("worktrees");
+    const key = at >= 0 && parts.length > at + 1 ? parts.slice(0, at + 2).join(path.sep) : cwd;
+    if (!folders.has(key)) {
+      const label = nextProjectLabel(names);
+      folders.set(key, label);
+      names[label] = path.basename(key);
+    }
+    return folders.get(key)!;
+  };
+}

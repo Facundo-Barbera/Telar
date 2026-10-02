@@ -40,13 +40,23 @@ export type UsageDigestTree = { root: string; sessions: number; depth: number; t
 
 export type UsageDigestSchedule = { session?: string; periodMinutes?: number; enabled: boolean; runs: number; tokens: number };
 
+export type UsageLogBucket = "store" | "telar" | "outside";
+
+export type UsageLogAttribution = {
+  buckets: Record<UsageLogBucket, { tokens: number; costUsd: number; transcripts: number }>;
+  storeCoverage: number;
+  projects: Array<{ id: string; bucket: UsageLogBucket; tokens: number; costUsd: number; models: Record<string, number> }>;
+  models: Array<{ model: string; tokens: number; costUsd: number }>;
+};
+
 export type UsageSignal = { id: string; value: number; threshold: number; sessions?: string[] };
 
 export type UsageDigest = {
   version: 1;
   createdAt: number;
   windows: Record<UsageDigestWindow, { totals: UsageDigestTotals; byModel: Array<{ model: string; tokens: number; costUsd: number; turns: number }> }>;
-  providerLogs: Array<{ provider: string; tokens: number; costUsd: number; telarTokens: number }>;
+  providerLogs: Array<{ provider: string; tokens: number; costUsd: number }>;
+  claudeLogs?: UsageLogAttribution;
   topSessions: UsageDigestSession[];
   trees: UsageDigestTree[];
   schedules: UsageDigestSchedule[];
@@ -101,6 +111,7 @@ export type UsageDiagnosis = {
   model?: string;
   promptVersion: number;
   totals?: UsageDigestTotals;
+  logs?: UsageLogAttribution;
   report?: UsageDiagnosisReport;
   fallback?: boolean;
   error?: string;

@@ -19,6 +19,12 @@ const diagnosis: UsageDiagnosis = {
   promptVersion: 1,
   totals: { tokens: { input: 0, output: 0, cacheRead: 2_000_000, cacheCreate: 0 }, costUsd: 4.5, turns: 10, sessions: 2, cacheHit: 0.98 },
   names: { s1: "Fix the login page", p1: "Acme Rocket" },
+  logs: {
+    buckets: { store: { tokens: 100_000, costUsd: 0, transcripts: 1 }, telar: { tokens: 800_000, costUsd: 0, transcripts: 8 }, outside: { tokens: 100_000, costUsd: 0, transcripts: 1 } },
+    storeCoverage: 0.111,
+    projects: [{ id: "p1", bucket: "telar", tokens: 800_000, costUsd: 0, models: {} }],
+    models: [{ model: "claude-opus-5[1m]", tokens: 800_000, costUsd: 0 }],
+  },
   report: {
     window: "30d",
     summary: "Most tokens are cache reads in one long session.",
@@ -65,6 +71,7 @@ test("the preview shows the report without the local names, and that exact text 
   expect(preview.value).toContain("Fix (compaction): Start fresh sessions.");
   expect(preview.value).not.toContain("Fix the login page");
   expect(preview.value).not.toContain("Acme Rocket");
+  expect(preview.value).toContain("this Telar 100K (10.0%) · Telar elsewhere 800K (80.0%) · outside Telar 100K (10.0%)");
   expect(preview.value).not.toContain("session_diag");
 
   await press(button("Open issue"));
