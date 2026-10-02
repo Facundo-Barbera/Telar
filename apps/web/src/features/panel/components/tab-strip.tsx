@@ -6,7 +6,6 @@ import { Maximize2Icon, Minimize2Icon, PanelRightCloseIcon, XIcon } from "lucide
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/ui/context-menu";
 import { KeyHint } from "@/features/commands";
 import { desktopBrowserBridge } from "@/features/browser";
-import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import { cn } from "@/ui/utils";
 import { splitRoster, tabBadge, type TabBadge } from "../folds";
 import { useLivePages } from "../hooks/use-live-pages";
@@ -124,7 +123,6 @@ function TabChip({
 export function TabStrip(strip: StripProps) {
   const { tabs, sessionId, browser, fullscreen, onOpenNewTab, onOpenBrowser, tasks = [], browserStart = { status: "idle" } } = strip;
   const menu = useState<string>();
-  useNativeViewOverlay(menu[0] !== undefined);
   const drag = useTabDrag(tabs, strip.onMoveTab);
   const browserScopes = useMemo(
     () => (sessionId ? tabs.filter((entry) => browserTabId(entry.kind) !== undefined).map((entry) => browserScopeKey(sessionId, entry.id)) : []),

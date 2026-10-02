@@ -16,7 +16,6 @@ export function useBrowserStore(scopeKey: string, projectId: string | undefined,
   const [actionError, setActionError] = useState<string>();
   const [scope] = useState(makeScopeGuard);
   const [bound, setBound] = useState(false);
-  // One open menu at most; the component hands this to `useNativeViewOverlay`.
   const [openOverlay, setOpenOverlay] = useState<BrowserOverlay>(null);
   const [profilePane, setProfilePane] = useState<"menu" | "rename" | "new">("menu");
   const [optionsPane, setOptionsPane] = useState<"menu" | "appearance" | "cookies" | "cache">("menu");

@@ -3,7 +3,6 @@
 import { useRef, useState } from "react";
 import { GlobeIcon, PlusIcon } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/ui/dropdown-menu";
-import { useNativeViewOverlay } from "@/platform/desktop/native-view-overlay";
 import type { BrowserStartState } from "../folds";
 import type { OpenableSurface, PanelTab } from "../model";
 import type { PanelTabParams } from "../tabs";
@@ -30,7 +29,6 @@ export function SurfaceChooser({
    * So the mouse press decides and the click applies; `undefined` leaves a keyboard activation to the primitive.
    */
   const press = useRef<boolean>(undefined);
-  useNativeViewOverlay(open);
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger

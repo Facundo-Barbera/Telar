@@ -4,11 +4,13 @@ import * as React from "react"
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog"
 
 import { cn } from "@/ui/utils"
+import { useOverlayRootClaim } from "@/platform/desktop/native-view-overlay"
 import { Button } from "@/ui/button"
 import { XIcon } from "lucide-react"
 
 function Dialog({ ...props }: DialogPrimitive.Root.Props) {
-  return <DialogPrimitive.Root data-slot="dialog" modal="trap-focus" {...props} />
+  const onOpenChange = useOverlayRootClaim(props)
+  return <DialogPrimitive.Root data-slot="dialog" modal="trap-focus" {...props} onOpenChange={onOpenChange} />
 }
 
 function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {

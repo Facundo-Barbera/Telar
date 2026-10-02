@@ -4,11 +4,13 @@ import * as React from "react"
 import { Dialog as SheetPrimitive } from "@base-ui/react/dialog"
 
 import { cn } from "@/ui/utils"
+import { useOverlayRootClaim } from "@/platform/desktop/native-view-overlay"
 import { Button } from "@/ui/button"
 import { XIcon } from "lucide-react"
 
 function Sheet({ ...props }: SheetPrimitive.Root.Props) {
-  return <SheetPrimitive.Root data-slot="sheet" modal="trap-focus" {...props} />
+  const onOpenChange = useOverlayRootClaim(props)
+  return <SheetPrimitive.Root data-slot="sheet" modal="trap-focus" {...props} onOpenChange={onOpenChange} />
 }
 
 function SheetPortal({ ...props }: SheetPrimitive.Portal.Props) {

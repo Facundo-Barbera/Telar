@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 type OverlayListener = (hidden: boolean) => void;
 
@@ -34,6 +34,22 @@ export function claimNativeView(): () => void {
 
 export function useNativeViewOverlay(open: boolean): void {
   useEffect(() => (open ? claimNativeView() : undefined), [open]);
+}
+
+type OverlayRoot<Details> = {
+  open?: boolean | undefined;
+  defaultOpen?: boolean | undefined;
+  onOpenChange?: ((open: boolean, details: Details) => void) | undefined;
+};
+
+/** For an overlay's root, controlled or not: pass the result as its `onOpenChange`. */
+export function useOverlayRootClaim<Details>({ open, defaultOpen, onOpenChange }: OverlayRoot<Details>) {
+  const [ownOpen, setOwnOpen] = useState(defaultOpen ?? false);
+  useNativeViewOverlay(open ?? ownOpen);
+  return (next: boolean, details: Details) => {
+    setOwnOpen(next);
+    onOpenChange?.(next, details);
+  };
 }
 
 export function nativeViewOverlayHidden(): boolean {

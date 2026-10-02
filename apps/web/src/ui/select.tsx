@@ -4,9 +4,13 @@ import * as React from "react"
 import { Select as SelectPrimitive } from "@base-ui/react/select"
 
 import { cn } from "@/ui/utils"
+import { useOverlayRootClaim } from "@/platform/desktop/native-view-overlay"
 import { ChevronDownIcon, CheckIcon, ChevronUpIcon } from "lucide-react"
 
-const Select = SelectPrimitive.Root
+function Select<Value, Multiple extends boolean | undefined = false>({ ...props }: SelectPrimitive.Root.Props<Value, Multiple>) {
+  const onOpenChange = useOverlayRootClaim(props)
+  return <SelectPrimitive.Root {...props} onOpenChange={onOpenChange} />
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
