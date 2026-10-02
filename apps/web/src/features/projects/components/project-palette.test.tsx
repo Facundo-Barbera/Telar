@@ -17,7 +17,8 @@ import {
   type NewConversationTarget,
   type PalettePage,
 } from "../palette-model";
-import { ProjectPalette, ProjectPalettePages } from "./project-palette";
+import { ProjectPalette, ProjectPalettePages, RegisteredToast } from "./project-palette";
+import { nativeViewOverlayHidden } from "@/platform/desktop/native-view-overlay";
 
 installTestDom();
 afterEach(() => window.localStorage.clear());
@@ -466,4 +467,11 @@ describe("where Backspace goes", () => {
   test("the standalone palette's Sources always has a back, because its root is Projects", () => {
     expect(paletteBack("sources", "", "projects")).toBe("projects");
   });
+});
+
+test("the registered toast takes the native browser view down while it shows", async () => {
+  const { unmount } = await mount(<RegisteredToast toast={{ projectId: "p1", name: "telar", ignored: true }} onDismiss={() => {}} onChanged={() => {}} />);
+  expect(nativeViewOverlayHidden()).toBe(true);
+  unmount();
+  expect(nativeViewOverlayHidden()).toBe(false);
 });
