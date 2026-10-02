@@ -160,7 +160,10 @@ module.exports = {
       wc.setWindowOpenHandler((details) => this.decidePopup(tab, details || {}));
     }
 
-    wc.on("focus", () => this.noteTabKeyFocus(tab, true));
+    wc.on("focus", () => {
+      this.noteTabKeyFocus(tab, true);
+      this.noteTabFocused(tab);
+    });
     wc.on("blur", () => this.noteTabKeyFocus(tab, false));
 
     wc.on("before-input-event", (event, input) => this.handleTabKey(tab, event, input));
