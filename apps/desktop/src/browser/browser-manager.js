@@ -51,6 +51,7 @@ class DesktopBrowserManager {
     this.maxLiveViews = dependencies.maxLiveViews || MAX_LIVE_VIEWS;
     this.rpcTimeoutMs = dependencies.rpcTimeoutMs || RPC_TIMEOUT_MS;
     this.activeToolCalls = new Map();
+    this.focusHolds = new Map();
     this.pendingPopupTabs = new Set();
 
     this.lastAgentInputAt = new Map();
@@ -396,7 +397,7 @@ class DesktopBrowserManager {
 
   async callTool(scopeKey, name, args = {}) {
     const scope = this.requireScope(scopeKey);
-    return this.callToolInner(scope, name, args);
+    return this.keepCockpitFocus(scope, () => this.callToolInner(scope, name, args));
   }
 
   async callToolInner(scope, name, args) {
@@ -730,7 +731,7 @@ class DesktopBrowserManager {
   }
 }
 
-mixin(DesktopBrowserManager.prototype, require("./profiles"), require("./interaction"), require("./geometry"), require("./tabs"), require("./tab-wiring"), require("./tools"));
+mixin(DesktopBrowserManager.prototype, require("./profiles"), require("./interaction"), require("./geometry"), require("./tabs"), require("./tab-wiring"), require("./tools"), require("./focus-guard"));
 
 const SCOPE_CLAIM = { visible: 3, panel: 2, pages: 1 };
 
