@@ -106,9 +106,14 @@ export class SessionSettler {
     }
     // An archived row is off every list already, and a standing human decision is not the engine's to revisit.
     if (session.state === "archived" || session.settledOverride !== undefined) return false;
-    const assignments = assignmentsOf(this.deps.scanQueue(sessionId).turns as unknown as AssignmentTurn[]);
+    const turns = this.deps.scanQueue(sessionId).turns;
+    const assignments = assignmentsOf(turns as unknown as AssignmentTurn[]);
     const newest = newestAssignment(assignments);
     if (!newest) return false;
+    const personTurnAt = turns.reduce<number | undefined>(
+      (at, turn) => ((turn.origin ?? "user") === "user" && turn.acceptedAt > (at ?? -Infinity) ? turn.acceptedAt : at),
+      undefined,
+    );
     const outcome = delegationSettle({
       now: this.kernel.now(),
       graceHours: this.deps.settleDelegatedAfterHours(),
@@ -119,6 +124,7 @@ export class SessionSettler {
       activity: session.activity,
       archived: false,
       unsettledAssignments: session.unsettledAssignments ?? [],
+      ...(personTurnAt === undefined ? {} : { personTurnAt }),
     });
     if (!outcome.settle) return false;
     this.apply(sessionId, outcome.settle);

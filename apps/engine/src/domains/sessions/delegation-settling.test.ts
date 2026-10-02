@@ -154,6 +154,11 @@ describe("delegationSettle — the five clauses", () => {
     expect(facts({ unsettledAssignments: ["run_older"] }).settle).toBeDefined();
   });
 
+  test("a person's turn after the newest assignment keeps it; one from before does not", () => {
+    expect(facts({ personTurnAt: NOW - 9 * HOUR }).settle).toBeUndefined();
+    expect(facts({ personTurnAt: NOW - 11 * HOUR }).settle).toBeDefined();
+  });
+
   test("NO GRACE MEANS OFF — nothing settles on its own", () => {
     const outcome = facts({ graceHours: null });
     expect(outcome.settle).toBeUndefined();

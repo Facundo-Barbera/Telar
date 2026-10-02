@@ -236,6 +236,30 @@ test("PINNED → STAYS. Both directions of the override are decisions", () => {
   expect(worker(fixture).settledOverride).toBe("active");
 });
 
+test("A DELEGATE THE PERSON HAS SINCE TALKED TO IS THEIRS: it stays when its own turns end, pinned or not", () => {
+  const fixture = scene();
+  handOver(fixture, "run_task");
+  deliver(fixture, "run_task");
+  fixture.store.lifecycle.updateSession("session_worker", { settledOverride: "active" });
+  for (let n = 0; n < 300; n += 1) {
+    fixture.advance(60_000);
+    runTurn(fixture, "session_worker", `run_person_${n}`, `turn ${n}`);
+  }
+  fixture.advance(100 * HOUR);
+  expect(fixture.store.settler.sweepDelegated()).toEqual([]);
+  expect(worker(fixture).settledOverride).toBe("active");
+
+  fixture.store.lifecycle.updateSession("session_worker", { settledOverride: null });
+  runTurn(fixture, "session_worker", "run_person_after_unpin", "keep going");
+  expect(fixture.store.settler.sweepDelegated()).toEqual([]);
+  expect(worker(fixture).settledOverride).toBeUndefined();
+
+  handOver(fixture, "run_task_2", "run_coord_2");
+  deliver(fixture, "run_task_2", "run_result_2");
+  fixture.advance(HOUR + 1);
+  expect(fixture.store.settler.sweepDelegated()).toEqual(["session_worker"]);
+});
+
 test("A PARKED REQUEST STAYS — the precedence the whole settling system is built on", () => {
   const fixture = scene();
   handOver(fixture, "run_task");
