@@ -489,3 +489,50 @@ test("a read-only turn runs with no built-in tools, no user settings and only th
   expect(Object.keys(seen.mcpServers as object)).toEqual(["telar"]);
   expect(names).toEqual(["usage_read", "usage_grep", "usage_glob", "usage_sql"]);
 });
+
+test("a read-only turn takes only the env block from the person's Claude settings, never its hooks or permissions", async () => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "telar-claude-config-"));
+  fs.writeFileSync(
+    path.join(configDir, "settings.json"),
+    JSON.stringify({
+      env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8317", ANTHROPIC_AUTH_TOKEN: "gateway-token", ANTHROPIC_SMALL_FAST_MODEL: "haiku", ANTHROPIC_DEFAULT_HAIKU_MODEL: "from-settings" },
+      hooks: { PreToolUse: [{ hooks: [{ type: "command", command: "touch /tmp/hooked" }] }] },
+      permissions: { allow: ["Bash(*)"] },
+    }),
+  );
+  const seen: Array<Record<string, unknown>> = [];
+  const sdk = async () => ({
+    tool: (name: string) => ({ name }),
+    createSdkMcpServer: (input: unknown) => input,
+    async *query(input: { options: Record<string, unknown> }) {
+      seen.push(input.options);
+      yield { type: "result", subtype: "success" };
+    },
+  });
+  try {
+    const env = { CLAUDE_CONFIG_DIR: configDir, ANTHROPIC_DEFAULT_HAIKU_MODEL: "from-instance" };
+    await run(createClaudeDriver(sdk), { readOnly: true, usageDiagnosis: { call: async () => "" }, env }).result;
+    await run(createClaudeDriver(sdk), { env }).result;
+  } finally {
+    fs.rmSync(configDir, { recursive: true, force: true });
+  }
+
+  const [readOnly, ordinary] = seen as [{ env: Record<string, string>; settingSources?: unknown; hooks?: unknown }, { env?: Record<string, string> }];
+  const picked = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"].map((key) => readOnly.env[key]);
+  expect(picked.join(" ") === "http://127.0.0.1:8317 gateway-token haiku from-instance").toBe(true);
+  expect(readOnly.settingSources).toEqual([]);
+  expect(readOnly.hooks).toBeUndefined();
+  expect(JSON.stringify(readOnly)).not.toContain("touch /tmp/hooked");
+  expect(JSON.stringify(readOnly)).not.toContain("Bash(*)");
+  expect(ordinary.env?.ANTHROPIC_AUTH_TOKEN === "gateway-token").toBe(false);
+});
+
+test("a failed result carries the provider's own words", async () => {
+  const driver = createClaudeDriver(async () => ({
+    async *query() {
+      yield { type: "result", subtype: "success", is_error: true, result: "Failed to authenticate: OAuth session expired and could not be refreshed" };
+    },
+  }));
+
+  await expect(run(driver).result).rejects.toThrow("Claude did not complete successfully: Failed to authenticate: OAuth session expired and could not be refreshed");
+});

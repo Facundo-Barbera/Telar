@@ -3,7 +3,7 @@ import { BROWSER_BRIEFING } from "../../domains/browser";
 import { DISPLAY_BRIEFING } from "../../domains/agent-tools";
 import { RUN_BRIEFING } from "../../domains/terminal";
 import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type TaskSeed } from "@telar/engine-client";
-import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "../../domains/providers";
+import { claudeEffortFor, claudeSettingsEnv, claudeWindowTokensOf, requireCli } from "../../domains/providers";
 import { pluginBriefings } from "../../domains/plugins";
 import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv } from "./identity";
 import { ClaudeRuntimeStore, IDLE_RUNTIME_MS, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
@@ -265,7 +265,9 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
 
   /** The child's environment with the patch's deletions APPLIED, resolved
    *  once so the query options and the fingerprint cannot disagree. */
-  turn.childEnv = resolveChildEnv(agentEnv(), turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
+  const base = agentEnv();
+  const settingsEnv = turn.readOnly ? claudeSettingsEnv({ ...base, ...env }) : undefined;
+  turn.childEnv = resolveChildEnv(base, settingsEnv, turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
 }
 
 async function claimTurnRuntime(deps: DriverDeps, input: DriverRun, scope: TurnScope): Promise<void> {

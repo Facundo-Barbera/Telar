@@ -10,6 +10,7 @@ import { type DriverSessionHooks, type ProviderTurnBinding } from "../contract";
 import { type OpenBlock, type StreamingInput, userText, openThinkingOf, noteThinkingTokens, streamingToolSeed, streamingInputFor, streamedPathUpdate, withToolResult } from "./observations";
 import { type LimitWarningSeen, providerWaitFrom, takeProviderWait, titleForProviderWait } from "./limits";
 import { type SdkFrame } from "./frames";
+import { resultFailure } from "./turn-result";
 import { str, itemId, asRecord, contentBlocks, itemDetailForToolCall, oneLine, titleForToolCall } from "./mapping";
 import { gateFor } from "./permission-gate";
 import { usageFrom, contextUsedFrom, contextMaxFrom, turnCostFrom } from "./usage";
@@ -261,12 +262,7 @@ async function wakeFrame(ctx: PumpCtx, pump: IdlePump, item: SdkFrame, parentToo
     // against the same query, so it takes the same baseline.
     wake.usage = ctx.decorateUsage(usageFrom(item.usage, turnCostFrom(item.total_cost_usd, idleRuntime)) ?? wake.usage);
     if (wake.usage) ctx.emit({ kind: "usage", usage: wake.usage });
-    const failure =
-      item.subtype !== "success"
-        ? `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`
-        : item.is_error === true
-          ? "Claude did not complete successfully (the result was flagged as an error)"
-          : undefined;
+    const failure = item.subtype !== "success" || item.is_error === true ? resultFailure(item) : undefined;
     await endWake(ctx, pump, failure ? { failure } : { text: wake.text });
     return;
   }

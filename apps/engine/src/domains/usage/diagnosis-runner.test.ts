@@ -90,3 +90,14 @@ test("stopping ends the turn and the diagnosis", async () => {
 test("no diagnosis yet reads as none", () => {
   expect(engine().diagnoses.current()).toBeUndefined();
 });
+
+test("a failed turn's own error becomes the diagnosis's error", async () => {
+  const { store, diagnoses } = engine();
+  const started = await diagnoses.start({});
+  const token = store.claims.claimTurn(started.sessionId, "worker_one")!.claim!.token;
+  store.turnLifecycle.markRunning(started.sessionId, started.runId, token);
+  const message = "Claude did not complete successfully: Failed to authenticate: OAuth session expired and could not be refreshed";
+  store.turnLifecycle.failTurn(started.sessionId, started.runId, token, { code: "driver_failed", message });
+
+  expect(diagnoses.current()).toMatchObject({ state: "failed", error: message });
+});

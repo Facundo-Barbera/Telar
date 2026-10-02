@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import type { ProviderDriverKind } from "@telar/engine-client";
 import { requireCli } from "./cli";
+import { claudeSettingsEnv } from "./claude-settings-env";
 
 export type TextGenEffort = "low" | "medium" | "high";
 
@@ -72,21 +73,6 @@ function claudeTextGenArgs(input: Pick<TextGenDriverInput, "model" | "effort">, 
   ];
 }
 
-// `--setting-sources ""` also drops the settings file's `env`, which is where a gateway login lives.
-function claudeSettingsEnv(env: Record<string, string | undefined>): Record<string, string> {
-  const dir = env["CLAUDE_CONFIG_DIR"] || path.join(os.homedir(), ".claude");
-  const settings = parseJson(readOrEmpty(path.join(dir, "settings.json")))?.["env"];
-  if (typeof settings !== "object" || settings === null) return {};
-  return Object.fromEntries(Object.entries(settings).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
-}
-
-function readOrEmpty(file: string): string {
-  try {
-    return fs.readFileSync(file, "utf8");
-  } catch {
-    return "";
-  }
-}
 
 async function runClaude(input: TextGenDriverInput, scratch: string, prompt: string, schema: object): Promise<Structured | undefined> {
   const executable = requireCli("claude", input.binaryPath ? { binaryPath: input.binaryPath } : {});
@@ -251,5 +237,13 @@ function parseJson(text: string): Structured | undefined {
     return typeof parsed === "object" && parsed !== null ? (parsed as Structured) : undefined;
   } catch {
     return undefined;
+  }
+}
+
+function readOrEmpty(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
   }
 }

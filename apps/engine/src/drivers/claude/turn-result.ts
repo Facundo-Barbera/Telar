@@ -4,6 +4,18 @@ import type { SdkFrame } from "./frames";
 import { contextMaxFrom, usageFrom, turnCostFrom } from "./usage";
 import { RateLimitedError } from "./limits";
 
+const MAX_FAILURE_DETAIL = 500;
+
+export function resultFailure(item: SdkFrame): string {
+  const said = [item.is_error === true ? item.result : undefined, ...(item.errors ?? [])]
+    .filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "")
+    .join("; ")
+    .slice(0, MAX_FAILURE_DETAIL);
+  if (said) return `Claude did not complete successfully: ${said}`;
+  if (item.subtype !== "success") return `Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`;
+  return "Claude did not complete successfully (the result was flagged as an error)";
+}
+
 export async function onResultFrame(ctx: LoopCtx, item: SdkFrame, parentToolUseId: string | undefined): Promise<"continue" | "break" | undefined> {
   if (item.type === "result") {
       if (parentToolUseId) {
@@ -45,12 +57,12 @@ export async function onResultFrame(ctx: LoopCtx, item: SdkFrame, parentToolUseI
           return "continue";
         }
         if (ctx.turn.standingLimit) throw new RateLimitedError(ctx.turn.standingLimit.resumeAt, ctx.turn.standingLimit.limitType);
-        throw new Error(`Claude did not complete successfully${item.subtype ? ` (${item.subtype})` : ""}`);
+        throw new Error(resultFailure(item));
       }
       if (item.is_error === true) {
         // Same rule as above: the human's stop reads as a stop.
         if (ctx.signal.aborted) throw ctx.signal.reason ?? new Error("driver cancelled");
-        throw new Error("Claude did not complete successfully (the result was flagged as an error)");
+        throw new Error(resultFailure(item));
       }
       const stopReason = "stop_reason" in item ? (item.stop_reason ?? null) : undefined;
       const toolsStillRunning = ctx.turn.openTopLevelTools.size > 0 && (stopReason === "tool_use" || stopReason === null);
