@@ -71,8 +71,9 @@ export class SessionActivity {
   from(session: Session, turns: Turn[]): Session {
     const ended = lastEndedTurn(turns);
     const result = lastResultTurn(turns);
+    const { activityDetail: _stale, ...rest } = session;
     const base: Session = {
-      ...session,
+      ...rest,
       ...(ended?.completedAt === undefined ? {} : { lastTurnEndedAt: ended.completedAt }),
       ...(result === undefined ? {} : { lastTurnSequence: result.sequence }),
       ...(ended?.state === "failed" ? { lastTurnFailed: true } : {}),
