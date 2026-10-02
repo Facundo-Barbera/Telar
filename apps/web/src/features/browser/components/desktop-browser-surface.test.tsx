@@ -440,6 +440,22 @@ describe("a password manager that refuses this browser", () => {
   });
 });
 
+describe("a password manager turned off in Settings", () => {
+  const hasPasswordManagerUi = (host: Element) =>
+    Boolean(host.querySelector('[aria-label*="1Password"]')) || Boolean(host.textContent?.includes("Add Browser"));
+
+  test("shows nothing of it: no toolbar button, no authorization strip", async () => {
+    const { host } = await mount(panelState(), { extensionStatus: async () => ({ phase: "unavailable", off: true }) });
+    await act(async () => { await settle(); });
+    expect(hasPasswordManagerUi(host)).toBe(false);
+  });
+
+  test("while on, the same shell shows its toolbar button", async () => {
+    const { host } = await mount(panelState(), { extensionStatus: async () => ({ ...extensionWithHelperExit(1), health: { workerErrors: {}, native: { state: "available" as const, helpers: 1 } } }) });
+    await waitFor(() => Boolean(host.querySelector('[aria-label*="1Password"]')));
+  });
+});
+
 const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 function capturingBridge(patch: Record<string, unknown> = {}) {

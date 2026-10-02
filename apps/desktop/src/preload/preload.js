@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     extensionStatus: (scopeKey) => ipcRenderer.invoke("telar:browser:extension-status", scopeKey),
     openExtensionPopup: (scopeKey, anchorRect) => ipcRenderer.invoke("telar:browser:extension-popup", { scopeKey, anchorRect }),
     openPasswordManagerApp: () => ipcRenderer.invoke("telar:browser:open-password-manager"),
+    passwordManager: (patch) => ipcRenderer.invoke("telar:browser:password-manager", patch ?? {}),
     loginOfferPrefs: (patch) => ipcRenderer.invoke("telar:login-offer:prefs", patch ?? {}),
     onExtension: (listener) => on("telar:browser:extension", listener),
 

@@ -34,6 +34,34 @@ export function LoginOfferToggle() {
   );
 }
 
+export function PasswordManagerToggles() {
+  const [enabled, setEnabled] = useState<boolean>();
+  const bridge = desktopBrowserBridge();
+
+  useEffect(() => {
+    void bridge?.passwordManager?.().then((prefs) => setEnabled(prefs.enabled));
+  }, [bridge]);
+
+  if (!bridge?.passwordManager) return <LoginOfferToggle />;
+  if (enabled === undefined) return null;
+  const change = async (next: boolean) => {
+    setEnabled(next);
+    setEnabled((await bridge.passwordManager!({ enabled: next })).enabled);
+  };
+  return (
+    <>
+      <ToggleRow
+        label="Use a password manager in the browser"
+        hint="Lets Telar's browser and agents fill logins from your password manager."
+        info="Off hides its browser button and stops agents filling logins at once. Browsers already open keep its extension loaded until Telar restarts."
+        checked={enabled}
+        onCheckedChange={(next) => void change(next)}
+      />
+      {enabled && <LoginOfferToggle />}
+    </>
+  );
+}
+
 function describeGrantFields(fields: RememberedLogin["fields"]): string {
   return fields
     .map((field) => (field.kind === "otp" ? "one-time code" : field.kind === "field" ? `“${field.label ?? ""}”` : field.kind))
@@ -85,7 +113,7 @@ export function BrowserLoginsSection() {
       scope="mac"
       description="Logins you allowed agents to fill without asking again — 1Password still asks to unlock."
     >
-      <LoginOfferToggle />
+      <PasswordManagerToggles />
       {error && <p className="text-xs text-destructive">{error}</p>}
       {logins === undefined && !error && <Spinner className="size-4" />}
       {logins?.length === 0 && (

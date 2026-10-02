@@ -33,6 +33,8 @@ This needs the 1Password CLI, with "Integrate with 1Password CLI" turned on in t
 
 The request has an unticked box to let agents use that login again without asking. It covers only that login, in that profile, on that exact address. Settings → Browser → Remembered logins lists these and lets you revoke each one. Telar can also ask after you sign in yourself; that offer is off until you turn on "Offer to remember after you sign in" there.
 
+Settings → Browser → "Use a password manager in the browser" turns all of this off: no extension is loaded, the toolbar button, the strip below and the remember offers disappear, and `browser_fill_secret` tells the agent the setting is off. It starts on only if the 1Password app is installed. Turning it off applies to filling and the browser's buttons at once; browsers already open keep the extension loaded until Telar restarts.
+
 The 1Password button in the toolbar talks to the 1Password app only once 1Password trusts Telar as a browser. If the browser warns that it doesn't, click **Open 1Password settings**, unlock 1Password, click Add Browser and choose Telar. 1Password matches a browser by its app identity and developer, so this survives updates. It was needed again when Telar became `io.github.novarix.telar`: the old Telar entry in that list no longer matches, and you can remove it.
 
 ## Viewport and appearance

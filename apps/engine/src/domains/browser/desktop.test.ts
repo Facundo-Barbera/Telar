@@ -340,3 +340,27 @@ test("bind() posts the scope's project profile to /bind and surfaces the host's 
   await router.bindProfile("session_two", "none");
   expect(binds.at(-1)).toMatchObject({ scopeKey: "session_two", profileKey: "none" });
 });
+
+test("the desktop's password manager choice is read live, and a host that cannot answer is not a refusal", async () => {
+  let enabled: unknown = false;
+  const port = await fakeHost(({ url, auth }) => {
+    if (auth !== "Bearer t") return { status: 401, payload: { error: "Unauthorized." } };
+    if (url.pathname === "/password-manager") return { status: 200, payload: { enabled } };
+    return { status: 404, payload: { error: "Not found." } };
+  });
+  const client = new DesktopBrowserClient({ port, token: "t" });
+  expect(await client.passwordManagerEnabled()).toBe(false);
+  enabled = true;
+  expect(await client.passwordManagerEnabled()).toBe(true);
+
+  expect(await new DesktopBrowserClient({ port, token: "wrong" }).passwordManagerEnabled()).toBe(true);
+  expect(await new DesktopBrowserClient({ port: 1, token: "t" }).passwordManagerEnabled()).toBe(true);
+});
+
+test("the router asks the desktop only when it is reachable; a headless engine has no such setting", async () => {
+  const headless = { call: async () => ({ content: [] }), isReadOnly: () => true, state: async () => ({}), release: async () => true, close: async () => undefined } as unknown as BrowserRuntime;
+  expect(await new BrowserRouter(headless).passwordManagerEnabled()).toBe(true);
+
+  const port = await fakeHost(({ url }) => ({ status: 200, payload: url.pathname === "/password-manager" ? { enabled: false } : { tabs: [] } }));
+  expect(await new BrowserRouter(headless, new DesktopBrowserClient({ port, token: "t" })).passwordManagerEnabled()).toBe(false);
+});

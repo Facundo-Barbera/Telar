@@ -261,6 +261,12 @@ export const APP_PAGES: SettingsPageSpec[] = [
             icon: KeyRoundIcon,
           },
           {
+            title: "Use a password manager in the browser",
+            hint: "Lets Telar's browser and agents fill logins from your password manager.",
+            keywords: ["1password", "extension", "autofill", "disable", "off", "credential", "integrations"],
+            icon: KeyRoundIcon,
+          },
+          {
             title: "Offer to remember after you sign in",
             hint: "After you type a login in Telar's browser, ask whether agents may reuse it.",
             keywords: ["1password", "save login", "remember", "offer", "prompt", "password"],

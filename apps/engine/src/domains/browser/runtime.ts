@@ -214,6 +214,7 @@ export type EngineBrowser = {
   state(scopeKey: string, options?: { start?: boolean; screenshot?: boolean }): Promise<BrowserState>;
   bindProfile?(scopeKey: string, profileKey: string): Promise<void>;
   profileIdentity?(scopeKey: string): Promise<BrowserProfileIdentity | null>;
+  passwordManagerEnabled?(): Promise<boolean>;
   release(scopeKey: string, reason?: string): Promise<boolean>;
   close(reason?: string): Promise<void>;
 };
@@ -252,6 +253,10 @@ export class BrowserRouter implements EngineBrowser {
       return this.desktop!.call(scopeKey, name, args);
     }
     return this.headless.call(scopeKey, name, args);
+  }
+
+  async passwordManagerEnabled(): Promise<boolean> {
+    return (await this.useDesktop()) ? this.desktop!.passwordManagerEnabled() : true;
   }
 
   async bindProfile(scopeKey: string, profileKey: string): Promise<void> {

@@ -1,5 +1,6 @@
 const { app, session } = require("electron");
 const { ExtensionHost, extensionsEnabled } = require("../browser/extension-host");
+const { passwordManagerEnabled } = require("../login/password-manager-prefs");
 const { DEV_BUILD, SMOKE } = require("./flags");
 
 function extensionTabs(win, manager, partition, host) {
@@ -31,18 +32,18 @@ function extensionTabs(win, manager, partition, host) {
   };
 }
 
-function startExtensionHost(win, manager, partition) {
+function startExtensionHost(win, manager, partition, enabled = passwordManagerEnabled) {
   const wanted = extensionsEnabled({ dev: DEV_BUILD, packaged: app.isPackaged, version: app.getVersion(), override: process.env.TELAR_EXTENSIONS });
-  if (!wanted || SMOKE) return null;
+  if (!wanted || SMOKE || !enabled()) return null;
   const ses = session.fromPartition(partition);
   const host = new ExtensionHost(ses, { window: win, tabs: extensionTabs(win, manager, partition, () => host) });
-  host.onHealthChange = (status) => { if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status }); };
+  host.onHealthChange = (status) => { if (!win.isDestroyed() && enabled()) win.webContents.send("telar:browser:extension", { partition, ...status }); };
 
   host.onHoldOpen = (id, reason) => manager.addUiHold(id, reason);
   host.onHoldClose = (id) => manager.removeUiHold(id);
   host.startOnce().then((status) => {
     if (status.phase === "failed") console.error(`[telar-desktop] 1Password extension (${partition}): ${status.error}`);
-    if (!win.isDestroyed()) win.webContents.send("telar:browser:extension", { partition, ...status });
+    if (!win.isDestroyed() && enabled()) win.webContents.send("telar:browser:extension", { partition, ...status });
   });
   return host;
 }

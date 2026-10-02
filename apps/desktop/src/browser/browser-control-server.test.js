@@ -260,3 +260,26 @@ describe("a session's browser is over (#883)", () => {
     }
   });
 });
+
+describe("the password manager choice", () => {
+  test("/password-manager answers from the shell's setting, with no scope and no browser host", async () => {
+    let enabled = false;
+    let asked = 0;
+    const control = await startBrowserControlServer({
+      port: 0,
+      token: "secret",
+      getBrowserManager: () => { asked += 1; return {}; },
+      passwordManagerEnabled: () => enabled,
+    });
+    const get = (auth = "Bearer secret") => fetch(`http://127.0.0.1:${control.port}/password-manager`, { headers: { Authorization: auth } });
+    try {
+      expect((await get("Bearer wrong")).status).toBe(401);
+      expect(await (await get()).json()).toEqual({ enabled: false });
+      enabled = true;
+      expect(await (await get()).json()).toEqual({ enabled: true });
+      expect(asked).toBe(0);
+    } finally {
+      await control.close();
+    }
+  });
+});

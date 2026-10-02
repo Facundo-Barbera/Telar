@@ -416,3 +416,33 @@ test("a binding with NO workspace refuses every file: URL — the fence fails cl
   expect(body.result.isError).toBe(true);
   expect(body.result.content[0]!.text).toMatch(/cannot open file URLs/);
 });
+
+test("with the password manager off, browser_fill_secret refuses in one sentence and the tool stays listed", async () => {
+  let enabled = false;
+  const handlerSaw: Record<string, unknown>[] = [];
+  const socket = makeSocket(fakeCapability({ tools: [fillSecretTool], passwordManagerEnabled: async () => enabled }));
+  const lease = await socket.bind({
+    scopeKey: "s",
+    fillSecret: async (args) => {
+      handlerSaw.push(args);
+      return { content: [{ type: "text", text: "Filled username." }] };
+    },
+  });
+  const fill = async () =>
+    (await (await rpc(lease.url, lease.token, call("browser_fill_secret", { fields: [{ target: "e1", kind: "username" }] }))).json()) as {
+      result: { isError?: boolean; content: { text?: string }[] };
+    };
+
+  const listed = (await (await rpc(lease.url, lease.token, { jsonrpc: "2.0", id: 1, method: "tools/list" })).json()) as { result: { tools: { name: string }[] } };
+  expect(listed.result.tools.map((tool) => tool.name)).toEqual(["browser_fill_secret"]);
+
+  const refused = await fill();
+  expect(refused.result.isError).toBe(true);
+  expect(refused.result.content[0]?.text).toContain("turned off in Settings → Browser");
+  expect(handlerSaw).toEqual([]);
+
+  enabled = true;
+  const filled = await fill();
+  expect(filled.result.isError).toBeUndefined();
+  expect(handlerSaw).toHaveLength(1);
+});

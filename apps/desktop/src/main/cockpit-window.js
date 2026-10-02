@@ -11,6 +11,7 @@ const { readUiPrefs, supportsTranslucency } = require("./appearance");
 const { buildApplicationMenu, chords, setBrowserChordScope } = require("./app-menu");
 const { applyExternalLinkPolicy, linkRouting } = require("./window-links");
 const { addHost, rememberWindowUrl, removeHost } = require("./browser-hosts");
+const { passwordManagerEnabled } = require("../login/password-manager-prefs");
 
 function cockpitWindowOptions(title) {
   const icon = developmentIconPath();
@@ -76,6 +77,7 @@ function createCockpitWindow(url, { createManager, onInPageNavigation }) {
   win.webContents.on("did-finish-load", () => {
     if (win.isDestroyed()) return;
 
+    if (!passwordManagerEnabled()) return;
     for (const [partition, host] of manager.extensionHosts) win.webContents.send("telar:browser:extension", { partition, ...host.status() });
   });
   win.on("closed", () => {
