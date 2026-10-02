@@ -260,6 +260,12 @@ export const APP_PAGES: SettingsPageSpec[] = [
             keywords: ["1password", "password", "credential", "autofill", "revoke", "vault", "integrations"],
             icon: KeyRoundIcon,
           },
+          {
+            title: "Offer to remember after you sign in",
+            hint: "After you type a login in Telar's browser, ask whether agents may reuse it.",
+            keywords: ["1password", "save login", "remember", "offer", "prompt", "password"],
+            icon: KeyRoundIcon,
+          },
         ],
       },
       {

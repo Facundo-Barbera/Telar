@@ -6,9 +6,33 @@ import type { RememberedLogin } from "@telar/engine-client";
 import { createEngineApi } from "@/platform/engine";
 import { Button } from "@/ui/button";
 import { Spinner } from "@/ui/spinner";
-import { Row, SettingsGroup } from "@/features/settings";
+import { Row, SettingsGroup, ToggleRow } from "@/features/settings";
+import { desktopBrowserBridge } from "../desktop-browser-bridge";
 
 const api = createEngineApi();
+
+export function LoginOfferToggle() {
+  const [offer, setOffer] = useState<boolean>();
+  const bridge = desktopBrowserBridge();
+
+  useEffect(() => {
+    void bridge?.loginOfferPrefs?.().then((prefs) => setOffer(prefs.offerAfterSignIn));
+  }, [bridge]);
+
+  if (!bridge?.loginOfferPrefs || offer === undefined) return null;
+  const change = async (next: boolean) => {
+    setOffer(next);
+    setOffer((await bridge.loginOfferPrefs!({ offerAfterSignIn: next })).offerAfterSignIn);
+  };
+  return (
+    <ToggleRow
+      label="Offer to remember after you sign in"
+      hint="After you type a login in Telar's browser, ask whether agents may reuse it."
+      checked={offer}
+      onCheckedChange={(next) => void change(next)}
+    />
+  );
+}
 
 function describeGrantFields(fields: RememberedLogin["fields"]): string {
   return fields
@@ -61,6 +85,7 @@ export function BrowserLoginsSection() {
       scope="mac"
       description="Logins you allowed agents to fill without asking again — 1Password still asks to unlock."
     >
+      <LoginOfferToggle />
       {error && <p className="text-xs text-destructive">{error}</p>}
       {logins === undefined && !error && <Spinner className="size-4" />}
       {logins?.length === 0 && (

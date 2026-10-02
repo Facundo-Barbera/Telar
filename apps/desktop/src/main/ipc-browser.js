@@ -1,5 +1,6 @@
 const { ipcMain, BrowserWindow } = require("electron");
 const { externalOpenTarget } = require("../browser/browser-manager");
+const { readLoginOfferPrefs, writeLoginOfferPrefs } = require("../login/login-offer-prefs");
 const { browserManagers, requireBrowserManager, requireCockpitSender } = require("./browser-hosts");
 const { openInSystemBrowser } = require("./window-links");
 
@@ -152,6 +153,12 @@ function registerTabIpc({ requireLoginOffer }) {
     if (!target) return { ok: false, error: "Only http and https pages open in the system browser." };
     openInSystemBrowser(target);
     return { ok: true };
+  });
+
+  ipcMain.handle("telar:login-offer:prefs", (event, patch) => {
+    requireCockpitSender(event, "change when Telar offers to remember a login");
+    if (typeof patch?.offerAfterSignIn === "boolean") writeLoginOfferPrefs({ offerAfterSignIn: patch.offerAfterSignIn });
+    return readLoginOfferPrefs();
   });
 
   ipcMain.handle("telar:browser:clear-data", (event, input) => {

@@ -1,5 +1,7 @@
 const { afterAll, beforeAll, describe, expect, test } = require("bun:test");
-const { electron, eventFrom, FakeBrowserWindow, FakeWebContents, resetElectron } = require("../../test/fake-electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const { electron, eventFrom, FakeBrowserWindow, FakeWebContents, resetElectron, userData } = require("../../test/fake-electron");
 const hosts = require("./browser-hosts");
 const { registerBrowserIpc } = require("./ipc-browser");
 
@@ -75,5 +77,15 @@ describe("the open-external handler", () => {
     const subframe = eventFrom(a.window, { frame: { name: "sub" } });
     expect(() => electron.ipcMain.invoke("telar:browser:open-external", subframe, { url: "https://example.com/" })).toThrow("Only the Telar window");
     expect(electron.shell.opened).toEqual([]);
+  });
+});
+
+describe("the login offer setting", () => {
+  test("is off until the cockpit turns it on, and stays on", async () => {
+    fs.rmSync(path.join(userData, "login-offer-prefs.json"), { force: true });
+    expect(await electron.ipcMain.invoke("telar:login-offer:prefs", eventFrom(a.window), {})).toEqual({ offerAfterSignIn: false });
+    await electron.ipcMain.invoke("telar:login-offer:prefs", eventFrom(a.window), { offerAfterSignIn: true });
+    expect(await electron.ipcMain.invoke("telar:login-offer:prefs", eventFrom(a.window), {})).toEqual({ offerAfterSignIn: true });
+    fs.rmSync(path.join(userData, "login-offer-prefs.json"), { force: true });
   });
 });
