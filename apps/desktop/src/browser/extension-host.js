@@ -10,6 +10,7 @@ function userDataDir() {
 const ONE_PASSWORD = {
   id: "aeblfdkhhhdcdjpifhhbdiojplfjncoa",
   name: "1Password",
+  appPath: "/Applications/1Password.app",
   updateUrl: (id) => `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0.0.0&acceptformat=crx2,crx3&x=id%3D${id}%26uc`,
 };
 
@@ -85,7 +86,7 @@ let nativeObserverInstalled = false;
 
 function nativeHealth() {
   if (liveHelpers.size > 0) return { state: "available", helpers: liveHelpers.size };
-  if (lastHelperExit) return { state: "unavailable", helpers: 0, lastExitCode: lastHelperExit.code, ...(lastHelperExit.hint ? { hint: lastHelperExit.hint } : {}) };
+  if (lastHelperExit) return { state: "unavailable", helpers: 0, lastExitCode: lastHelperExit.code };
   return { state: "not attempted", helpers: 0 };
 }
 
@@ -108,7 +109,7 @@ function installNativeObserver() {
       child.on("exit", (code) => {
         liveHelpers.delete(pid);
         const livedMs = Date.now() - startedAt;
-        lastHelperExit = { code, livedMs, hint: code === 1 && livedMs < 2000 ? "A 1Password app browser helper exited immediately. This browser app may not be accepted yet — check that it is added under 1Password → Settings → Browser and that its code signature is one 1Password trusts." : undefined };
+        lastHelperExit = { code, livedMs };
         notifyNative();
       });
       child.on("error", () => { liveHelpers.delete(pid); notifyNative(); });

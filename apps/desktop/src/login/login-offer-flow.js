@@ -1,7 +1,7 @@
 "use strict";
 const { shouldOffer, offerKey, grantFromCapture, confirmationMatches } = require("./login-offer");
 
-function createLoginOfferFlow({ listCandidates, rememberGrant, ui, now = Date.now }) {
+function createLoginOfferFlow({ listCandidates, rememberGrant, ui, now = Date.now, autoOffer = () => false }) {
   let current = null;
 
   let offered = null;
@@ -21,6 +21,7 @@ function createLoginOfferFlow({ listCandidates, rememberGrant, ui, now = Date.no
     entryFinished(capture) {
       if (!capture) return;
       current = capture;
+      if (!autoOffer()) return;
       if (!shouldOffer(capture, { dismissed, now: now() })) return;
       const alreadyOpen = offered !== null;
       offered = capture;

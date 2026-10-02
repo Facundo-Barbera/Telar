@@ -25,10 +25,43 @@ function harness(over = {}) {
     rememberGrant: (grant) => written.push(grant),
     ui: { open: () => (ui.open += 1), close: () => (ui.close += 1), refresh: () => (ui.refresh += 1) },
     now: () => state.now,
+    autoOffer: () => true,
     ...over,
   });
   return { flow, ui, written, state };
 }
+
+describe("the offer after a sign-in is off unless enabled", () => {
+  test("by default a finished entry opens nothing and asks the vault nothing", () => {
+    let asked = 0;
+    const ui = { open: 0 };
+    const flow = createLoginOfferFlow({
+      listCandidates: async () => { asked += 1; return { ok: true, candidates: [] }; },
+      rememberGrant: () => {},
+      ui: { open: () => (ui.open += 1), close: () => {}, refresh: () => {} },
+      now: () => 1500,
+    });
+    flow.entryFinished(capture());
+    expect(ui.open).toBe(0);
+    expect(asked).toBe(0);
+  });
+
+  test("enabling the setting opens the offer again", () => {
+    let enabled = false;
+    const { flow, ui } = harness({ autoOffer: () => enabled });
+    flow.entryFinished(capture());
+    expect(ui.open).toBe(0);
+    enabled = true;
+    flow.entryFinished(capture({ at: 1200 }));
+    expect(ui.open).toBe(1);
+  });
+
+  test("the explicit offer from the menu still opens while the setting is off", () => {
+    const { flow, ui } = harness({ autoOffer: () => false });
+    expect(flow.explicitOffer(capture())).toEqual({ ok: true });
+    expect(ui.open).toBe(1);
+  });
+});
 
 describe("when the offer window opens", () => {
   test("a finished entry opens it, and the window reads the capture's address and identity", async () => {

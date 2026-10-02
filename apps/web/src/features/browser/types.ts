@@ -84,7 +84,7 @@ export type DesktopExtensionStatus = {
   error?: string;
   health?: {
     workerErrors: Record<string, number>;
-    native: { state: "not attempted" | "available" | "unavailable"; helpers: number; lastExitCode?: number | null; hint?: string };
+    native: { state: "not attempted" | "available" | "unavailable"; helpers: number; lastExitCode?: number | null };
   };
 };
 
@@ -116,6 +116,8 @@ export type DesktopBrowserBridge = {
   extensionStatus?(scopeKey: string): Promise<DesktopExtensionStatus>;
   openExtensionPopup?(scopeKey: string, anchorRect: { x: number; y: number; width: number; height: number }): Promise<DesktopExtensionStatus>;
   openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
+  openPasswordManagerApp?(): Promise<{ ok: boolean; error?: string }>;
+  loginOfferPrefs?(patch?: { offerAfterSignIn?: boolean }): Promise<{ offerAfterSignIn: boolean }>;
   clearBrowsingData?(scopeKey: string, kind: "cookies" | "cache"): Promise<{ ok: boolean; kind: string; partition: string; profile?: string | null }>;
   offerLoginMemory?(scopeKey: string): Promise<{ ok: boolean; error?: string }>;
   onDownload?(listener: (download: DesktopBrowserDownload) => void): () => void;

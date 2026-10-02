@@ -82,9 +82,9 @@ const CANDIDATES = {
   ],
 };
 
-function harness({ listCandidates } = {}) {
+function harness({ listCandidates, autoOffer = () => true } = {}) {
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "telar-login-offer-window-"));
-  const offer = wireLoginOffer({ stateRoot, listCandidates: listCandidates || (async () => CANDIDATES) });
+  const offer = wireLoginOffer({ stateRoot, listCandidates: listCandidates || (async () => CANDIDATES), autoOffer });
   const window = () => FakeBrowserWindow.instances.at(-1);
   const trusted = (win) => ({ sender: win.webContents, senderFrame: win.webContents.mainFrame });
   const invoke = (channel, event, input) => fakeIpcMain.handlers.get(channel)(event, input);

@@ -11,6 +11,13 @@ export const APPEARANCES: ReadonlyArray<{ key: "light" | "dark" | "system"; labe
   { key: "system", label: "System" },
 ];
 
+export const BROWSER_NOT_AUTHORIZED = "1Password hasn't accepted Telar as a browser. In 1Password, open Settings → Browser → Add Browser and choose Telar in Applications.";
+
+export function needsBrowserAuthorization(extension: DesktopExtensionStatus | null | undefined): boolean {
+  const native = extension?.health?.native;
+  return extension?.phase === "ready" && native?.state === "unavailable" && native.lastExitCode === 1;
+}
+
 /** One short sentence of the extension's real health for the toolbar. */
 export function describeExtensionHealth(extension: DesktopExtensionStatus): { tone: "ok" | "warn" | "error"; text: string } {
   if (extension.phase === "failed") return { tone: "error", text: extension.error ?? "failed" };
@@ -22,7 +29,7 @@ export function describeExtensionHealth(extension: DesktopExtensionStatus): { to
   const errorCount = Object.values(extension.health?.workerErrors ?? {}).reduce((sum, n) => sum + n, 0);
   // Helper availability is app-level; pairing is the extension's to report, so never say "connected".
   if (native?.state === "unavailable") {
-    if (native.lastExitCode === 1) return { tone: "error", text: native.hint ?? "1Password app helper unavailable — check this browser is added under 1Password → Settings → Browser." };
+    if (native.lastExitCode === 1) return { tone: "error", text: BROWSER_NOT_AUTHORIZED };
     return { tone: "error", text: `1Password app helper stopped unexpectedly${native.lastExitCode != null ? ` (exit ${native.lastExitCode})` : ""}.` };
   }
   if (errorCount) return { tone: "warn", text: `Extension reported ${errorCount} error${errorCount === 1 ? "" : "s"} (${Object.keys(extension.health!.workerErrors).join(", ")})` };

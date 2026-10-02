@@ -31,7 +31,9 @@ An agent can ask to sign in to a site with a login from your 1Password. Telar sh
 
 This needs the 1Password CLI, with "Integrate with 1Password CLI" turned on in the 1Password app's Developer settings. 1Password asks you to unlock as usual.
 
-The request has an unticked box to let agents use that login again without asking. It covers only that login, in that profile, on that exact address. Settings → Browser → Remembered logins lists these and lets you revoke each one.
+The request has an unticked box to let agents use that login again without asking. It covers only that login, in that profile, on that exact address. Settings → Browser → Remembered logins lists these and lets you revoke each one. Telar can also ask after you sign in yourself; that offer is off until you turn on "Offer to remember after you sign in" there.
+
+The 1Password button in the toolbar talks to the 1Password app only once 1Password accepts Telar as a browser. If the browser shows a warning that it hasn't, open 1Password → Settings → Browser → Add Browser and choose Telar in Applications. Do it again after Telar changes its app identity, as it did when it became `io.github.novarix.telar`.
 
 ## Viewport and appearance
 
