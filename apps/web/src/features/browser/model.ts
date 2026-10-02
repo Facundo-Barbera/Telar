@@ -11,7 +11,7 @@ export const APPEARANCES: ReadonlyArray<{ key: "light" | "dark" | "system"; labe
   { key: "system", label: "System" },
 ];
 
-export const BROWSER_NOT_AUTHORIZED = "1Password hasn't accepted Telar as a browser. In 1Password, open Settings → Browser → Add Browser and choose Telar in Applications.";
+export const BROWSER_NOT_AUTHORIZED = "1Password doesn't trust this Telar yet. In its browser settings, unlock, click Add Browser and choose Telar, even if Telar is already listed.";
 
 export function needsBrowserAuthorization(extension: DesktopExtensionStatus | null | undefined): boolean {
   const native = extension?.health?.native;

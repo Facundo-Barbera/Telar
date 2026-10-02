@@ -420,15 +420,15 @@ const extensionWithHelperExit = (lastExitCode: number) => ({
 });
 
 describe("a password manager that refuses this browser", () => {
-  test("says how to authorize Telar once, with a button that opens the app", async () => {
+  test("says how to authorize Telar once, with a button that opens its browser settings", async () => {
     let opened = 0;
     const { host } = await mount(panelState(), {
       extensionStatus: async () => extensionWithHelperExit(1),
       openPasswordManagerApp: async () => { opened += 1; return { ok: true }; },
     });
     await waitFor(() => Boolean(host.textContent?.includes("Add Browser")));
-    expect(host.textContent).toContain("open Settings → Browser → Add Browser and choose Telar");
-    const open = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Open 1Password")!;
+    expect(host.textContent).toContain("click Add Browser and choose Telar");
+    const open = [...host.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Open 1Password settings")!;
     await mouseClick(open);
     expect(opened).toBe(1);
   });

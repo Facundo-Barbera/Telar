@@ -81,16 +81,17 @@ describe("the open-external handler", () => {
 });
 
 describe("the password manager app", () => {
-  test("the cockpit can open it, to authorize this browser", async () => {
+  test("the cockpit opens its browser settings, where Telar is authorized", async () => {
     electron.shell.opened = [];
     expect(await electron.ipcMain.invoke("telar:browser:open-password-manager", eventFrom(a.window))).toEqual({ ok: true });
-    expect(electron.shell.opened).toEqual(["/Applications/1Password.app"]);
+    expect(electron.shell.opened).toEqual(["onepassword://settings/browser"]);
   });
 
   test("a missing app is reported, not thrown", async () => {
-    electron.shell.openPathError = "not found";
+    const openExternal = electron.shell.openExternal;
+    electron.shell.openExternal = () => Promise.reject(new Error("no application knows how to open the URL"));
     const result = await electron.ipcMain.invoke("telar:browser:open-password-manager", eventFrom(a.window));
-    electron.shell.openPathError = undefined;
+    electron.shell.openExternal = openExternal;
     expect(result.ok).toBe(false);
   });
 });

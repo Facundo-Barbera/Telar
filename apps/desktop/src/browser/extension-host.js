@@ -10,7 +10,7 @@ function userDataDir() {
 const ONE_PASSWORD = {
   id: "aeblfdkhhhdcdjpifhhbdiojplfjncoa",
   name: "1Password",
-  appPath: "/Applications/1Password.app",
+  browserSettingsUrl: "onepassword://settings/browser",
   updateUrl: (id) => `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=131.0.0.0&acceptformat=crx2,crx3&x=id%3D${id}%26uc`,
 };
 

@@ -158,8 +158,12 @@ function registerTabIpc({ requireLoginOffer }) {
 
   ipcMain.handle("telar:browser:open-password-manager", async (event) => {
     requireCockpitSender(event, "open the password manager app");
-    const error = await shell.openPath(ONE_PASSWORD.appPath);
-    return error ? { ok: false, error: `${ONE_PASSWORD.name} is not installed in Applications.` } : { ok: true };
+    try {
+      await shell.openExternal(ONE_PASSWORD.browserSettingsUrl);
+      return { ok: true };
+    } catch {
+      return { ok: false, error: `${ONE_PASSWORD.name} is not installed.` };
+    }
   });
 
   ipcMain.handle("telar:login-offer:prefs", (event, patch) => {
