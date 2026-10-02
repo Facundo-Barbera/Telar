@@ -9,6 +9,7 @@ import { Spinner } from "@/ui/spinner";
 import { Segmented } from "@/features/settings";
 import { UsageChart, type ChartSeries } from "./usage-chart";
 import { UsageLimitsSection } from "./usage-limits";
+import { UsageDiagnosisSection } from "./usage-diagnosis";
 import { UsageHosts } from "./usage-hosts";
 import { ALL_HOSTS, reportFor } from "../hosts";
 import { useHostUsage } from "../use-host-usage";
@@ -88,6 +89,7 @@ export function UsagePage() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-5 py-5">
           <UsageLimitsSection />
+          <UsageDiagnosisSection />
           {hosts.length > 1 && <UsageHosts hosts={hosts} selected={chosen} onSelect={setSelected} metric={metric} />}
           {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           {!error && unpricedProvider && metric === "cost" && (
