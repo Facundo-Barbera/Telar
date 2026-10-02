@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChartNoAxesColumnIcon, DownloadIcon, FlameIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
-import { useDesktopUpdate, UpdateToast, RestartUpdateDialog } from "@/features/updates";
+import { FeedbackDialog, useDesktopUpdate, UpdateToast, RestartUpdateDialog } from "@/features/updates";
 import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/platform/desktop/desktop-metrics";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/ui/tooltip";
 import { ProgressRing } from "@/ui/progress-ring";
@@ -128,6 +128,7 @@ export function AppSidebarFooterRow({ onNavigate }: { onNavigate: () => void }) 
       <FooterLink href="/usage" label="Usage" onNavigate={onNavigate}>
         <ChartNoAxesColumnIcon className="size-4" />
       </FooterLink>
+      <FeedbackDialog triggerClassName={iconButton()} />
       <div className="flex-1" />
       <RunawayIndicator />
       <UpdateButton />
