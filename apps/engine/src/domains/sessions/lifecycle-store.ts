@@ -58,6 +58,7 @@ export type CreateSessionInput = {
   /** Provenance only: `"session"` means the `sessions` toolkit asked. Set by the caller's code, never by a model argument. */
   origin?: SessionOrigin;
   model?: AgentModelChoice;
+  purpose?: Session["purpose"];
 };
 
 /** What the session lifecycle still asks of the store around it. */
@@ -174,6 +175,7 @@ export class SessionLifecycle {
         // session document would be a second spelling of absent, and the two
         // would drift the first time a reader forgot one of them.
         ...(input.origin === "session" ? { origin: "session" as const } : {}),
+        ...(input.purpose ? { purpose: input.purpose } : {}),
         ...(input.startedFrom
           ? { startedFrom: { sessionId: input.startedFrom.sessionId, ...(input.startedFrom.runId ? { runId: input.startedFrom.runId } : {}) } }
           : {}),

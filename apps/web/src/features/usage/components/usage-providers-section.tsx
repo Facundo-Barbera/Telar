@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { PlusIcon, ServerIcon, Trash2Icon } from "lucide-react";
+import Link from "next/link";
+import { PlusIcon, ServerIcon, StethoscopeIcon, Trash2Icon } from "lucide-react";
 import type { UsageLimitSource } from "@telar/engine-client";
 import { createEngineApi, EngineApiError } from "@/platform/engine";
 import { Badge } from "@/ui/badge";
@@ -248,6 +249,19 @@ export function UsageProvidersSection() {
         ) : (
           sources.map((source) => <HubRow key={source.id} source={source} onChange={() => void load()} />)
         )}
+      </SettingsGroup>
+
+      <SettingsGroup title="Diagnosis">
+        <Row
+          icon={StethoscopeIcon}
+          label="Diagnose usage"
+          hint="An agent reads this computer's usage in the background, read-only, and explains what drives it."
+          control={
+            <Button size="sm" variant="outline" render={<Link href="/usage#diagnose" />}>
+              Open Usage
+            </Button>
+          }
+        />
       </SettingsGroup>
 
       <AddHubDialog open={adding} onOpenChange={setAdding} taken={(sources ?? []).map((source) => source.id)} onAdded={() => void load()} />

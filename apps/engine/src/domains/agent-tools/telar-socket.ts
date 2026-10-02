@@ -12,6 +12,7 @@ import { pluginToolModules } from "../plugins";
 import { promptsTools } from "../prompts";
 import { runTools } from "../terminal";
 import { sessionsTools } from "../sessions";
+import { usageDiagnosisTools } from "../usage";
 
 export type TelarSocketLease = {
   url: string;
@@ -52,6 +53,7 @@ export type TelarCapabilities = {
   display?: unknown;
   run?: unknown;
   plugins?: Record<string, unknown>;
+  usageDiagnosis?: unknown;
 };
 
 export function telarWall(caps: () => TelarCapabilities | undefined): TelarWallPart[] {
@@ -61,6 +63,7 @@ export function telarWall(caps: () => TelarCapabilities | undefined): TelarWallP
     { name: "prompts", build: promptsTools as never, capability: () => caps()?.prompts },
     { name: "display", build: displayTools as never, capability: () => caps()?.display },
     { name: "run", build: runTools as never, capability: () => caps()?.run },
+    { name: "usage-diagnosis", build: usageDiagnosisTools as never, capability: () => caps()?.usageDiagnosis },
     ...pluginToolModules().map((module) => ({
       name: `plugin:${module.meta.id}`,
       build: (tool: ToolFactory, capability: never) => module.tools(tool, capability),

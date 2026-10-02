@@ -3,7 +3,7 @@ import { BROWSER_BRIEFING } from "../../domains/browser";
 import { DISPLAY_BRIEFING } from "../../domains/agent-tools";
 import { RUN_BRIEFING } from "../../domains/terminal";
 import { isBackgroundWork, claudeCompactionEnv, type ItemDetail, type TaskSeed } from "@telar/engine-client";
-import { claudeEffortFor, claudeWindowTokensOf, requireCli } from "../../domains/providers";
+import { claudeEffortFor, claudeSettingsEnv, claudeWindowTokensOf, requireCli } from "../../domains/providers";
 import { pluginBriefings } from "../../domains/plugins";
 import { canonicalEnvPatch, canonicalJson, canonicalServers, changedFields, fieldDigest, fieldDigests, resolveChildEnv } from "./identity";
 import { ClaudeRuntimeStore, IDLE_RUNTIME_MS, UNATTENDED_BACKGROUND_WORK_MS } from "./runtime";
@@ -195,7 +195,7 @@ async function openTurn(deps: DriverDeps, input: DriverRun) {
 
 // The query options and the reuse fingerprint are computed together so they cannot disagree.
 function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void {
-  const { signal, fastMode, ultracode, mcpServers: userMcpServers, env, binaryPath, providerInstanceId, browserSocket, orientation, mainBriefing, run, plugins, sessions, notes, prompts, display } = input;
+  const { signal, fastMode, ultracode, mcpServers: userMcpServers, env, binaryPath, providerInstanceId, browserSocket, orientation, mainBriefing, run, plugins, sessions, notes, prompts, display, usageDiagnosis } = input;
   const { resolveExecutable } = deps;
   /** The `claude` binary this turn runs on, resolved once: the query below
    *  takes it as `pathToClaudeCodeExecutable`, and the fingerprint records
@@ -213,7 +213,9 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
     display,
     run,
     plugins,
+    usageDiagnosis,
   };
+  turn.readOnly = input.readOnly === true;
 
   turn.streaming = claudeStreamingInputEnabled();
 
@@ -254,6 +256,7 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
     plugins: Object.keys(plugins ?? {}).sort(),
     gate: Boolean(turn.canUseTool),
     instance: providerInstanceId ?? null,
+    readOnly: turn.readOnly,
   };
   /** CANONICAL, not `JSON.stringify`: key order is not identity, and an
    *  explicit deletion is. See ./claude-identity.ts. */
@@ -262,7 +265,9 @@ function identifyTurn(deps: DriverDeps, input: DriverRun, turn: TurnState): void
 
   /** The child's environment with the patch's deletions APPLIED, resolved
    *  once so the query options and the fingerprint cannot disagree. */
-  turn.childEnv = resolveChildEnv(agentEnv(), turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
+  const base = agentEnv();
+  const settingsEnv = turn.readOnly ? claudeSettingsEnv({ ...base, ...env }) : undefined;
+  turn.childEnv = resolveChildEnv(base, settingsEnv, turn.defaultEnv, env, turn.contextEnv, turn.compactionEnv);
 }
 
 async function claimTurnRuntime(deps: DriverDeps, input: DriverRun, scope: TurnScope): Promise<void> {

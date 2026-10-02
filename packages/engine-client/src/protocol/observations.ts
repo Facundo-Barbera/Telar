@@ -106,6 +106,7 @@ export const WorkerClaim = z.object({
   tasks: z.array(TaskSeed).optional(),
   orientation: z.string().min(1).optional(),
   notes: z.array(z.string().min(1)).optional(),
+  readOnly: z.literal(true).optional(),
   turn: Turn,
 });
 export type WorkerClaim = z.infer<typeof WorkerClaim>;

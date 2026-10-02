@@ -372,6 +372,7 @@ export class TurnClaims {
 
   // Everything the worker is handed with a claimed turn, resolved now so a mid-session change applies to the next turn.
   private workerClaim(session: Session, turn: Turn): WorkerClaim {
+    if (session.purpose === "usage-diagnosis") return this.diagnosisClaim(session, turn);
     const resumeCursor = this.deps.records.resumeCursorFor(session);
     // Normalised HERE TOO, because a record saved before the window became a
     // control is read here without ever passing through a patch — and the
@@ -434,6 +435,23 @@ export class TurnClaims {
         const notes = [...this.deps.mailbox.takeNextTurnNotes(session.id), ...this.deps.mailbox.takeHeldMail(session.id)];
         return notes.length > 0 ? { notes } : {};
       })(),
+      turn,
+    };
+  }
+
+  private diagnosisClaim(session: Session, turn: Turn): WorkerClaim {
+    const model = this.claimModelSelection(session.driver, turn.model ?? session.model, session.providerInstanceId ?? defaultInstanceIdForDriver(session.driver));
+    const providerInstance = this.deps.resolveProviderInstance(session.providerInstanceId, session.driver);
+    const resumeCursor = this.deps.records.resumeCursorFor(session);
+    return {
+      sessionId: session.id,
+      projectRoot: this.kernel.paths.root,
+      driver: session.driver,
+      providerInstanceId: session.providerInstanceId,
+      providerInstance,
+      ...(model ? { model } : {}),
+      ...(resumeCursor ? { resumeCursor } : {}),
+      readOnly: true,
       turn,
     };
   }

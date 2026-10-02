@@ -24,6 +24,7 @@ import {
   ShieldCheckIcon,
   SlidersHorizontalIcon,
   SparklesIcon,
+  StethoscopeIcon,
   TimerIcon,
   TypeIcon,
   WrenchIcon,
@@ -411,6 +412,17 @@ export const APP_PAGES: SettingsPageSpec[] = [
             hint: "Hubs that pool subscription accounts. Their remaining quota shows under Limits on the Usage page.",
             keywords: ["cliproxy", "cliproxyapi", "hub", "proxy", "quota", "limit", "limits", "usage", "pooled", "rate limit", "5h", "weekly", "remaining"],
             icon: ServerIcon,
+          },
+        ],
+      },
+      {
+        title: "Diagnosis",
+        rows: [
+          {
+            title: "Diagnose usage",
+            hint: "An agent reads this computer's usage in the background, read-only, and explains what drives it.",
+            keywords: ["diagnose", "diagnosis", "high usage", "why", "tokens", "cost", "spend", "expensive", "report"],
+            icon: StethoscopeIcon,
           },
         ],
       },

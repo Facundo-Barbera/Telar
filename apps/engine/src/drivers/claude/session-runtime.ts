@@ -5,6 +5,8 @@ import { advertiseLeanSchemas, TELAR_TOOL_CALL_TIMEOUT_MS, toSdkTools, telarWall
 import { isTerminalTaskState } from "./tasks";
 import { type TurnState, type Rest } from "./turn";
 
+const DIAGNOSIS_MAX_TURNS = 40;
+
 export type RuntimeCtx = {
   turn: TurnState;
   attachments: { id: string; name: string; mediaType: string; bytes: number; path: string; tags?: string[] | undefined; producer?: string | undefined; title?: string | undefined; createdAt?: number | undefined; }[] | undefined;
@@ -66,6 +68,7 @@ export const buildRuntime = (ctx: RuntimeCtx): ClaudeSessionRuntime<ClaudeTurnBi
     options: {
       cwd: ctx.turn.cwd,
       permissionMode: "default",
+      ...(ctx.turn.readOnly ? { tools: [], settingSources: [] as [], strictMcpConfig: true, maxTurns: DIAGNOSIS_MAX_TURNS } : {}),
       ...(ctx.turn.briefings.length
         ? { systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: ctx.turn.briefings.join("\n\n") } }
         : {}),

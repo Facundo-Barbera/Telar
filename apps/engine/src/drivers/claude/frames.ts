@@ -21,6 +21,8 @@ export type SdkFrame = {
   parent_tool_use_id?: string | null;
   stop_reason?: string | null;
   is_error?: boolean;
+  result?: string;
+  errors?: unknown[];
   /** The join key of the send this frame answers — see `turnUuid`. On
    *  the first stream frame and the result of a turn only. */
   user_message_uuid?: string;

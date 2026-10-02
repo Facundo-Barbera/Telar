@@ -17,6 +17,7 @@ export {
 } from "./cli";
 export { type CliUpdateRun } from "./cli-updates";
 export { providerProcessEnv, type VersionProbe } from "./instances";
+export { claudeSettingsEnv } from "./claude-settings-env";
 export {
   codexHome,
   loadClaudeCommandSdk,

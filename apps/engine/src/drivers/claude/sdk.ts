@@ -7,6 +7,7 @@ import { RELAY_RULE } from "../../domains/turns";
 import type { SessionsCapability } from "../../domains/sessions";
 import type { NotesCapability } from "../../domains/notes";
 import type { PromptsCapability } from "../../domains/prompts";
+import type { UsageDiagnosisCapability } from "../../domains/usage";
 import { agentEnv } from "../../platform/process/agent-env";
 
 /** The SDK's permission callback, narrowed to what this driver uses. */
@@ -103,6 +104,7 @@ export type ClaudeTurnBindings = {
   run: RunCapability | undefined;
   /** Every enabled plugin's capability, by id — Data Science and LaTeX included. */
   plugins: Record<string, unknown> | undefined;
+  usageDiagnosis: UsageDiagnosisCapability | undefined;
 };
 
 export function claudeMcpServers(servers: McpServer[] | undefined): Record<string, SdkMcpServer> | undefined {
@@ -169,6 +171,10 @@ export type ClaudeSdk = {
     options: {
       cwd: string;
       permissionMode: "default";
+      tools?: string[];
+      settingSources?: [];
+      strictMcpConfig?: boolean;
+      maxTurns?: number;
       systemPrompt?: { type: "preset"; preset: "claude_code"; append: string };
       abortController: AbortController;
       /** Omitted entirely when the session names none — the SDK then uses the

@@ -57,6 +57,7 @@ export type TurnState = {
   turnBindings: ClaudeTurnBindings;
   streaming: boolean;
   briefings: string[];
+  readOnly: boolean;
   fingerprintFields: Record<string, unknown>;
   fingerprint: string;
   fingerprintDigests: Record<string, string>;

@@ -1,5 +1,6 @@
 import type { EngineTransport } from "../platform/transport";
 import type { UsageLimits, UsageLimitSource, UsageLimitSourceKind, UsageReport, UsageResolution } from "./schema";
+import type { UsageDiagnosis, UsageDiagnosisTool } from "./diagnosis";
 
 export const usageClient = {
   usageReport(
@@ -31,5 +32,21 @@ export const usageClient = {
 
   usageLimits(this: EngineTransport, options: { refresh?: boolean } = {}): Promise<{ limits: UsageLimits }> {
     return this.request("GET", `/v2/usage/limits${options.refresh ? "?refresh=1" : ""}`);
+  },
+
+  usageDiagnosisTool(this: EngineTransport, sessionId: string, tool: UsageDiagnosisTool, args: Record<string, unknown>): Promise<{ text: string }> {
+    return this.request("POST", `/v2/sessions/${encodeURIComponent(sessionId)}/usage-diagnosis/${tool}`, args);
+  },
+
+  usageDiagnosis(this: EngineTransport): Promise<{ diagnosis: UsageDiagnosis | null }> {
+    return this.request("GET", "/v2/usage/diagnosis");
+  },
+
+  startUsageDiagnosis(this: EngineTransport, input: { model?: string; effort?: string } = {}): Promise<{ diagnosis: UsageDiagnosis }> {
+    return this.request("POST", "/v2/usage/diagnosis", input);
+  },
+
+  stopUsageDiagnosis(this: EngineTransport): Promise<{ diagnosis: UsageDiagnosis | null }> {
+    return this.request("POST", "/v2/usage/diagnosis/stop", {});
   },
 };

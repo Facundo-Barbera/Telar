@@ -1,9 +1,12 @@
-import type { UsageLimits } from "@telar/engine-client";
+import type { UsageDiagnosisTool, UsageLimits } from "@telar/engine-client";
 import { HttpError } from "../../platform/http/http";
-import { ok, type Route } from "../../platform/http/route";
+import { ok, sessionRoute, type Route } from "../../platform/http/route";
+import { runDiagnosisTool } from "./diagnosis-access";
 import type { EngineStore } from "../../state";
 import { readUsageReport } from "./scan";
 import { readUsageLimitSource } from "./limits";
+import { usageDigestFor } from "./digest-source";
+import { UsageDiagnoses } from "./diagnosis-runner";
 
 const LIMITS_TTL_MS = 5 * 60_000;
 
@@ -15,7 +18,17 @@ export function usageRoutes(store: EngineStore): Route[] {
       .then((sources) => (limits.snapshot = { sources, readAt: Date.now() }))
       .finally(() => (limits.inFlight = undefined)));
   const sourcePath = /^\/v2\/usage\/sources\/([A-Za-z][A-Za-z0-9_-]*)$/;
+  const diagnoses = new UsageDiagnoses(store);
   return [
+    { method: "GET", path: "/v2/usage/diagnosis", auth: "engine", handle: () => ok({ diagnosis: diagnoses.current() ?? null }) },
+    {
+      method: "POST",
+      path: "/v2/usage/diagnosis",
+      auth: "engine",
+      handle: async ({ body }) =>
+        ok({ diagnosis: await diagnoses.start({ ...(typeof body.model === "string" ? { model: body.model } : {}), ...(typeof body.effort === "string" ? { effort: body.effort } : {}) }) }),
+    },
+    { method: "POST", path: "/v2/usage/diagnosis/stop", auth: "engine", handle: () => ok({ diagnosis: diagnoses.stop() ?? null }) },
     {
       method: "GET",
       path: "/v2/usage",
@@ -30,6 +43,18 @@ export function usageRoutes(store: EngineStore): Route[] {
         return ok({ usage: await readUsageReport(window, { ratesCachePath: store.paths.usageModelRates, scanCachePath: store.paths.usageScanCache }) });
       },
     },
+    {
+      method: "POST",
+      path: sessionRoute("/usage-diagnosis/(read|grep|glob|sql)"),
+      auth: "engine",
+      handle({ params: [sessionId, tool], body }) {
+        const session = store.records.get(sessionId!);
+        const running = store.queries.turns(sessionId!).some((turn) => turn.state === "running");
+        if (session.purpose !== "usage-diagnosis" || !running) throw new HttpError(409, "conflict", "only a running usage diagnosis has these tools");
+        return ok({ text: runDiagnosisTool(store.paths.root, tool as UsageDiagnosisTool, body as Record<string, unknown>) });
+      },
+    },
+    { method: "GET", path: "/v2/usage/digest", auth: "engine", handle: async () => ok({ digest: (await usageDigestFor(store)).digest }) },
     // Management keys are write-only: this list is the redacting read.
     { method: "GET", path: "/v2/usage/sources", auth: "engine", handle: () => ok({ sources: store.usageSources.list() }) },
     {
