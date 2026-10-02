@@ -23,17 +23,22 @@ function urlFor(title: string, body: string): string {
   return `${NEW_ISSUE}?${new URLSearchParams({ title, body })}`;
 }
 
-export function buildFeedbackUrl(text: string, info?: FeedbackInfo): string {
+export function feedbackIssue(text: string, info?: FeedbackInfo): { title: string; body: string; url: string } {
   const title = titleOf(text);
   const footer = info ? `\n\n${infoBlock(info)}` : "";
-  let body = text.trim();
-  let url = urlFor(title, body + footer);
-  if (url.length <= MAX_URL) return url;
-  while (url.length > MAX_URL && body.length > 0) {
-    body = body.slice(0, Math.floor(body.length * 0.9));
-    url = urlFor(title, body + TRUNCATED + footer);
+  let kept = text.trim();
+  let body = kept + footer;
+  let url = urlFor(title, body);
+  while (url.length > MAX_URL && kept.length > 0) {
+    kept = kept.slice(0, Math.floor(kept.length * 0.9));
+    body = kept + TRUNCATED + footer;
+    url = urlFor(title, body);
   }
-  return url;
+  return { title, body, url };
+}
+
+export function buildFeedbackUrl(text: string, info?: FeedbackInfo): string {
+  return feedbackIssue(text, info).url;
 }
 
 export function describeSystem(userAgent: string): string {

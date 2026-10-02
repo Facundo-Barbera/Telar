@@ -10,6 +10,7 @@ import { Button } from "@/ui/button";
 import { Spinner } from "@/ui/spinner";
 import { Segmented } from "@/features/settings";
 import { formatShare, formatTokens, formatUsd } from "../model";
+import { SendDiagnosisFeedback } from "./diagnosis-feedback";
 
 const api = createEngineApi();
 const POLL_MS = 4000;
@@ -135,7 +136,6 @@ function Figure({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** The Usage page's diagnosis: one background run that reads this engine's data and explains what drives usage. */
 export function UsageDiagnosisSection() {
   const { diagnosis, error, start, stop } = useDiagnosis();
   const [model, setModel] = useState<Model>("sonnet");
@@ -177,6 +177,9 @@ export function UsageDiagnosisSection() {
             <Link href={`/sessions/${encodeURIComponent(diagnosis.sessionId)}`} className="underline-offset-2 hover:text-foreground hover:underline">
               Open transcript
             </Link>
+            <div className="ml-auto">
+              <SendDiagnosisFeedback diagnosis={diagnosis} />
+            </div>
           </div>
         </>
       )}
