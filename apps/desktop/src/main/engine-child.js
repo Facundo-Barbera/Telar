@@ -2,7 +2,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const { fork } = require("node:child_process");
-const { app, dialog } = require("electron");
+const { app, BrowserWindow, dialog } = require("electron");
 const { DEV_BUILD, SMOKE } = require("./flags");
 const { bundledPlaywrightMcpCli, nodeExecPath, resolveEngineJs } = require("./bundle-paths");
 const { logShell, shellLogPath } = require("./shell-log");
@@ -24,6 +24,8 @@ function markMainWindowShown() {
 }
 
 let engineChild = null;
+let engineDiscovery = null;
+let discoveryReadAt = 0;
 
 function engineLockOwnerPid(home) {
   try {
@@ -34,13 +36,79 @@ function engineLockOwnerPid(home) {
   }
 }
 
-function onEngineExit(home, code, signal) {
+const RESTART_DELAYS_MS = [0, 1_000, 5_000, 15_000, 30_000];
+const STABLE_AFTER_MS = 60_000;
+const STDERR_TAIL_CHARS = 8_192;
+const STOPPED_PREFIX = "Telar engine stopped: ";
+const ENGINE_LOG_ROTATE_BYTES = 5 * 1024 * 1024;
+
+let respawn = null;
+let restartTimer = null;
+let rapidExits = 0;
+let startedAt = 0;
+let lastRestart = null;
+
+function exitReason(code, signal, stderr) {
+  const lines = stderr.split("\n").map((line) => line.trim());
+  const said = lines.findLast((line) => line.startsWith(STOPPED_PREFIX))?.slice(STOPPED_PREFIX.length)
+    ?? lines.findLast((line) => line.includes("FATAL ERROR:"));
+  if (said) return said.slice(0, 300);
+  return signal ? `killed by ${signal}` : `exit code ${code}`;
+}
+
+function announceRestart(notice) {
+  lastRestart = notice;
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed()) continue;
+    try {
+      win.webContents.send("telar:engine:restart", notice);
+    } catch {
+    }
+  }
+}
+
+function lastEngineRestart() {
+  return lastRestart;
+}
+
+function scheduleRestart(reason) {
+  if (!respawn) return;
+  rapidExits = Date.now() - startedAt >= STABLE_AFTER_MS ? 1 : rapidExits + 1;
+  if (rapidExits > RESTART_DELAYS_MS.length) {
+    logShell("error", `engine stopped ${rapidExits - 1} times in a row; not restarting it again`);
+    announceRestart({ at: Date.now(), reason, restarted: false });
+    return;
+  }
+  restartTimer = setTimeout(() => {
+    restartTimer = null;
+    if (app.isQuitting || !respawn) return;
+    try {
+      respawn();
+      logShell("info", "engine restarted");
+      announceRestart({ at: Date.now(), reason, restarted: true });
+    } catch (error) {
+      logShell("error", `engine restart failed: ${error?.stack || error}`);
+      announceRestart({ at: Date.now(), reason, restarted: false });
+    }
+  }, RESTART_DELAYS_MS[rapidExits - 1]);
+}
+
+function onEngineExit(home, code, signal, stderr = "") {
   engineChild = null;
+  engineDiscovery = null;
+  discoveryReadAt = 0;
 
   if (SMOKE || app.isQuitting) return;
-  logShell("error", `engine exited (code=${code} signal=${signal})`);
+  const reason = exitReason(code, signal, stderr);
+  logShell("error", `engine exited (code=${code} signal=${signal}): ${reason}`);
+  if (stderr.trim()) logShell("error", `engine stderr before it exited:\n${stderr.trimEnd()}`);
 
-  if (code === ENGINE_EXIT_LOCK_HELD && !mainWindowShown && !startupFailureReported) {
+  if (mainWindowShown) {
+    scheduleRestart(reason);
+    return;
+  }
+
+  if (code === ENGINE_EXIT_LOCK_HELD && !startupFailureReported) {
     startupFailureReported = true;
     const pid = engineLockOwnerPid(home);
     dialog.showMessageBoxSync({
@@ -58,16 +126,62 @@ function onEngineExit(home, code, signal) {
 
   reportStartupFailure(
     "Telar's engine stopped",
-    `The engine exited (code=${code} signal=${signal}) before Telar could open.\n\n` +
+    `The engine exited (${reason}) before Telar could open.\n\n` +
       `There is more in ${shellLogPath()}.`,
   );
   app.quit();
 }
 
+function engineLogPath() {
+  return path.join(app.getPath("userData"), "engine.log");
+}
+
+function openEngineLog() {
+  const file = engineLogPath();
+  try {
+    if (fs.statSync(file).size > ENGINE_LOG_ROTATE_BYTES) fs.renameSync(file, `${file}.1`);
+  } catch {
+  }
+  const log = fs.createWriteStream(file, { flags: "a" });
+  log.on("error", () => {});
+  log.write(`[${new Date().toISOString()}] engine starting\n`);
+  return log;
+}
+
+function superviseEngine(home, spawn) {
+  respawn = () => {
+    const child = spawn();
+    engineChild = child;
+    startedAt = Date.now();
+    let stderr = "";
+    const log = openEngineLog();
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => {
+      process.stderr.write(chunk);
+      log.write(chunk);
+      stderr = (stderr + chunk).slice(-STDERR_TAIL_CHARS);
+    });
+    let settled = false;
+    child.on("exit", (code, signal) => {
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        log.end(`[${new Date().toISOString()}] engine exited (code=${code} signal=${signal})\n`);
+        onEngineExit(home, code, signal, stderr);
+      };
+      if (!child.stderr || child.stderr.readableEnded) return settle();
+      setTimeout(settle, 250).unref?.();
+      child.stderr.once("end", settle);
+    });
+    return child;
+  };
+  return respawn();
+}
+
 function startEngineChild(home, env) {
   if (env?.TELAR_HOME !== home) throw new Error("the engine child needs the env that names its store");
   const engineJs = resolveEngineJs();
-  engineChild = fork(engineJs, [], {
+  return superviseEngine(home, () => fork(engineJs, [], {
     cwd: path.dirname(engineJs),
     execPath: nodeExecPath(),
 
@@ -82,10 +196,8 @@ function startEngineChild(home, env) {
         ? { TELAR_PLAYWRIGHT_MCP_BIN: bundledPlaywrightMcpCli() }
         : {}),
     },
-    stdio: ["ignore", "inherit", "inherit", "ipc"],
-  });
-  engineChild.on("exit", (code, signal) => onEngineExit(home, code, signal));
-  return engineChild;
+    stdio: ["ignore", "inherit", "pipe", "ipc"],
+  }));
 }
 
 const ENGINE_STOP_GRACE_MS = 5_000;
@@ -111,6 +223,9 @@ function stopChild(child, graceMs = ENGINE_STOP_GRACE_MS) {
 }
 
 function stopEngineChild() {
+  respawn = null;
+  clearTimeout(restartTimer);
+  restartTimer = null;
   const child = engineChild;
   engineChild = null;
   return stopChild(child);
@@ -186,9 +301,6 @@ function waitForEngine(home, { timeoutMs = 30_000, intervalMs = 150, requireWork
   });
 }
 
-let engineDiscovery = null;
-let discoveryReadAt = 0;
-
 function rememberEngine(discovery) {
   engineDiscovery = discovery;
 }
@@ -217,13 +329,16 @@ function postToEngine(home, routePath, body) {
     },
     timeout: 2_000,
   });
-  request.on("error", () => {});
+  request.on("error", () => {
+    if (engineDiscovery === discovery) engineDiscovery = null;
+  });
   request.on("timeout", () => request.destroy());
   request.end(payload);
 }
 
 module.exports = {
   engineDiscoveryFile,
+  lastEngineRestart,
   markMainWindowShown,
   onEngineExit,
   postToEngine,
@@ -231,6 +346,7 @@ module.exports = {
   reportStartupFailure,
   startEngineChild,
   stopChild,
+  superviseEngine,
   stopEngineChild,
   waitForEngine,
 };
