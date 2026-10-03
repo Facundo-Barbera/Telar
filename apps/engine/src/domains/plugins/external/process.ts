@@ -130,6 +130,7 @@ export class ExternalPluginProcess {
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk: string) => this.log(chunk));
     child.once("error", (error) => this.exited(child, error.message));
+    child.stdin?.on("error", () => undefined);
     child.once("exit", (code, signal) => this.exited(child, `exited${code === null ? "" : ` with code ${code}`}${signal ? ` (${signal})` : ""}`));
     try {
       await this.send(

@@ -252,6 +252,7 @@ describe("the helper bundled inside Telar.app", () => {
           stdout: new EventEmitter(),
           kill() {},
           stdin: {
+            on() {},
             write(line: string) {
               const msg = JSON.parse(line) as { id?: number; params?: { name: string; arguments: unknown } };
               if (msg.id === 1) queueMicrotask(() => child.stdout.emit("data", Buffer.from(JSON.stringify({ id: 1, result: {} }) + "\n")));

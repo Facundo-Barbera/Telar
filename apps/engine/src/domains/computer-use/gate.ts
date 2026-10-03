@@ -373,6 +373,7 @@ function callTool(spec: StdioSpec, name: string, args: Record<string, unknown>, 
     };
     const timer = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
     child.once("error", (error) => finish({ kind: "error", message: error.message }));
+    child.stdin?.on("error", () => undefined);
 
     let buffer = "";
     child.stdout?.on("data", (chunk: Buffer) => {
