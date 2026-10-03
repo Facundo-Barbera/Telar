@@ -154,8 +154,9 @@ export class TelarToolSocket {
 
   private async handle(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
     const writeJson = (status: number, payload: unknown): void => {
+      const text = JSON.stringify(payload);
       response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify(payload));
+      response.end(text);
     };
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -188,6 +189,7 @@ export class TelarToolSocket {
       }
       writeJson(200, answer);
     } catch (error) {
+      if (response.headersSent) return void response.destroy();
       writeJson(500, { error: { code: "internal_error", message: error instanceof Error ? error.message : "telar socket failed" } });
     }
   }

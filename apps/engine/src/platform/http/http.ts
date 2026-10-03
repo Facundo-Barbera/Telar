@@ -25,8 +25,9 @@ export function errorFor(error: unknown, known?: (error: unknown) => HttpError |
 }
 
 export function writeJson(response: http.ServerResponse, status: number, body: unknown, headers: http.OutgoingHttpHeaders = {}): void {
+  const text = JSON.stringify(body);
   response.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers });
-  response.end(JSON.stringify(body));
+  response.end(text);
 }
 
 export function writeError(response: http.ServerResponse, error: HttpError): void {

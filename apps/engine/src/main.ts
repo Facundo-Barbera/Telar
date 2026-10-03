@@ -79,7 +79,7 @@ let stopping: Promise<void> | undefined;
 const stop = () => {
   stopping ??= (async () => {
     setTimeout(() => process.exit(0), STOP_DEADLINE_MS).unref();
-    await daemon.close();
+    await daemon.close().catch(() => undefined);
     process.exit(0);
   })();
 };

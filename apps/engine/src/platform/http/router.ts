@@ -44,7 +44,8 @@ export function router(routes: readonly Route[], options: RouterOptions): http.R
       if (answer.bytes) response.writeHead(answer.status, answer.headers).end(answer.bytes);
       else writeJson(response, answer.status, answer.body, answer.headers);
     } catch (error) {
-      writeError(response, options.errorFor(error));
+      if (response.headersSent) response.destroy();
+      else writeError(response, options.errorFor(error));
     }
   };
 }
