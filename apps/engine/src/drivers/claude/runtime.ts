@@ -148,7 +148,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
       if (due !== undefined && (earliest === undefined || due < earliest)) earliest = due;
     }
     if (earliest === undefined) return;
-    const timer = setTimeout(() => void this.sweep(), Math.max(0, earliest - this.now()));
+    const timer = setTimeout(() => void this.sweep().catch(() => undefined), Math.max(0, earliest - this.now()));
     timer.unref?.();
     this.sweepTimer = timer;
   }
@@ -161,7 +161,7 @@ export class ClaudeRuntimeStore<T = unknown, Seed extends { id: string; provider
       if (due === undefined || at < due) continue;
       const idleForMs = at - runtime.lastUsedAt;
       for (const seed of this.liveWorkIn(runtime)) {
-        const took = seed.providerTaskId === undefined ? false : await this.stopTask(runtime.sessionId, seed.providerTaskId);
+        const took = seed.providerTaskId === undefined ? false : await this.stopTask(runtime.sessionId, seed.providerTaskId).catch(() => false);
         stopped.push({ sessionId: runtime.sessionId, taskId: seed.id, providerTaskId: seed.providerTaskId, idleForMs, stopped: took });
       }
       if (this.runtimes.get(runtime.sessionId) === runtime && this.dueAt(runtime) !== undefined) this.destroy(runtime.sessionId);
