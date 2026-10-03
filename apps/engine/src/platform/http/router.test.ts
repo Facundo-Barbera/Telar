@@ -94,3 +94,26 @@ test("an unmatched request goes to the fallback, whose throw becomes the error a
   const answer = await fetch(`${base}/v2/other`);
   expect([answer.status, await answer.json()]).toEqual([409, { error: { code: "conflict", message: "fell through /v2/other" } }]);
 });
+
+test("a handler that fails after its headers went out drops the connection instead of rejecting", async () => {
+  const handled: Promise<unknown>[] = [];
+  const handler = router(
+    [
+      { method: "GET", path: "/v2/half", auth: "engine", handle: ({ response }) => {
+        response.writeHead(200, { "content-type": "text/plain" });
+        response.write("partial");
+        throw new Error("failed mid-answer");
+      } },
+      { method: "GET", path: "/v2/unserialisable", auth: "engine", handle: () => ok({ big: 1n }) },
+    ],
+    { authorize: () => {}, errorFor: (error) => errorFor(error) },
+  );
+  server = http.createServer((request, response) => void handled.push(Promise.resolve(handler(request, response) as unknown)));
+  await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
+
+  await expect(fetch(`${base}/v2/half`).then((answer) => answer.text())).rejects.toThrow();
+  const unserialisable = await fetch(`${base}/v2/unserialisable`);
+  expect(unserialisable.status).toBe(500);
+  expect((await Promise.allSettled(handled)).map((outcome) => outcome.status)).toEqual(["fulfilled", "fulfilled"]);
+});

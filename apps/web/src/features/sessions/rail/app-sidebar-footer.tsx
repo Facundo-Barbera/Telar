@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartNoAxesColumnIcon, DownloadIcon, FlameIcon, Loader2Icon, PowerIcon, RefreshCwIcon, SettingsIcon } from "lucide-react";
+import { useState } from "react";
+import { ChartNoAxesColumnIcon, DownloadIcon, FlameIcon, Loader2Icon, PowerIcon, RefreshCwIcon, ServerCrashIcon, SettingsIcon } from "lucide-react";
 import { FeedbackDialog, useDesktopUpdate, UpdateToast, RestartUpdateDialog } from "@/features/updates";
 import { formatCpu, useRunawayNotice, type RunawayRenderer } from "@/platform/desktop/desktop-metrics";
+import { useEngineRestartNotice } from "@/platform/desktop/engine-restart";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/ui/tooltip";
 import { ProgressRing } from "@/ui/progress-ring";
 import { cn } from "@/ui/utils";
@@ -119,6 +121,37 @@ export function RunawayIndicator() {
   );
 }
 
+export function EngineRestartIndicator() {
+  const notice = useEngineRestartNotice();
+  const [dismissedAt, setDismissedAt] = useState<number>();
+  if (!notice || notice.at === dismissedAt) return null;
+
+  const time = new Date(notice.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const label = notice.restarted
+    ? `The engine stopped: ${notice.reason}; restarted at ${time}`
+    : `The engine stopped: ${notice.reason}; it kept stopping, so it was not restarted. Quit and reopen Telar`;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-label={label}
+            onClick={() => setDismissedAt(notice.at)}
+            className={cn(iconButton(), notice.restarted ? "text-warning hover:text-warning" : "text-destructive hover:text-destructive")}
+          >
+            <ServerCrashIcon className="size-4" />
+          </button>
+        }
+      />
+      <TooltipContent side="top">
+        <span className="block max-w-64">{label}. Click to dismiss.</span>
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function AppSidebarFooterRow({ onNavigate }: { onNavigate: () => void }) {
   return (
     <div className="flex items-center gap-0.5 p-1">
@@ -130,6 +163,7 @@ export function AppSidebarFooterRow({ onNavigate }: { onNavigate: () => void }) 
       </FooterLink>
       <FeedbackDialog triggerClassName={iconButton()} />
       <div className="flex-1" />
+      <EngineRestartIndicator />
       <RunawayIndicator />
       <UpdateButton />
     </div>

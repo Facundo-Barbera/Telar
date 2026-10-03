@@ -145,6 +145,11 @@ contextBridge.exposeInMainWorld("telarDesktop", {
     onRunaway: (listener) => on("telar:metrics:runaway", listener),
   },
 
+  engine: {
+    lastRestart: () => ipcRenderer.invoke("telar:engine:restart"),
+    onRestart: (listener) => on("telar:engine:restart", listener),
+  },
+
   visibility: {
     get: () => ipcRenderer.invoke("telar:window:visibility"),
     onChange: (listener) => on("telar:window:visibility", listener),

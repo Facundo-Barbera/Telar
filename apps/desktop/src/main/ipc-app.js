@@ -4,6 +4,7 @@ const { windowTargetUrl } = require("./window-target");
 const { lastWindowUrl } = require("./browser-hosts");
 const { linkRouting } = require("./window-links");
 const { lastRunawayNotice, processMetricsReader } = require("./renderer-watch");
+const { lastEngineRestart } = require("./engine-child");
 
 function registerAppIpc({ createWindow, testNotification }) {
   ipcMain.handle("telar:app:relaunch", () => {
@@ -16,6 +17,8 @@ function registerAppIpc({ createWindow, testNotification }) {
   ipcMain.handle("telar:metrics:read", () => processMetricsReader().summary());
 
   ipcMain.handle("telar:metrics:runaway", () => lastRunawayNotice());
+
+  ipcMain.handle("telar:engine:restart", () => lastEngineRestart());
 
   ipcMain.handle("telar:window:visibility", (event) => windowVisible(BrowserWindow.fromWebContents(event.sender)));
 

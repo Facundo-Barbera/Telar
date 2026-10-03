@@ -27,6 +27,7 @@ const MAX_FILES = 500;
 const MAX_WALKED = 20_000;
 const MAX_GREP_FILE_BYTES = 5_000_000;
 const MAX_SQL_ROWS = 200;
+const MAX_READ_FILE_BYTES = 16_000_000;
 const MAX_CELL_CHARS = 2000;
 
 function isSecretPath(relative: string): boolean {
@@ -104,6 +105,7 @@ function readFile(root: string, args: Record<string, unknown>): string {
     return fs.readdirSync(full, { withFileTypes: true }).filter((entry) => !isSecretPath(path.join(relative, entry.name))).map((entry) => `${entry.name}${entry.isDirectory() ? "/" : ""}`).join("\n");
   }
   if (isDatabase(relative)) refuse("query the database with the sql tool instead");
+  if (fs.statSync(full).size > MAX_READ_FILE_BYTES) refuse(`${relative} is over ${MAX_READ_FILE_BYTES / 1_000_000} MB; grep it instead`);
   const buffer = fs.readFileSync(full);
   if (buffer.includes(0)) refuse(`${relative} is binary`);
   const lines = buffer.toString("utf8").split("\n");
@@ -153,7 +155,7 @@ function grepFiles(root: string, args: Record<string, unknown>): string {
 
 const SQL_FORBIDDEN = /\b(attach|detach|pragma|insert|update|delete|drop|create|alter|vacuum|reindex|load_extension)\b/i;
 
-type ReadOnlyDb = { prepare(sql: string): { all(): Array<Record<string, unknown>> }; exec(sql: string): void; close(): void };
+type ReadOnlyDb = { prepare(sql: string): { iterate(): Iterable<Record<string, unknown>> }; exec(sql: string): void; close(): void };
 
 function openReadOnly(file: string): ReadOnlyDb {
   const native = createRequire(import.meta.url)(process.versions.bun ? "bun:sqlite" : "node:sqlite");
@@ -168,11 +170,15 @@ function runReadOnlySql(databaseFile: string, query: unknown): string {
   const db = openReadOnly(databaseFile);
   try {
     db.exec("PRAGMA query_only=1");
-    const rows = db.prepare(statement).all();
+    const rows: Record<string, unknown>[] = [];
+    for (const row of db.prepare(statement).iterate()) {
+      rows.push(row);
+      if (rows.length > MAX_SQL_ROWS) break;
+    }
     const shown = rows.slice(0, MAX_SQL_ROWS).map((row) =>
       Object.fromEntries(Object.entries(row).map(([key, value]) => [key, typeof value === "string" && value.length > MAX_CELL_CHARS ? `${value.slice(0, MAX_CELL_CHARS)}…` : value])),
     );
-    return clip(JSON.stringify({ rows: shown, ...(rows.length > MAX_SQL_ROWS ? { truncated: rows.length } : {}) }));
+    return clip(JSON.stringify({ rows: shown, ...(rows.length > MAX_SQL_ROWS ? { truncated: true } : {}) }));
   } catch (error) {
     refuse(error instanceof Error ? error.message : String(error));
   } finally {

@@ -24,6 +24,7 @@ export type SpawnBrowserProcess = (command: string, args: readonly string[]) => 
 
 const spawnBrowserProcess: SpawnBrowserProcess = (command, args) => {
   const child = spawn(command, [...args], { stdio: ["pipe", "pipe", "pipe"], detached: OWN_GROUP });
+  child.stdin.on("error", () => undefined);
   return {
     write: (frame) => {
       child.stdin.write(frame);

@@ -4,6 +4,7 @@ import { providerSkillRoots } from "./domains/providers";
 import { EngineStateError } from "./platform/kernel";
 import { engineRootFromEnv } from "./platform/fs/engine-root";
 import { ENGINE_EXIT_LOCK_HELD } from "./platform/process/daemon-lock";
+import { installLastResortHandlers } from "./platform/process/last-resort";
 import { statePaths } from "./platform/fs/state-paths";
 
 /**
@@ -67,6 +68,7 @@ try {
   process.stderr.write(`Telar engine: ${error.message} — ${statePaths(engineRootFromEnv()).lock}\n`);
   process.exit(ENGINE_EXIT_LOCK_HELD);
 }
+installLastResortHandlers();
 process.stdout.write(
   `Telar engine listening on ${daemon.discovery.host}:${daemon.discovery.port}` +
     `${daemon.worker ? ` with embedded worker ${daemon.worker.workerId}` : " (no embedded worker)"}\n`,
@@ -77,7 +79,7 @@ let stopping: Promise<void> | undefined;
 const stop = () => {
   stopping ??= (async () => {
     setTimeout(() => process.exit(0), STOP_DEADLINE_MS).unref();
-    await daemon.close();
+    await daemon.close().catch(() => undefined);
     process.exit(0);
   })();
 };

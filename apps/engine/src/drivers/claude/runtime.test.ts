@@ -85,3 +85,25 @@ test("a runtime holding live background work keeps the longer unattended window"
   advance(30 * MINUTE);
   expect(closed).toEqual(["session_one"]);
 });
+
+test("an unattended sweep whose stopTask fails still closes the runtime and reports the task not stopped", async () => {
+  const closed: string[] = [];
+  const reported: unknown[] = [];
+  const runtimes = new ClaudeRuntimeStore({
+    now: () => 60 * MINUTE,
+    idleAfterMs: 30 * MINUTE,
+    unattendedAfterMs: 60 * MINUTE,
+    liveBackgroundWork: (seed) => seed.id === "task_one",
+    onUnattended: (stops) => reported.push(...stops),
+  });
+  const failing = runtime("session_one", closed, true);
+  failing.query.stopTask = async () => {
+    throw new Error("transport closed");
+  };
+  runtimes.adopt(failing);
+  failing.busy = false;
+  failing.lastUsedAt = 0;
+  await runtimes.sweep();
+  expect(closed).toEqual(["session_one"]);
+  expect(reported).toEqual([expect.objectContaining({ sessionId: "session_one", stopped: false })]);
+});

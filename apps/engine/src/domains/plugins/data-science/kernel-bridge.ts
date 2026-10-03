@@ -26,6 +26,7 @@ export class KernelBridge {
     const spawnImpl = options.spawnImpl ?? defaultSpawnBridge;
     this.child = spawnImpl(python, script, { cwd: options.cwd, env: { ...process.env, ...options.env, PYTHONUNBUFFERED: "1" } });
     this.child.on("error", (error) => this.close(error));
+    this.child.stdin.on("error", () => undefined);
     createInterface({ input: this.child.stdout }).on("line", (line) => this.consume(line));
     createInterface({ input: this.child.stderr }).on("line", (line) => {
       this.stderrTail.push(line);

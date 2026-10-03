@@ -65,6 +65,7 @@ export class CodexAppServer {
       detached: OWN_GROUP,
     });
     this.child.on("error", (error) => this.close(error));
+    this.child.stdin.on("error", () => undefined);
 
     let partial = "";
     this.child.stdout.setEncoding("utf8");

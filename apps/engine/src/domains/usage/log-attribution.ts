@@ -5,6 +5,8 @@ import type { UsageLogAttribution, UsageLogBucket } from "@telar/engine-client";
 import { parseClaudeLines } from "./log-parse";
 import { priceTokens, type RatesTable } from "./pricing";
 
+const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
+
 const TELAR_MARKERS = ['"mcp__telar__', '"mcp__telar-browser__', "running inside Telar, an agent cockpit", "[agent message · "].map((marker) => Buffer.from(marker));
 
 export type AttributionInput = {
@@ -54,7 +56,7 @@ async function* transcripts(root: string, sinceMs: number): AsyncGenerator<strin
       if (entry.isDirectory()) stack.push(full);
       else if (entry.isFile() && entry.name.endsWith(".jsonl")) {
         const stat = await fs.promises.stat(full).catch(() => undefined);
-        if (stat && stat.mtimeMs >= sinceMs) yield full;
+        if (stat && stat.mtimeMs >= sinceMs && stat.size <= MAX_TRANSCRIPT_BYTES) yield full;
       }
     }
   }
